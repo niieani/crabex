@@ -63,11 +63,12 @@ export interface Transformation {
     tools?: string[];
   };
   target: {
-    field: "message_text" | "tool_description" | "all_text" | "tool";
+    field: "message_text" | "tool_description" | "json_value" | "all_text" | "tool";
     path?: string;
     toolName?: string;
     identifier?: string;
     variantDigest?: string;
+    jsonPath?: JsonPathSegment[];
   };
   operation:
     | { type: "delete_part" }
@@ -81,6 +82,8 @@ export interface Transformation {
         replaceAll: boolean;
       };
 }
+
+export type JsonPathSegment = string | number;
 
 export interface TransformationSet {
   version: 1;

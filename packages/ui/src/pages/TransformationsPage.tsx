@@ -139,6 +139,9 @@ function RuleCard({
             {rule.scope.tools?.map((value) => (
               <Tag key={value}>{value}</Tag>
             ))}
+            {rule.target.jsonPath === undefined ? null : (
+              <Tag>path:{JSON.stringify(rule.target.jsonPath)}</Tag>
+            )}
           </div>
           <RuleTelemetry telemetry={telemetry} />
           {"find" in rule.operation ? <CodePreview>{rule.operation.find}</CodePreview> : null}

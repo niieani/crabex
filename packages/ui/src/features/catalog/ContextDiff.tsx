@@ -2,18 +2,31 @@ import { Editor, type EditorOptions } from "@pierre/diffs/edit";
 import { EditProvider, File, MultiFileDiff } from "@pierre/diffs/react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
+import type { JsonPathSegment } from "../../lib/types.ts";
+import type { TextRange } from "./json-selection.ts";
+
+export interface TransformSelection {
+  find: string;
+  jsonPath?: JsonPathSegment[];
+}
+
 export function ContextDiff({
   original,
   effective,
   filename,
   search,
   onTransformSelection,
+  resolveTransformSelection,
 }: {
   original?: string;
   effective: string;
   filename: string;
   search: string;
-  onTransformSelection: (text: string) => void;
+  onTransformSelection: (selection: TransformSelection) => void;
+  resolveTransformSelection?: (selection: {
+    text: string;
+    range: TextRange;
+  }) => TransformSelection | undefined;
 }) {
   const editorRef = useRef<Editor<undefined>>(undefined);
   const createEditor = useCallback((options: EditorOptions<undefined>) => new Editor(options), []);
@@ -24,19 +37,35 @@ export function ContextDiff({
         editorRef.current = editor as Editor<undefined>;
       },
       renderSelectionAction(context) {
+        const selected = () => ({
+          text: context.getSelectionText(),
+          range: context.selection,
+        });
+        const resolved = () =>
+          resolveTransformSelection?.(selected()) ??
+          (resolveTransformSelection === undefined
+            ? { find: context.getSelectionText() }
+            : undefined);
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = "Transform";
+        const initial = resolved();
+        button.textContent = initial === undefined ? "Select one JSON string" : "Transform";
+        button.disabled = initial === undefined;
+        if (initial === undefined) {
+          button.title = "The selection must be inside one JSON string value.";
+        }
         button.className =
-          "rounded-md bg-accent px-2 py-1 text-xs font-semibold text-canvas shadow-lg";
+          "rounded-md bg-accent px-2 py-1 text-xs font-semibold text-canvas shadow-lg disabled:cursor-not-allowed disabled:bg-panel-raised disabled:text-muted";
         button.addEventListener("click", () => {
-          onTransformSelection(context.getSelectionText());
+          const selection = resolved();
+          if (selection === undefined) return;
+          onTransformSelection(selection);
           context.close();
         });
         return button;
       },
     }),
-    [onTransformSelection],
+    [onTransformSelection, resolveTransformSelection],
   );
 
   useEffect(() => {

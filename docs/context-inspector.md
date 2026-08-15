@@ -74,6 +74,10 @@ Transformation Set
 ├── Global defaults
 ├── Harness/model overrides
 └── Project overrides
+
+Structured Target
+├── Stable tool definition
+└── JSON path segments: string property names or numeric array indexes
 ```
 
 A Context Part is an opaque leaf located through the Responses structure, for example:
@@ -99,6 +103,8 @@ Supported operations:
 - Replace a regular expression.
 
 Structural selection and text mutation are separate concerns. Rules choose eligible opaque fields—message text, tool descriptions, schema string fields, a structural slot, or a known Variant—then apply a mechanical operation.
+
+Structured tool fields use a `json_value` target and a non-empty `jsonPath` array relative to the tool root, for example `["parameters", "properties", "cmd", "description"]`. String and number segments retain the distinction between object properties and array indexes. Text operations match the decoded string value, so a selected JSON `\\n` escape becomes a real newline before matching. `delete_part` removes the exact object property or array element. Text operations against non-string values are isolated as rule errors; missing paths are ordinary misses. Transformations never rewrite serialized JSON text.
 
 Applicable rules execute in deterministic layers:
 
@@ -169,7 +175,7 @@ Diagnostics expose the original NDJSON event stream and raw JSON, but they are s
 
 The inspector replays the current Transformation Set against the selected immutable historical Probe. The center panel renders a stacked, unified `@pierre/diffs` comparison without changing the capture. Selecting text exposes a **Transform** action that seeds the literal transformation editor. Catalog search scans all message Markdown and function descriptions, filters the composition list, and highlights every occurrence in the editor with Pierre markers.
 
-Function entries expose two tabs: **Description** shows the complete description; **JSON** shows the structured definition with its description collapsed to the first line plus an ellipsis. Stable segments, Markdown sections, individual declared skills, structured functions, generated function sections, and observed MCP registry entries expose direct enable/disable switches backed by identifier-targeted `delete_part` rules.
+Function entries expose two tabs: **Description** shows the complete description; **JSON** shows the structured definition with its description collapsed to the first line plus an ellipsis. A JSON selection can seed a transformation only when it lies wholly inside one string value; the UI resolves its exact path and decodes JSON escapes. Selections spanning structure, multiple values, or display-only abbreviated text remain inspection-only. Stable segments, Markdown sections, individual declared skills, structured functions, generated function sections, and observed MCP registry entries expose direct enable/disable switches backed by identifier-targeted `delete_part` rules.
 
 Disabled parts and sections remain in the composition tree as inactive entries so their switches can re-enable them. Expansion state follows stable structural identifiers rather than content digests, so preview refreshes do not collapse the tree. Code-mode tool metadata is shown once per Snapshot as a deduplicated **Code mode tools** registry; double-underscore name segments form mechanical namespace groups such as `mcp → codex_apps → sites_list_sites`.
 

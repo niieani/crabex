@@ -137,4 +137,54 @@ describe("TransformationEditor", () => {
       }),
     );
   });
+
+  it("targets a decoded string at an exact structured tool JSON path", async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn();
+    const selectedPart: ContextPart = {
+      id: "wait",
+      name: "functions.wait",
+      identifier: "tool:functions.wait",
+      text: "definition",
+      description: "Wait for output",
+      json: "{}",
+      characters: 10,
+      estimatedTokens: 3,
+      digest: "d".repeat(64),
+      path: "input[0].tools[0].tools[0]",
+      phase: "prewarm",
+      kind: "tool",
+    };
+    render(
+      <TransformationEditor
+        onCreate={onCreate}
+        selectedPart={selectedPart}
+        initialFind={"First line\nSecond line"}
+        initialJsonPath={["parameters", "variants", 0, "description"]}
+      />,
+    );
+
+    expect((screen.getByLabelText("Target field") as HTMLSelectElement).value).toBe("json_value");
+    expect((screen.getByLabelText("JSON path") as HTMLInputElement).value).toBe(
+      '["parameters","variants",0,"description"]',
+    );
+    await user.type(screen.getByLabelText("Name"), "Shorten variant");
+    await user.type(screen.getByLabelText("Replace with"), "Short");
+    await user.click(screen.getByRole("button", { name: "Add transformation" }));
+
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: { tools: ["tool:functions.wait"] },
+        target: {
+          field: "json_value",
+          jsonPath: ["parameters", "variants", 0, "description"],
+        },
+        operation: {
+          type: "replace_all",
+          find: "First line\nSecond line",
+          replacement: "Short",
+        },
+      }),
+    );
+  });
 });

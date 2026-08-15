@@ -7,7 +7,8 @@ import type {
   Transformation,
 } from "../../lib/types.ts";
 import { TransformationEditor } from "../transformations/TransformationEditor.tsx";
-import { ContextDiff } from "./ContextDiff.tsx";
+import { ContextDiff, type TransformSelection } from "./ContextDiff.tsx";
+import { resolveJsonStringSelection } from "./json-selection.ts";
 
 export function ContextInspector({
   snapshot,
@@ -24,7 +25,7 @@ export function ContextInspector({
   const [view, setView] = useState<"original" | "effective">("effective");
   const [toolView, setToolView] = useState<"description" | "json">("description");
   const [search, setSearch] = useState("");
-  const [selection, setSelection] = useState("");
+  const [selection, setSelection] = useState<TransformSelection>();
   const ordered = useMemo(
     () =>
       sort === "size"
@@ -96,7 +97,10 @@ export function ContextInspector({
               part={part}
               totalCharacters={totalCharacters}
               selected={partKey(part) === partKey(selected)}
-              onClick={() => setSelectedKey(partKey(part))}
+              onClick={() => {
+                setSelectedKey(partKey(part));
+                setSelection(undefined);
+              }}
               disabledIdentifiers={disabledIdentifiers}
               onToggleIdentifier={onToggleIdentifier}
             />
@@ -120,14 +124,20 @@ export function ContextInspector({
               <div className="flex rounded-lg border border-line bg-panel p-1 text-[10px]">
                 <button
                   type="button"
-                  onClick={() => setView("original")}
+                  onClick={() => {
+                    setView("original");
+                    setSelection(undefined);
+                  }}
                   className={viewButton(view === "original")}
                 >
                   Original
                 </button>
                 <button
                   type="button"
-                  onClick={() => setView("effective")}
+                  onClick={() => {
+                    setView("effective");
+                    setSelection(undefined);
+                  }}
                   className={viewButton(view === "effective")}
                 >
                   Effective
@@ -151,14 +161,20 @@ export function ContextInspector({
             <button
               type="button"
               className={viewButton(toolView === "description")}
-              onClick={() => setToolView("description")}
+              onClick={() => {
+                setToolView("description");
+                setSelection(undefined);
+              }}
             >
               Description
             </button>
             <button
               type="button"
               className={viewButton(toolView === "json")}
-              onClick={() => setToolView("json")}
+              onClick={() => {
+                setToolView("json");
+                setSelection(undefined);
+              }}
             >
               JSON
             </button>
@@ -174,6 +190,16 @@ export function ContextInspector({
             }
             search={search}
             onTransformSelection={setSelection}
+            resolveTransformSelection={
+              selected.kind === "tool" && toolView === "json"
+                ? ({ range }) =>
+                    resolveJsonStringSelection(
+                      selectedContent(selected, view, toolView),
+                      selectedText(selected, view),
+                      range,
+                    )
+                : undefined
+            }
           />
         </div>
         <div className="flex items-center justify-between border-t border-line px-6 py-2 font-mono text-[10px] text-muted">
@@ -188,9 +214,10 @@ export function ContextInspector({
           Mechanical matching only. The original capture remains immutable.
         </p>
         <TransformationEditor
-          key={`${selected.id}:${selection}`}
+          key={`${selected.id}:${JSON.stringify(selection)}`}
           selectedPart={selected}
-          initialFind={selection}
+          initialFind={selection?.find}
+          initialJsonPath={selection?.jsonPath}
           onCreate={onCreateTransformation ?? (() => {})}
         />
       </aside>

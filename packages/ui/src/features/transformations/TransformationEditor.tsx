@@ -1,25 +1,33 @@
 import { useState, type FormEvent } from "react";
 
-import type { ContextPart, HarnessKind, Transformation } from "../../lib/types.ts";
+import type { ContextPart, HarnessKind, JsonPathSegment, Transformation } from "../../lib/types.ts";
 
 export function TransformationEditor({
   onCreate,
   selectedPart,
   initialFind = "",
+  initialJsonPath,
 }: {
   onCreate: (transformation: Transformation) => void;
   selectedPart?: ContextPart;
   initialFind?: string;
+  initialJsonPath?: JsonPathSegment[];
 }) {
   const [name, setName] = useState("");
   const [field, setField] = useState<Transformation["target"]["field"]>(
-    selectedPart?.kind === "tool" ? "tool_description" : "message_text",
+    initialJsonPath !== undefined
+      ? "json_value"
+      : selectedPart?.kind === "tool"
+        ? "tool_description"
+        : "message_text",
   );
   const [operation, setOperation] = useState<"replace" | "replace_all" | "regex" | "delete_part">(
     "replace_all",
   );
   const [find, setFind] = useState(initialFind);
   const [replacement, setReplacement] = useState("");
+  const [jsonPath, setJsonPath] = useState(JSON.stringify(initialJsonPath ?? []));
+  const [jsonPathError, setJsonPathError] = useState("");
   const [flags, setFlags] = useState("");
   const [harness, setHarness] = useState<"all" | HarnessKind>("all");
   const [model, setModel] = useState("");
@@ -35,6 +43,16 @@ export function TransformationEditor({
 
   function submit(event: FormEvent) {
     event.preventDefault();
+    let parsedJsonPath: JsonPathSegment[] | undefined;
+    if (field === "json_value") {
+      try {
+        parsedJsonPath = parseJsonPath(jsonPath);
+        setJsonPathError("");
+      } catch (error) {
+        setJsonPathError(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
     onCreate({
       id: `rule-${Date.now()}`,
       name: name.trim(),
@@ -48,11 +66,12 @@ export function TransformationEditor({
       },
       target: {
         field,
+        ...(parsedJsonPath === undefined ? {} : { jsonPath: parsedJsonPath }),
         ...(selectedPart?.identifier === undefined
           ? selectedPart === undefined
             ? {}
             : { path: selectedPart.path }
-          : operation === "delete_part"
+          : operation === "delete_part" && field !== "json_value"
             ? { identifier: selectedPart.identifier }
             : {}),
       },
@@ -83,6 +102,7 @@ export function TransformationEditor({
           >
             <option value="message_text">Message text</option>
             <option value="tool_description">Tool description</option>
+            <option value="json_value">JSON value</option>
             <option value="all_text">All text leaves</option>
             <option value="tool">Whole tool</option>
           </select>
@@ -100,6 +120,28 @@ export function TransformationEditor({
           </select>
         </Field>
       </div>
+      {field === "json_value" ? (
+        <Field label="JSON path">
+          <div>
+            <input
+              required
+              aria-invalid={jsonPathError === "" ? undefined : true}
+              value={jsonPath}
+              onChange={(event) => {
+                setJsonPath(event.target.value);
+                setJsonPathError("");
+              }}
+              className="input font-mono"
+              placeholder={'["parameters","properties","cmd","description"]'}
+            />
+            {jsonPathError === "" ? null : (
+              <p className="mt-1 text-[10px] normal-case tracking-normal text-red-400">
+                {jsonPathError}
+              </p>
+            )}
+          </div>
+        </Field>
+      ) : null}
       {operation === "delete_part" ? null : (
         <>
           <Field label={operation === "regex" ? "Pattern" : "Find"}>
@@ -228,4 +270,20 @@ function operationValue(
     return { type: operation, pattern: find, replacement, flags, replaceAll: true };
   }
   return { type: operation, find, replacement };
+}
+
+function parseJsonPath(value: string): JsonPathSegment[] {
+  const parsed: unknown = JSON.parse(value);
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    !parsed.every(
+      (segment) =>
+        typeof segment === "string" ||
+        (typeof segment === "number" && Number.isSafeInteger(segment) && segment >= 0),
+    )
+  ) {
+    throw new Error("Use a non-empty JSON array of strings and non-negative integers.");
+  }
+  return parsed as JsonPathSegment[];
 }
