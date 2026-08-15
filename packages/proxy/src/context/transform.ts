@@ -74,6 +74,7 @@ function applyTransformation<T extends ResponseCreatePayload>(
       matchCount += transformMessage(item, itemPath, transformation);
       if (Array.isArray(item.content) && item.content.length === 0) input.splice(inputIndex, 1);
     } else if (item.type === "additional_tools") {
+      if (transformation.scope.segments !== undefined) continue;
       matchCount += transformToolContainer(item, itemPath, transformation);
     }
   }
@@ -95,6 +96,7 @@ function transformMessage(
     if (block === undefined || typeof block.text !== "string") continue;
     const path = `${itemPath}.content[${index}].text`;
     const classification = classifyMessage(stringValue(message.role), block.text);
+    if (!isInSegmentScope(transformation, classification?.id)) continue;
     const identified = transformIdentifiedText(
       block.text,
       transformation,
@@ -312,11 +314,10 @@ function transformMetadataTools(
   payload: ResponseCreatePayload,
   transformation: Transformation,
 ): number {
+  if (transformation.scope.segments !== undefined) return 0;
   if (transformation.operation.type !== "delete_part" || transformation.target.field !== "tool")
     return 0;
   const identifier = transformation.target.identifier;
-  const name = identifier?.startsWith("tool:") ? identifier.slice("tool:".length) : undefined;
-  if (name === undefined) return 0;
   const clientMetadata = objectValue(payload.client_metadata);
   const metadataKey = "x-codex-turn-metadata";
   if (clientMetadata === undefined) return 0;
@@ -329,10 +330,29 @@ function transformMetadataTools(
     return 0;
   }
   const registry = objectValue(metadata.code_mode_tool_names);
-  if (registry === undefined || !(name in registry)) return 0;
+  if (registry === undefined) return 0;
+  if (identifier === "registry:code_mode_tool_names") {
+    delete metadata.code_mode_tool_names;
+    clientMetadata[metadataKey] = JSON.stringify(metadata);
+    return 1;
+  }
+  const name = identifier?.startsWith("tool:") ? identifier.slice("tool:".length) : undefined;
+  if (name === undefined) return 0;
+  if (!(name in registry)) return 0;
   delete registry[name];
   clientMetadata[metadataKey] = JSON.stringify(metadata);
   return 1;
+}
+
+function isInSegmentScope(
+  transformation: Transformation,
+  segmentIdentifier: string | undefined,
+): boolean {
+  const segments = transformation.scope.segments;
+  return (
+    segments === undefined ||
+    (segmentIdentifier !== undefined && segments.includes(segmentIdentifier))
+  );
 }
 
 function transformText(

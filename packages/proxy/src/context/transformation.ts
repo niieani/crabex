@@ -13,6 +13,7 @@ export interface TransformationScope {
   harnesses?: HarnessKind[];
   models?: string[];
   projects?: string[];
+  segments?: string[];
 }
 
 export interface TransformationTarget {

@@ -130,6 +130,29 @@ describe("transformResponseCreate", () => {
     expect(result.payload).toEqual(payload);
   });
 
+  it("limits a text replacement to its stable Codex segment scope", () => {
+    const result = transformResponseCreate(
+      {
+        type: "response.create",
+        input: [
+          message("developer", "<plugins_instructions>\nshared text"),
+          message("developer", "<skills_instructions>\nshared text"),
+        ],
+      },
+      [
+        rule({
+          scope: { segments: ["segment:plugins"] },
+          operation: { type: "replace_all", find: "shared", replacement: "scoped" },
+        }),
+      ],
+      { harness: { kind: "desktop" } },
+    );
+
+    expect(textAt(result.payload, 0)).toContain("scoped text");
+    expect(textAt(result.payload, 1)).toContain("shared text");
+    expect(result.executions[0]).toMatchObject({ status: "hit", matchCount: 1 });
+  });
+
   it("passes through a request and records a miss when a rule does not match", () => {
     const result = transformResponseCreate(
       payload,
@@ -296,4 +319,8 @@ function nestedToolNames(value: unknown): string[] {
     if (typeof tool.name !== "string") throw new Error("fixture tool name is missing");
     return tool.name;
   });
+}
+
+function message(role: string, text: string) {
+  return { type: "message", role, content: [{ type: "input_text", text }] };
 }

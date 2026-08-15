@@ -20,6 +20,10 @@ _Avoid_: Prompt fragment
 A recognized Markdown heading subtree, skill entry, or generated tool declaration inside a Context Part. Its identifier is mechanical; its prose is not interpreted.
 _Avoid_: Semantic topic
 
+**Tool Registry**:
+The deduplicated set of code-mode tool names observed across the linked requests of a Snapshot. Names are grouped mechanically by their double-underscore namespace segments.
+_Avoid_: Tool request, MCP session
+
 **Variant**:
 One exact observed value of a Context Part, identified by its content digest and observation conditions.
 _Avoid_: Version
@@ -41,7 +45,7 @@ The observed outcome of one eligible Transformation against one request: hit, mi
 _Avoid_: Validation, assertion
 
 **Transformation Scope**:
-The observation conditions and structural fields in which a Transformation is eligible to run.
+The observation conditions and optional stable Codex segments in which a Transformation is eligible to run. Scope limits where matching occurs; it does not identify the text being changed.
 _Avoid_: Filter
 
 **Effective Payload**:

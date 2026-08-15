@@ -154,13 +154,121 @@ describe("buildSnapshots", () => {
           json: expect.stringContaining('"description": "Wait for output.…"'),
         }),
         expect.objectContaining({
-          identifier: "tool:mcp__codex_apps__github_get_issue_comment_reactions",
-          name: "mcp__codex_apps__github_get_issue_comment_reactions",
+          identifier: "registry:code_mode_tool_names",
+          name: "Code mode tools",
+          sections: [
+            expect.objectContaining({
+              label: "mcp",
+              children: [
+                expect.objectContaining({
+                  label: "codex_apps",
+                  children: [
+                    expect.objectContaining({
+                      identifier: "tool:mcp__codex_apps__github_get_issue_comment_reactions",
+                      label: "github_get_issue_comment_reactions",
+                    }),
+                  ],
+                }),
+              ],
+            }),
+          ],
         }),
       ]),
     );
   });
+
+  it("keeps function description and JSON diff pairs separate", () => {
+    const original = responseWithTool("Original first line.\nOriginal detail.");
+    const effective = responseWithTool("Effective first line.\nEffective detail.");
+    const request = event(1, "client_to_upstream", original);
+    request.effectivePayload = JSON.stringify(effective);
+
+    const tool = buildSnapshots([request])[0]?.parts.find(
+      (part) => part.identifier === "tool:functions.exec",
+    );
+
+    expect(tool).toMatchObject({
+      description: "Effective first line.\nEffective detail.",
+      originalDescription: "Original first line.\nOriginal detail.",
+      json: expect.stringContaining('"description": "Effective first line.…"'),
+      originalJson: expect.stringContaining('"description": "Original first line.…"'),
+    });
+  });
+
+  it("retains disabled Markdown sections in the preview model", () => {
+    const original = {
+      type: "response.create",
+      input: [message("developer", "<plugins_instructions>\n# Keep\na\n# Remove\nb")],
+    };
+    const effective = {
+      ...original,
+      input: [message("developer", "<plugins_instructions>\n# Keep\na\n")],
+    };
+    const request = event(1, "client_to_upstream", original);
+    request.effectivePayload = JSON.stringify(effective);
+
+    const plugins = buildSnapshots([request])[0]?.parts[0];
+    const removed = plugins?.sections?.find(
+      (section) => section.identifier === "section:segment:plugins/remove",
+    );
+
+    expect(removed).toMatchObject({ deleted: true, originalText: "# Remove\nb", text: "" });
+  });
+
+  it("aggregates duplicate code mode tool registries across linked requests", () => {
+    const registry = {
+      mcp__codex_apps__sites_list_sites: { name: "sites_list_sites" },
+      apply_patch: { name: "apply_patch" },
+    };
+    const events: CaptureEvent[] = [
+      event(1, "client_to_upstream", responseWithRegistry(registry, false)),
+      event(2, "upstream_to_client", {
+        type: "response.completed",
+        response: { id: "resp_warm", usage: { input_tokens: 10 } },
+      }),
+      event(3, "client_to_upstream", {
+        ...responseWithRegistry(registry, true),
+        previous_response_id: "resp_warm",
+      }),
+    ];
+
+    const registries = buildSnapshots(events)[0]?.parts.filter(
+      (part) => part.identifier === "registry:code_mode_tool_names",
+    );
+
+    expect(registries).toHaveLength(1);
+    expect(JSON.stringify(registries?.[0]?.sections)).toContain("sites_list_sites");
+  });
 });
+
+function responseWithTool(description: string) {
+  return {
+    type: "response.create",
+    input: [
+      {
+        type: "additional_tools",
+        tools: [
+          {
+            type: "namespace",
+            name: "functions",
+            tools: [{ type: "function", name: "exec", description }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function responseWithRegistry(registry: Record<string, unknown>, generate: boolean) {
+  return {
+    type: "response.create",
+    generate,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({ code_mode_tool_names: registry }),
+    },
+    input: [],
+  };
+}
 
 function event(
   sequence: number,

@@ -7,11 +7,13 @@ import type { HarnessIdentity } from "./harness.ts";
 export interface ContextSection {
   identifier: string;
   label: string;
-  kind: ContentSection["kind"];
+  kind: ContentSection["kind"] | "tool_group";
   text: string;
   characters: number;
   estimatedTokens: number;
   children: ContextSection[];
+  originalText?: string;
+  deleted?: boolean;
 }
 
 export interface ContextPart {
@@ -30,6 +32,8 @@ export interface ContextPart {
   json?: string;
   sections?: ContextSection[];
   originalText?: string;
+  originalDescription?: string;
+  originalJson?: string;
   deleted?: boolean;
 }
 
@@ -95,7 +99,7 @@ function snapshotFrom(
     const previousResponseId = stringValue(request.payload.previous_response_id);
     request = previousResponseId === undefined ? undefined : byResponseId.get(previousResponseId);
   }
-  const parts = chain.flatMap((item) => partsFrom(item));
+  const parts = aggregateRegistries(chain.flatMap((item) => partsFrom(item)));
   const model = stringValue(inference.payload.model) ?? "unknown";
   return {
     id: `${inference.event.sessionId}:${inference.event.sequence}`,
@@ -117,9 +121,16 @@ function partsFrom(request: RequestRecord): ContextPart[] {
   const merged = effectiveParts.map((part) => {
     const original = takeMatchingOriginal(part, originals, unmatched);
     if (original !== undefined) unmatched.delete(original);
-    return original === undefined || original.text === part.text
-      ? part
-      : { ...part, originalText: original.text };
+    if (original === undefined) return part;
+    return {
+      ...part,
+      ...(original.text === part.text ? {} : { originalText: original.text }),
+      ...(original.description === part.description
+        ? {}
+        : { originalDescription: original.description }),
+      ...(original.json === part.json ? {} : { originalJson: original.json }),
+      sections: mergeSections(part.sections ?? [], original.sections ?? []),
+    };
   });
   for (const original of originals) {
     if (!unmatched.has(original)) continue;
@@ -238,16 +249,22 @@ function collectMetadataTools(
   const metadata = parseObject(encoded);
   const registry = objectValue(metadata?.code_mode_tool_names);
   if (registry === undefined) return;
-  for (const [name, value] of Object.entries(registry)) {
-    const path = `client_metadata.x-codex-turn-metadata.code_mode_tool_names.${name}`;
-    parts.push(
-      part(request, phase, "tool", path, JSON.stringify(value, null, 2), {
-        name,
-        identifier: `tool:${name}`,
-        json: JSON.stringify(value, null, 2),
-      }),
-    );
-  }
+  const text = JSON.stringify(registry, null, 2);
+  parts.push(
+    part(
+      request,
+      phase,
+      "tool",
+      "client_metadata.x-codex-turn-metadata.code_mode_tool_names",
+      text,
+      {
+        name: "Code mode tools",
+        identifier: "registry:code_mode_tool_names",
+        json: text,
+        sections: registrySections(registry),
+      },
+    ),
+  );
 }
 
 function part(
@@ -296,6 +313,126 @@ function sectionsValue(sections: ContentSection[]): ContextSection[] {
     estimatedTokens: Math.ceil(section.text.length / 4),
     children: sectionsValue(section.children),
   }));
+}
+
+function mergeSections(effective: ContextSection[], original: ContextSection[]): ContextSection[] {
+  const unmatched = new Map(original.map((section) => [section.identifier, section]));
+  const merged = effective.map((section) => {
+    const previous = unmatched.get(section.identifier);
+    unmatched.delete(section.identifier);
+    if (previous === undefined) return section;
+    return {
+      ...section,
+      ...(previous.text === section.text ? {} : { originalText: previous.text }),
+      children: mergeSections(section.children, previous.children),
+    };
+  });
+  for (const section of unmatched.values()) merged.push(deletedSection(section));
+  return merged;
+}
+
+function deletedSection(section: ContextSection): ContextSection {
+  return {
+    ...section,
+    text: "",
+    characters: 0,
+    estimatedTokens: 0,
+    originalText: section.text,
+    deleted: true,
+    children: section.children.map(deletedSection),
+  };
+}
+
+function registrySections(registry: Record<string, unknown>): ContextSection[] {
+  const roots: ContextSection[] = [];
+  for (const [name, value] of Object.entries(registry).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const segments = name.split("__");
+    const label = segments.pop() ?? name;
+    let children = roots;
+    const prefix: string[] = [];
+    for (const segment of segments) {
+      prefix.push(segment);
+      const identifier = `registry-group:${prefix.join("__")}`;
+      let group = children.find((section) => section.identifier === identifier);
+      if (group === undefined) {
+        group = sectionValue(identifier, segment, "tool_group", "");
+        children.push(group);
+      }
+      children = group.children;
+    }
+    children.push(
+      sectionValue(
+        `tool:${name}`,
+        label,
+        name.startsWith("mcp__") ? "mcp" : "tool",
+        JSON.stringify(value, null, 2),
+      ),
+    );
+  }
+  updateGroupSizes(roots);
+  return roots;
+}
+
+function sectionValue(
+  identifier: string,
+  label: string,
+  kind: ContextSection["kind"],
+  text: string,
+): ContextSection {
+  return {
+    identifier,
+    label,
+    kind,
+    text,
+    characters: text.length,
+    estimatedTokens: Math.ceil(text.length / 4),
+    children: [],
+  };
+}
+
+function updateGroupSizes(sections: ContextSection[]): void {
+  for (const section of sections) {
+    updateGroupSizes(section.children);
+    if (section.kind !== "tool_group") continue;
+    section.characters = section.children.reduce((total, child) => total + child.characters, 0);
+    section.estimatedTokens = section.children.reduce(
+      (total, child) => total + child.estimatedTokens,
+      0,
+    );
+  }
+}
+
+function aggregateRegistries(parts: ContextPart[]): ContextPart[] {
+  const registries = parts.filter((part) => part.identifier === "registry:code_mode_tool_names");
+  if (registries.length <= 1) return parts;
+  const effective: Record<string, unknown> = {};
+  const original: Record<string, unknown> = {};
+  for (const registry of registries) {
+    Object.assign(effective, parseObject(registry.text) ?? {});
+    Object.assign(original, parseObject(registry.originalText ?? registry.text) ?? {});
+  }
+  const text = JSON.stringify(effective, null, 2);
+  const originalText = JSON.stringify(original, null, 2);
+  const base = registries.at(-1)!;
+  const digest = sha256(text);
+  const aggregate: ContextPart = {
+    ...base,
+    id: `registry:code_mode_tool_names:${digest.slice(0, 12)}`,
+    phase: registries.some((part) => part.phase === "inference") ? "inference" : "prewarm",
+    text,
+    json: text,
+    characters: text.length,
+    estimatedTokens: Math.ceil(text.length / 4),
+    digest,
+    sections: mergeSections(registrySections(effective), registrySections(original)),
+    ...(text === originalText ? {} : { originalText, originalJson: originalText }),
+  };
+  return [
+    ...parts.filter((part) => part.identifier !== "registry:code_mode_tool_names"),
+    aggregate,
+  ];
 }
 
 function abbreviatedTool(tool: Record<string, unknown>): Record<string, unknown> {
