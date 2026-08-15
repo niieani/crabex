@@ -11,6 +11,7 @@ export function ContextInspector({
   onCreateTransformation?: (transformation: Transformation) => void;
 }) {
   const [sort, setSort] = useState<"payload" | "size">("payload");
+  const [view, setView] = useState<"original" | "effective">("effective");
   const ordered = useMemo(
     () =>
       sort === "size"
@@ -21,6 +22,7 @@ export function ContextInspector({
   const [selectedId, setSelectedId] = useState(snapshot.parts[0]?.id);
   const selected = snapshot.parts.find((part) => part.id === selectedId) ?? snapshot.parts[0];
   const totalCharacters = snapshot.parts.reduce((total, part) => total + part.characters, 0);
+  const hasTransformations = snapshot.parts.some((part) => part.originalText !== undefined);
 
   if (selected === undefined) {
     return (
@@ -77,14 +79,40 @@ export function ContextInspector({
             <h1 className="truncate text-lg font-semibold tracking-tight">{selected.name}</h1>
             <p className="mt-1 truncate font-mono text-[11px] text-muted">{selected.path}</p>
           </div>
-          <div className="ml-5 grid grid-cols-2 gap-x-5 text-right">
-            <Metric label="Characters" value={formatNumber(selected.characters)} />
-            <Metric label="Est. tokens" value={`~${formatNumber(selected.estimatedTokens)}`} />
+          <div className="ml-5 flex items-center gap-5">
+            {hasTransformations ? (
+              <div className="flex rounded-lg border border-line bg-panel p-1 text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setView("original")}
+                  className={viewButton(view === "original")}
+                >
+                  Original
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setView("effective")}
+                  className={viewButton(view === "effective")}
+                >
+                  Effective
+                </button>
+              </div>
+            ) : null}
+            <div className="grid grid-cols-2 gap-x-5 text-right">
+              <Metric
+                label="Characters"
+                value={formatNumber(selectedText(selected, view).length)}
+              />
+              <Metric
+                label="Est. tokens"
+                value={`~${formatNumber(Math.ceil(selectedText(selected, view).length / 4))}`}
+              />
+            </div>
           </div>
         </div>
         <div className="h-[calc(100vh-15.5rem)] overflow-auto p-6">
           <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-content">
-            {selected.text}
+            {selectedText(selected, view)}
           </pre>
         </div>
         <div className="flex items-center justify-between border-t border-line px-6 py-2 font-mono text-[10px] text-muted">
@@ -172,6 +200,14 @@ export function EmptyState({ title, detail }: { title: string; detail: string })
 
 function sortButton(active: boolean): string {
   return `rounded px-2 py-1 transition ${active ? "bg-panel-raised text-ink" : "text-muted hover:text-ink"}`;
+}
+
+function viewButton(active: boolean): string {
+  return `rounded-md px-2.5 py-1.5 transition ${active ? "bg-panel-raised text-ink" : "text-muted hover:text-ink"}`;
+}
+
+function selectedText(part: ContextPart, view: "original" | "effective"): string {
+  return view === "original" ? (part.originalText ?? part.text) : part.text;
 }
 
 function phaseBadge(phase: ContextPart["phase"]): string {

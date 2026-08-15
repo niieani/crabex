@@ -17,6 +17,8 @@ export interface ContextPart {
   characters: number;
   estimatedTokens: number;
   digest: string;
+  originalText?: string;
+  deleted?: boolean;
 }
 
 export interface ContextSnapshot {

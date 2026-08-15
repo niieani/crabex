@@ -47,6 +47,32 @@ describe("buildSnapshots", () => {
     ]);
     expect(snapshots[0]?.parts.every((part) => part.digest.length === 64)).toBe(true);
   });
+
+  it("keeps original text beside transformed effective text", () => {
+    const original = {
+      type: "response.create",
+      model: "gpt-5.6-luna",
+      input: [message("user", "original")],
+    };
+    const transformed = {
+      ...original,
+      input: [message("user", "effective")],
+    };
+    const request = event(1, "client_to_upstream", original);
+    request.effectivePayload = JSON.stringify(transformed);
+    const snapshots = buildSnapshots([
+      request,
+      event(2, "upstream_to_client", {
+        type: "response.completed",
+        response: { id: "resp_1", usage: { input_tokens: 10 } },
+      }),
+    ]);
+
+    expect(snapshots[0]?.parts[0]).toMatchObject({
+      text: "effective",
+      originalText: "original",
+    });
+  });
 });
 
 function event(

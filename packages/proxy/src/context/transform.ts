@@ -161,8 +161,54 @@ function transformTools(
         }
       }
     }
+    if (transformation.target.field === "all_text") {
+      count += transformNestedToolText(
+        tool,
+        path,
+        transformation,
+        stringValue(tool.name),
+        new Set(["description", "tools"]),
+      );
+    }
     if (Array.isArray(tool.tools)) {
       count += transformTools(tool.tools, `${path}.tools`, transformation);
+    }
+  }
+  return count;
+}
+
+function transformNestedToolText(
+  container: Record<string, unknown> | unknown[],
+  parentPath: string,
+  transformation: Transformation,
+  toolName: string | undefined,
+  skippedKeys: Set<string> = new Set(),
+): number {
+  let count = 0;
+  const entries = Array.isArray(container)
+    ? container.map((value, index) => [String(index), value] as const)
+    : Object.entries(container);
+  for (const [key, value] of entries.reverse()) {
+    if (skippedKeys.has(key)) continue;
+    const path = Array.isArray(container) ? `${parentPath}[${key}]` : `${parentPath}.${key}`;
+    if (typeof value === "string") {
+      if (!matchesTarget(transformation, "tool_description", path, value, toolName)) continue;
+      if (transformation.operation.type === "delete_part") {
+        if (Array.isArray(container)) container.splice(Number(key), 1);
+        else delete container[key];
+        count += 1;
+      } else {
+        const changed = transformText(value, transformation.operation);
+        container[key as keyof typeof container] = changed.value as never;
+        count += changed.matchCount;
+      }
+    } else if (typeof value === "object" && value !== null) {
+      count += transformNestedToolText(
+        value as Record<string, unknown> | unknown[],
+        path,
+        transformation,
+        toolName,
+      );
     }
   }
   return count;

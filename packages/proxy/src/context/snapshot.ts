@@ -14,6 +14,8 @@ export interface ContextPart {
   characters: number;
   estimatedTokens: number;
   digest: string;
+  originalText?: string;
+  deleted?: boolean;
 }
 
 export interface ContextSnapshot {
@@ -31,6 +33,7 @@ export interface ContextSnapshot {
 interface RequestRecord {
   event: CaptureEvent;
   payload: Record<string, unknown>;
+  originalPayload: Record<string, unknown>;
   responseId?: string;
   usage?: { inputTokens: number; cachedTokens: number };
 }
@@ -41,9 +44,10 @@ export function buildSnapshots(events: CaptureEvent[]): ContextSnapshot[] {
   let pending: RequestRecord | undefined;
 
   for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+    const originalPayload = parseObject(event.payload);
     const payload = parseObject(event.effectivePayload ?? event.payload);
     if (payload?.type === "response.create" && event.direction === "client_to_upstream") {
-      pending = { event, payload };
+      pending = { event, payload, originalPayload: originalPayload ?? payload };
       requests.push(pending);
       continue;
     }
@@ -92,9 +96,34 @@ function snapshotFrom(
 }
 
 function partsFrom(request: RequestRecord): ContextPart[] {
+  const effectiveParts = rawPartsFrom(request, request.payload);
+  const originalByPath = new Map(
+    rawPartsFrom(request, request.originalPayload).map((part) => [part.path, part]),
+  );
+  const merged = effectiveParts.map((part) => {
+    const original = originalByPath.get(part.path);
+    originalByPath.delete(part.path);
+    return original === undefined || original.text === part.text
+      ? part
+      : { ...part, originalText: original.text };
+  });
+  for (const original of originalByPath.values()) {
+    merged.push({
+      ...original,
+      text: "",
+      characters: 0,
+      estimatedTokens: 0,
+      originalText: original.text,
+      deleted: true,
+    });
+  }
+  return merged;
+}
+
+function rawPartsFrom(request: RequestRecord, payload: Record<string, unknown>): ContextPart[] {
   const parts: ContextPart[] = [];
-  const input = Array.isArray(request.payload.input) ? request.payload.input : [];
-  const phase = request.payload.generate === false ? "prewarm" : "inference";
+  const input = Array.isArray(payload.input) ? payload.input : [];
+  const phase = payload.generate === false ? "prewarm" : "inference";
   for (const [inputIndex, inputValue] of input.entries()) {
     const item = objectValue(inputValue);
     if (item?.type === "message" && Array.isArray(item.content)) {

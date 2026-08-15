@@ -16,7 +16,15 @@ const payload = {
           name: "functions",
           tools: [
             { type: "custom", name: "exec", description: "Execute commands safely" },
-            { type: "function", name: "wait", description: "Wait for output", parameters: {} },
+            {
+              type: "function",
+              name: "wait",
+              description: "Wait for output",
+              parameters: {
+                type: "object",
+                properties: { reason: { type: "string", description: "Old schema guidance" } },
+              },
+            },
           ],
         },
       ],
@@ -85,6 +93,28 @@ describe("transformResponseCreate", () => {
     );
 
     expect(nestedToolNames(result.payload)).toEqual(["exec"]);
+  });
+
+  it("mechanically replaces arbitrary string leaves inside a structured tool", () => {
+    const result = transformResponseCreate(
+      payload,
+      [
+        rule({
+          id: "schema-copy",
+          target: { field: "all_text" },
+          operation: {
+            type: "replace_all",
+            find: "Old schema guidance",
+            replacement: "Short guidance",
+          },
+          cardinality: { min: 1, max: 1 },
+        }),
+      ],
+      { harness: { kind: "tui" } },
+    );
+
+    expect(JSON.stringify(result.payload)).toContain("Short guidance");
+    expect(JSON.stringify(result.payload)).not.toContain("Old schema guidance");
   });
 
   it("skips transformations outside their harness, model, or project scope", () => {
