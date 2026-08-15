@@ -68,6 +68,21 @@ function validateTransformation(value: unknown): asserts value is Transformation
   ) {
     throw new Error("invalid transformation");
   }
+  if (target.field === "json_value" && !validJsonPath(target.jsonPath)) {
+    throw new Error("JSON value target requires a non-empty path of string or integer segments");
+  }
+}
+
+function validJsonPath(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (segment) =>
+        typeof segment === "string" ||
+        (typeof segment === "number" && Number.isSafeInteger(segment) && segment >= 0),
+    )
+  );
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

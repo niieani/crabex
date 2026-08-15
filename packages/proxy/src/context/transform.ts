@@ -1,14 +1,10 @@
 import { createHash } from "node:crypto";
 
-import { RE2JS } from "re2js";
-
 import { classifyMessage, markdownSections, type ContentSection } from "./classification.ts";
 import type { HarnessIdentity } from "./harness.ts";
-import type {
-  Transformation,
-  TransformationExecution,
-  TransformationOperation,
-} from "./transformation.ts";
+import { transformJsonValue } from "./json-value-transform.ts";
+import { transformText } from "./text-operation.ts";
+import type { Transformation, TransformationExecution } from "./transformation.ts";
 
 export interface TransformationContext {
   harness: HarnessIdentity;
@@ -169,6 +165,14 @@ function transformTools(
         }
         tools.splice(index, 1);
         count += 1;
+        continue;
+      }
+      if (transformation.target.field === "json_value") {
+        const jsonPath = transformation.target.jsonPath;
+        if (jsonPath === undefined) {
+          throw new Error(`JSON value transformation ${transformation.id} requires a path`);
+        }
+        count += transformJsonValue(tool, jsonPath, transformation.operation);
         continue;
       }
       if (typeof tool.description === "string") {
@@ -379,50 +383,6 @@ function isInToolScope(
   return tools === undefined || (toolIdentifier !== undefined && tools.includes(toolIdentifier));
 }
 
-function transformText(
-  value: string,
-  operation: Exclude<TransformationOperation, { type: "delete_part" }>,
-): { value: string; matchCount: number } {
-  if (operation.type === "replace") {
-    const index = value.indexOf(operation.find);
-    if (index === -1) return { value, matchCount: 0 };
-    return {
-      value:
-        value.slice(0, index) + operation.replacement + value.slice(index + operation.find.length),
-      matchCount: 1,
-    };
-  }
-  if (operation.type === "replace_all") {
-    if (operation.find === "") throw new Error("literal match cannot be empty");
-    const matchCount = nonOverlappingCount(value, operation.find);
-    return { value: value.replaceAll(operation.find, operation.replacement), matchCount };
-  }
-
-  const expression = RE2JS.compile(operation.pattern, re2Flags(operation.flags));
-  const matcher = expression.matcher(value);
-  let matchCount = 0;
-  while (matcher.find()) matchCount += 1;
-  if (matchCount === 0) return { value, matchCount };
-  const replacementMatcher = expression.matcher(value);
-  return {
-    value: operation.replaceAll
-      ? replacementMatcher.replaceAll(operation.replacement)
-      : replacementMatcher.replaceFirst(operation.replacement),
-    matchCount: operation.replaceAll ? matchCount : 1,
-  };
-}
-
-function re2Flags(flags: string): number {
-  let result = 0;
-  for (const flag of flags) {
-    if (flag === "i") result |= RE2JS.CASE_INSENSITIVE;
-    else if (flag === "m") result |= RE2JS.MULTILINE;
-    else if (flag === "s") result |= RE2JS.DOTALL;
-    else throw new Error(`unsupported regular expression flag: ${flag}`);
-  }
-  return result;
-}
-
 function isInScope(
   transformation: Transformation,
   payload: ResponseCreatePayload,
@@ -434,17 +394,6 @@ function isInScope(
   if (scope.models !== undefined && !scope.models.includes(payload.model ?? "")) return false;
   if (scope.projects !== undefined && !scope.projects.includes(context.project ?? "")) return false;
   return true;
-}
-
-function nonOverlappingCount(value: string, search: string): number {
-  let count = 0;
-  let offset = 0;
-  while (true) {
-    const index = value.indexOf(search, offset);
-    if (index === -1) return count;
-    count += 1;
-    offset = index + search.length;
-  }
 }
 
 function digest(value: string): string {

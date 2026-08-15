@@ -113,6 +113,68 @@ describe("transformResponseCreate", () => {
     expect(JSON.stringify(result.payload)).not.toContain("Old schema guidance");
   });
 
+  it("replaces a decoded multiline string at an exact structured tool JSON path", () => {
+    const multilinePayload = structuredClone(payload);
+    waitTool(multilinePayload).parameters.properties.reason.description = "Old schema\nguidance";
+    const result = transformResponseCreate(
+      multilinePayload,
+      [
+        rule({
+          scope: { tools: ["tool:functions.wait"] },
+          target: {
+            field: "json_value",
+            jsonPath: ["parameters", "properties", "reason", "description"],
+          },
+          operation: {
+            type: "replace_all",
+            find: "Old schema\nguidance",
+            replacement: "Short guidance",
+          },
+        }),
+      ],
+      { harness: { kind: "tui" } },
+    );
+
+    expect(result.executions[0]).toMatchObject({ status: "hit", matchCount: 1 });
+    expect(waitTool(result.payload).parameters.properties.reason.description).toBe(
+      "Short guidance",
+    );
+    expect(waitTool(multilinePayload).parameters.properties.reason.description).toBe(
+      "Old schema\nguidance",
+    );
+  });
+
+  it("deletes an exact property or array element by structured tool JSON path", () => {
+    const structured = structuredToolPayload();
+    const result = transformResponseCreate(
+      structured,
+      [
+        rule({
+          scope: { tools: ["tool:functions.call"] },
+          target: { field: "json_value", jsonPath: ["parameters", "required", 0] },
+          operation: { type: "delete_part" },
+        }),
+        rule({
+          scope: { tools: ["tool:functions.call"] },
+          target: {
+            field: "json_value",
+            jsonPath: ["parameters", "properties", "optional"],
+          },
+          operation: { type: "delete_part" },
+        }),
+      ],
+      { harness: { kind: "tui" } },
+    );
+
+    const tool = callTool(result.payload);
+    expect(tool.parameters.required).toEqual(["optional"]);
+    expect(tool.parameters.properties).not.toHaveProperty("optional");
+    expect(result.executions).toEqual([
+      { transformationId: "rule", status: "hit", matchCount: 1 },
+      { transformationId: "rule", status: "hit", matchCount: 1 },
+    ]);
+  });
+
   it("skips transformations outside their harness, model, or project scope", () => {
     const result = transformResponseCreate(
       payload,
@@ -389,6 +451,73 @@ function nestedToolNames(value: unknown): string[] {
     if (typeof tool.name !== "string") throw new Error("fixture tool name is missing");
     return tool.name;
   });
+}
+
+function waitTool(value: unknown) {
+  const tool = (
+    value as {
+      input: Array<{
+        tools: Array<{
+          tools: Array<{
+            name: string;
+            parameters: {
+              properties: { reason: { description: string } };
+            };
+          }>;
+        }>;
+      }>;
+    }
+  ).input[0]!.tools[0]!.tools.find((candidate) => candidate.name === "wait");
+  if (tool === undefined) throw new Error("wait tool is missing");
+  return tool;
+}
+
+function structuredToolPayload() {
+  return {
+    type: "response.create",
+    input: [
+      {
+        type: "additional_tools",
+        tools: [
+          {
+            type: "namespace",
+            name: "functions",
+            tools: [
+              {
+                type: "function",
+                name: "call",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    required: { type: "string" },
+                    optional: { type: "string" },
+                  },
+                  required: ["required", "optional"],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function callTool(value: unknown) {
+  return (
+    value as {
+      input: Array<{
+        tools: Array<{
+          tools: Array<{
+            parameters: {
+              properties: Record<string, unknown>;
+              required: string[];
+            };
+          }>;
+        }>;
+      }>;
+    }
+  ).input[0]!.tools[0]!.tools[0]!;
 }
 
 function message(role: string, text: string) {

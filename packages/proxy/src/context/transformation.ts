@@ -18,12 +18,15 @@ export interface TransformationScope {
 }
 
 export interface TransformationTarget {
-  field: "message_text" | "tool_description" | "all_text" | "tool";
+  field: "message_text" | "tool_description" | "json_value" | "all_text" | "tool";
   path?: string;
   toolName?: string;
   identifier?: string;
   variantDigest?: string;
+  jsonPath?: JsonPathSegment[];
 }
+
+export type JsonPathSegment = string | number;
 
 export type TransformationOperation =
   | { type: "delete_part" }

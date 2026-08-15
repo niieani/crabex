@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { TransformationSet } from "../context/transformation.ts";
-import { openTransformationStore } from "./transformation-store.ts";
+import { openTransformationStore, parseTransformationSet } from "./transformation-store.ts";
 
 describe("transformation store", () => {
   it("starts empty and atomically persists a versioned set", async () => {
@@ -40,5 +40,23 @@ describe("transformation store", () => {
     await Bun.write(path, '{"version":2,"transformations":[]}');
 
     await expect(openTransformationStore(path)).rejects.toThrow("unsupported transformation set");
+  });
+
+  it("rejects malformed structured JSON paths", () => {
+    expect(() =>
+      parseTransformationSet({
+        version: 1,
+        transformations: [
+          {
+            id: "invalid-path",
+            name: "Invalid path",
+            enabled: true,
+            scope: {},
+            target: { field: "json_value", jsonPath: ["parameters", -1] },
+            operation: { type: "delete_part" },
+          },
+        ],
+      }),
+    ).toThrow("JSON value target requires a non-empty path");
   });
 });
