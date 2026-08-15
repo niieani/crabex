@@ -1,0 +1,49 @@
+# Agent Context Trimmer
+
+Agent Context Trimmer observes and transforms the effective context supplied by a Codex harness for an inference request.
+
+## Language
+
+**Probe**:
+A deliberately small Codex invocation used to reveal the context supplied under a known model, harness, and project configuration.
+_Avoid_: Test session, audit run
+
+**Snapshot**:
+The complete effective inference context reconstructed from the linked requests in one Probe.
+_Avoid_: Session, capture file
+
+**Context Part**:
+An opaque, structurally identified text or tool-definition leaf present in a Snapshot.
+_Avoid_: Section, prompt fragment
+
+**Variant**:
+One exact observed value of a Context Part, identified by its content digest and observation conditions.
+_Avoid_: Version
+
+**Observation Conditions**:
+The model, harness, harness version, and project configuration under which a Variant was captured.
+_Avoid_: Environment
+
+**Context Catalog**:
+The union of Context Parts and Variants found in all available Snapshots.
+_Avoid_: Global prompt
+
+**Transformation**:
+An ordered, mechanical operation that deletes a Context Part or replaces text in selected opaque fields.
+_Avoid_: Semantic rewrite, optimizer
+
+**Transformation Scope**:
+The observation conditions and structural fields in which a Transformation is eligible to run.
+_Avoid_: Filter
+
+**Effective Payload**:
+The outbound payload produced after all applicable Transformations have run against an original payload.
+_Avoid_: Edited capture
+
+**Drift**:
+A structurally familiar Context Part whose exact content is not a known Variant for a strict Transformation.
+_Avoid_: Parse failure
+
+**Harness**:
+The Codex client that constructs the request context, currently Codex Desktop or Codex TUI.
+_Avoid_: Originator, frontend
