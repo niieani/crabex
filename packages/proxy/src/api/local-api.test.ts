@@ -19,7 +19,19 @@ describe("local context API", () => {
       },
     ];
     const api = createLocalApi({
-      snapshots: { list: async () => snapshots },
+      snapshots: {
+        list: async () => snapshots,
+        transformationTelemetry: async () => [
+          {
+            transformationId: "rule-1",
+            hits: 2,
+            misses: 1,
+            errors: 0,
+            matchCount: 4,
+            lastRunAt: "2026-08-15T00:00:00.000Z",
+          },
+        ],
+      },
       transformations: {
         get: () => set,
         replace: async (next) => {
@@ -34,6 +46,22 @@ describe("local context API", () => {
     expect(response?.status).toBe(200);
     expect(await response?.json()).toEqual({ snapshots });
 
+    const telemetry = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/transformation-telemetry"),
+    );
+    expect(await telemetry?.json()).toEqual({
+      telemetry: [
+        {
+          transformationId: "rule-1",
+          hits: 2,
+          misses: 1,
+          errors: 0,
+          matchCount: 4,
+          lastRunAt: "2026-08-15T00:00:00.000Z",
+        },
+      ],
+    });
+
     const next: TransformationSet = {
       version: 1,
       transformations: [
@@ -44,7 +72,6 @@ describe("local context API", () => {
           scope: {},
           target: { field: "message_text" },
           operation: { type: "replace_all", find: "before", replacement: "after" },
-          cardinality: { min: 0 },
         },
       ],
     };
@@ -61,7 +88,7 @@ describe("local context API", () => {
 
   it("returns undefined outside the reserved API surface", async () => {
     const api = createLocalApi({
-      snapshots: { list: async () => [] },
+      snapshots: { list: async () => [], transformationTelemetry: async () => [] },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
         replace: async () => {},

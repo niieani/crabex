@@ -110,16 +110,14 @@ Original payload
   → effective payload
 ```
 
-Every rule declares match cardinality. Zero matches may be an intentional “if present” no-op. Invalid expressions, unexpected counts, ambiguity, or required drift are explicit errors. Rule output includes a before/after digest, match count, applied rule IDs, and estimated size delta. Captures remain immutable; transformed payloads are recorded alongside originals.
+Rules are best-effort and must never block a user request. Zero matches are an ordinary no-op. A malformed rule is isolated: its candidate mutation is discarded, its error is recorded, and subsequent rules continue against the last valid payload. Every eligible rule records a hit, miss, or error plus its match count. The UI aggregates these outcomes so stale rules are visible without making request delivery brittle. Captures remain immutable; transformed payloads are recorded alongside originals.
 
 Runtime statuses:
 
 ```text
-MATCHED     Eligible known input found; transformation applied
-ABSENT      No eligible match; allowed no-op
-DRIFTED     Strict structural target contains an unknown Variant
-AMBIGUOUS   Structural selection resolves to multiple unintended targets
-FAILED      Invalid operation or unexpected cardinality
+HIT         One or more matches; transformation applied
+MISS        No eligible match; request continues unchanged
+ERROR       Invalid operation; this rule is skipped and request continues
 ```
 
 Regular expressions require bounded execution semantics. The implementation should use RE2-compatible expressions rather than permit catastrophic backtracking.
@@ -173,12 +171,12 @@ Diagnostics expose the original NDJSON event stream and raw JSON, but they are s
 
 1. **Domain and capture metadata**
    - Normalize harness identity from `Originator` and `User-Agent` without persisting headers.
-   - Extend captured client events with original/effective payloads, harness metadata, and applied-rule results.
+   - Extend captured client events with original/effective payloads, harness metadata, and per-rule execution results.
    - Reconstruct linked `response.create` requests and aggregate usage into Snapshots.
 2. **Transformation engine**
    - Implement immutable traversal of structured text-bearing leaves.
    - Implement delete-part, literal replace, replace-all, and bounded-regexp operations.
-   - Add deterministic scope matching, rule ordering, cardinality checks, digests, and explicit failures.
+   - Add deterministic scope matching, rule ordering, isolated rule execution, and hit/miss/error telemetry.
 3. **Persistence and local API**
    - Persist versioned Transformation Sets as local JSON.
    - Expose capture catalog, snapshot detail, transformations, previews, and updates through reserved local API routes.

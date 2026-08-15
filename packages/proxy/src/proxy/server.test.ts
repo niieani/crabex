@@ -129,7 +129,6 @@ describe("subscription reverse proxy", () => {
           find: "Reply with exactly: original-smoke",
           replacement: "Reply with exactly: transformed-smoke",
         },
-        cardinality: { min: 1, max: 1 },
       },
     ];
     const proxy = await startProxy(upstream.origin, captures, transformations);
@@ -162,7 +161,9 @@ describe("subscription reverse proxy", () => {
 
     expect(captures.events[0]).toMatchObject({
       harness: { kind: "tui", version: "0.146.0" },
-      appliedTransformations: [{ transformationId: "smoke", matchCount: 1 }],
+      transformationExecutions: [
+        { transformationId: "smoke", status: "hit", matchCount: 1 },
+      ],
     });
     expect(captures.events[0]?.payload).toContain("original-smoke");
     expect(captures.events[0]?.effectivePayload).toContain("transformed-smoke");

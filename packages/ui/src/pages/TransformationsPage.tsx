@@ -2,12 +2,24 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
 import { TransformationEditor } from "../features/transformations/TransformationEditor.tsx";
-import { getTransformations, putTransformations } from "../lib/api.ts";
-import type { Transformation, TransformationSet } from "../lib/types.ts";
+import {
+  getTransformations,
+  getTransformationTelemetry,
+  putTransformations,
+} from "../lib/api.ts";
+import type {
+  Transformation,
+  TransformationSet,
+  TransformationTelemetry,
+} from "../lib/types.ts";
 
 export function TransformationsPage() {
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["transformations"], queryFn: getTransformations });
+  const telemetryQuery = useQuery({
+    queryKey: ["transformation-telemetry"],
+    queryFn: getTransformationTelemetry,
+  });
   const mutation = useMutation({
     mutationFn: putTransformations,
     onSuccess: (set) => queryClient.setQueryData(["transformations"], set),
@@ -50,6 +62,9 @@ export function TransformationsPage() {
                 key={rule.id}
                 rule={rule}
                 index={index}
+                telemetry={telemetryQuery.data?.find(
+                  (item) => item.transformationId === rule.id,
+                )}
                 onToggle={() =>
                   replace(updateRule(set, rule.id, { ...rule, enabled: !rule.enabled }))
                 }
@@ -80,11 +95,13 @@ function RuleCard({
   index,
   onToggle,
   onDelete,
+  telemetry,
 }: {
   rule: Transformation;
   index: number;
   onToggle: () => void;
   onDelete: () => void;
+  telemetry?: TransformationTelemetry;
 }) {
   return (
     <article
@@ -127,6 +144,7 @@ function RuleCard({
               <Tag key={value}>project:{value}</Tag>
             ))}
           </div>
+          <RuleTelemetry telemetry={telemetry} />
           {"find" in rule.operation ? <CodePreview>{rule.operation.find}</CodePreview> : null}
           {"pattern" in rule.operation ? (
             <CodePreview>
@@ -136,6 +154,29 @@ function RuleCard({
         </div>
       </div>
     </article>
+  );
+}
+
+function RuleTelemetry({ telemetry }: { telemetry?: TransformationTelemetry }) {
+  if (telemetry === undefined) {
+    return <p className="mt-3 text-[10px] text-muted">Not evaluated in recorded probes</p>;
+  }
+  const total = telemetry.hits + telemetry.misses + telemetry.errors;
+  const hitWidth = `${(telemetry.hits / total) * 100}%`;
+  const missWidth = `${(telemetry.misses / total) * 100}%`;
+  const errorWidth = `${(telemetry.errors / total) * 100}%`;
+  return (
+    <div className="mt-3" title={`Last evaluated ${telemetry.lastRunAt}`}>
+      <div className="flex h-1.5 overflow-hidden rounded-full bg-canvas">
+        <span className="bg-accent" style={{ width: hitWidth }} />
+        <span className="bg-muted" style={{ width: missWidth }} />
+        <span className="bg-danger" style={{ width: errorWidth }} />
+      </div>
+      <p className="mt-1.5 text-[10px] text-muted">
+        {telemetry.hits} hit · {telemetry.misses} miss · {telemetry.errors} error ·{" "}
+        {telemetry.matchCount} matches
+      </p>
+    </div>
   );
 }
 

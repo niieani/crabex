@@ -22,7 +22,6 @@ describe("transformation store", () => {
           scope: {},
           target: { field: "message_text" },
           operation: { type: "replace", find: "hello", replacement: "transformed" },
-          cardinality: { min: 0, max: 1 },
         },
       ],
     };

@@ -22,7 +22,6 @@ export function TransformationEditor({
   const [harness, setHarness] = useState<"all" | HarnessKind>("all");
   const [model, setModel] = useState("");
   const [project, setProject] = useState("");
-  const [required, setRequired] = useState(false);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -40,7 +39,6 @@ export function TransformationEditor({
         ...(selectedPart === undefined ? {} : { path: selectedPart.path }),
       },
       operation: operationValue(operation, find, replacement, flags),
-      cardinality: { min: required ? 1 : 0 },
     });
     setName("");
     setFind("");
@@ -147,14 +145,6 @@ export function TransformationEditor({
               placeholder="Any project"
             />
           </Field>
-          <label className="flex items-center gap-2 text-xs text-muted">
-            <input
-              type="checkbox"
-              checked={required}
-              onChange={(event) => setRequired(event.target.checked)}
-            />
-            Require at least one match
-          </label>
         </div>
       </details>
       <button

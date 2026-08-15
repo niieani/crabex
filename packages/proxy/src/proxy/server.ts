@@ -8,7 +8,7 @@ import type {
 } from "../recording/capture.ts";
 import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
 import { transformResponseCreate, type ResponseCreatePayload } from "../context/transform.ts";
-import type { AppliedTransformation, Transformation } from "../context/transformation.ts";
+import type { Transformation, TransformationExecution } from "../context/transformation.ts";
 import { CloudflareCookieJar } from "./cloudflare-cookie-jar.ts";
 import type { LocalApi } from "../api/local-api.ts";
 
@@ -129,7 +129,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             );
             await data.recorder.record("websocket", "client_to_upstream", message, encoding, {
               effectivePayload: processed.effectivePayload,
-              appliedTransformations: processed.appliedTransformations,
+              transformationExecutions: processed.transformationExecutions,
               harness: data.harness,
               project: data.project,
             });
@@ -176,7 +176,7 @@ async function proxyHttpRequest(
     );
     await recorder.record("http", "client_to_upstream", body, "utf8", {
       effectivePayload: processed.effectivePayload,
-      appliedTransformations: processed.appliedTransformations,
+      transformationExecutions: processed.transformationExecutions,
       harness,
       project,
     });
@@ -313,7 +313,7 @@ class EventRecorder {
     encoding: CaptureEncoding,
     metadata: {
       effectivePayload?: string;
-      appliedTransformations?: AppliedTransformation[];
+      transformationExecutions?: TransformationExecution[];
       harness?: HarnessIdentity;
       project?: string;
     } = {},
@@ -334,9 +334,9 @@ class EventRecorder {
         ...(metadata.effectivePayload === undefined
           ? {}
           : { effectivePayload: metadata.effectivePayload }),
-        ...(metadata.appliedTransformations === undefined
+        ...(metadata.transformationExecutions === undefined
           ? {}
-          : { appliedTransformations: metadata.appliedTransformations }),
+          : { transformationExecutions: metadata.transformationExecutions }),
         ...(metadata.harness === undefined ? {} : { harness: metadata.harness }),
         ...(metadata.project === undefined ? {} : { project: metadata.project }),
       });
@@ -355,7 +355,7 @@ function processClientPayload(
 ): {
   value: string | ArrayBuffer | Uint8Array;
   effectivePayload?: string;
-  appliedTransformations?: AppliedTransformation[];
+  transformationExecutions?: TransformationExecution[];
 } {
   if (encoding !== "utf8" || transformations.length === 0) return { value };
   const original = typeof value === "string" ? value : bufferFrom(value).toString("utf8");
@@ -367,12 +367,12 @@ function processClientPayload(
   }
   if (payload.type !== "response.create") return { value };
   const result = transformResponseCreate(payload, transformations, { harness, project });
-  if (result.applied.length === 0) return { value };
   const effectivePayload = JSON.stringify(result.payload);
+  const changed = effectivePayload !== original;
   return {
-    value: effectivePayload,
-    effectivePayload,
-    appliedTransformations: result.applied,
+    value: changed ? effectivePayload : value,
+    ...(changed ? { effectivePayload } : {}),
+    transformationExecutions: result.executions,
   };
 }
 

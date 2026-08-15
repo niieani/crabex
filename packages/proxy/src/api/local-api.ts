@@ -23,6 +23,9 @@ export function createLocalApi(options: {
         if (url.pathname === `${API_PREFIX}/transformations` && request.method === "GET") {
           return json(options.transformations.get());
         }
+        if (url.pathname === `${API_PREFIX}/transformation-telemetry` && request.method === "GET") {
+          return json({ telemetry: await options.snapshots.transformationTelemetry() });
+        }
         if (url.pathname === `${API_PREFIX}/transformations` && request.method === "PUT") {
           const set = parseTransformationSet(await request.json());
           await options.transformations.replace(set);

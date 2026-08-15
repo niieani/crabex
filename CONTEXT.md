@@ -29,8 +29,12 @@ The union of Context Parts and Variants found in all available Snapshots.
 _Avoid_: Global prompt
 
 **Transformation**:
-An ordered, mechanical operation that deletes a Context Part or replaces text in selected opaque fields.
+An ordered, best-effort mechanical operation that deletes a Context Part or replaces text in selected fields. A Transformation never blocks the proxied request.
 _Avoid_: Semantic rewrite, optimizer
+
+**Transformation Execution**:
+The observed outcome of one eligible Transformation against one request: hit, miss, or error, with its match count.
+_Avoid_: Validation, assertion
 
 **Transformation Scope**:
 The observation conditions and structural fields in which a Transformation is eligible to run.

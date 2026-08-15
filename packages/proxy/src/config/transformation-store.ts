@@ -56,7 +56,6 @@ function validateTransformation(value: unknown): asserts value is Transformation
   const scope = objectValue(transformation?.scope);
   const target = objectValue(transformation?.target);
   const operation = objectValue(transformation?.operation);
-  const cardinality = objectValue(transformation?.cardinality);
   if (
     typeof transformation?.id !== "string" ||
     typeof transformation.name !== "string" ||
@@ -64,10 +63,8 @@ function validateTransformation(value: unknown): asserts value is Transformation
     scope === undefined ||
     target === undefined ||
     operation === undefined ||
-    cardinality === undefined ||
     typeof target.field !== "string" ||
-    typeof operation.type !== "string" ||
-    typeof cardinality.min !== "number"
+    typeof operation.type !== "string"
   ) {
     throw new Error("invalid transformation");
   }

@@ -7,7 +7,6 @@ export interface Transformation {
   scope: TransformationScope;
   target: TransformationTarget;
   operation: TransformationOperation;
-  cardinality: MatchCardinality;
 }
 
 export interface TransformationScope {
@@ -35,14 +34,20 @@ export type TransformationOperation =
       replaceAll: boolean;
     };
 
-export interface MatchCardinality {
-  min: number;
-  max?: number;
-}
-
-export interface AppliedTransformation {
+export interface TransformationExecution {
   transformationId: string;
   matchCount: number;
+  status: "hit" | "miss" | "error";
+  error?: string;
+}
+
+export interface TransformationTelemetry {
+  transformationId: string;
+  hits: number;
+  misses: number;
+  errors: number;
+  matchCount: number;
+  lastRunAt: string;
 }
 
 export interface TransformationSet {

@@ -4,9 +4,8 @@ import { RE2JS } from "re2js";
 
 import type { HarnessIdentity } from "./harness.ts";
 import type {
-  AppliedTransformation,
-  MatchCardinality,
   Transformation,
+  TransformationExecution,
   TransformationOperation,
 } from "./transformation.ts";
 
@@ -24,22 +23,7 @@ export interface ResponseCreatePayload {
 
 export interface TransformationResult<T extends ResponseCreatePayload> {
   payload: T;
-  applied: AppliedTransformation[];
-}
-
-export class TransformationError extends Error {
-  readonly cardinality: MatchCardinality;
-  readonly matchCount: number;
-  readonly transformationId: string;
-
-  constructor(transformationId: string, matchCount: number, cardinality: MatchCardinality) {
-    super(
-      `transformation ${transformationId} matched ${matchCount}; expected ${cardinalityText(cardinality)}`,
-    );
-    this.transformationId = transformationId;
-    this.matchCount = matchCount;
-    this.cardinality = cardinality;
-  }
+  executions: TransformationExecution[];
 }
 
 export function transformResponseCreate<T extends ResponseCreatePayload>(
@@ -47,21 +31,31 @@ export function transformResponseCreate<T extends ResponseCreatePayload>(
   transformations: Transformation[],
   context: TransformationContext,
 ): TransformationResult<T> {
-  if (payload.type !== "response.create") return { payload, applied: [] };
+  if (payload.type !== "response.create") return { payload, executions: [] };
   let transformed = structuredClone(payload);
-  const applied: AppliedTransformation[] = [];
+  const executions: TransformationExecution[] = [];
 
   for (const transformation of transformations) {
     if (!transformation.enabled || !isInScope(transformation, payload, context)) continue;
-    const result = applyTransformation(transformed, transformation);
-    assertCardinality(transformation, result.matchCount);
-    transformed = result.payload;
-    if (result.matchCount > 0) {
-      applied.push({ transformationId: transformation.id, matchCount: result.matchCount });
+    try {
+      const result = applyTransformation(structuredClone(transformed), transformation);
+      transformed = result.payload;
+      executions.push({
+        transformationId: transformation.id,
+        status: result.matchCount > 0 ? "hit" : "miss",
+        matchCount: result.matchCount,
+      });
+    } catch (error) {
+      executions.push({
+        transformationId: transformation.id,
+        status: "error",
+        matchCount: 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
-  return { payload: transformed, applied };
+  return { payload: transformed, executions };
 }
 
 function applyTransformation<T extends ResponseCreatePayload>(
@@ -286,13 +280,6 @@ function isInScope(
   return true;
 }
 
-function assertCardinality(transformation: Transformation, matchCount: number): void {
-  const { min, max } = transformation.cardinality;
-  if (matchCount < min || (max !== undefined && matchCount > max)) {
-    throw new TransformationError(transformation.id, matchCount, transformation.cardinality);
-  }
-}
-
 function nonOverlappingCount(value: string, search: string): number {
   let count = 0;
   let offset = 0;
@@ -317,10 +304,4 @@ function objectAt(values: unknown[], index: number): Record<string, unknown> | u
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function cardinalityText(cardinality: MatchCardinality): string {
-  return cardinality.max === undefined
-    ? `at least ${cardinality.min}`
-    : `${cardinality.min}..${cardinality.max}`;
 }

@@ -1,4 +1,4 @@
-import type { AppliedTransformation } from "../context/transformation.ts";
+import type { TransformationExecution } from "../context/transformation.ts";
 import type { HarnessIdentity } from "../context/harness.ts";
 
 export type CaptureTransport = "http" | "websocket";
@@ -14,7 +14,7 @@ export interface CaptureEvent {
   encoding: CaptureEncoding;
   payload: string;
   effectivePayload?: string;
-  appliedTransformations?: AppliedTransformation[];
+  transformationExecutions?: TransformationExecution[];
   harness?: HarnessIdentity;
   project?: string;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { transformResponseCreate, TransformationError } from "./transform.ts";
+import { transformResponseCreate } from "./transform.ts";
 import type { Transformation } from "./transformation.ts";
 
 const payload = {
@@ -48,7 +48,6 @@ describe("transformResponseCreate", () => {
       rule({
         id: "remove-markers",
         operation: { type: "replace_all", find: "REMOVE ME. ", replacement: "" },
-        cardinality: { min: 1, max: 2 },
       }),
       rule({
         id: "inject-smoke",
@@ -59,7 +58,6 @@ describe("transformResponseCreate", () => {
           flags: "",
           replaceAll: false,
         },
-        cardinality: { min: 1, max: 1 },
       }),
     ];
 
@@ -72,9 +70,9 @@ describe("transformResponseCreate", () => {
     expect(textAt(result.payload, 1)).toBe("Keep this. REMOVE ME.");
     expect(textAt(result.payload, 2)).toBe("Reply with exactly: transformed-ok");
     expect(textAt(payload, 1)).toBe("Keep this. REMOVE ME. REMOVE ME.");
-    expect(result.applied).toEqual([
-      { transformationId: "remove-markers", matchCount: 1 },
-      { transformationId: "inject-smoke", matchCount: 1 },
+    expect(result.executions).toEqual([
+      { transformationId: "remove-markers", status: "hit", matchCount: 1 },
+      { transformationId: "inject-smoke", status: "hit", matchCount: 1 },
     ]);
   });
 
@@ -86,7 +84,6 @@ describe("transformResponseCreate", () => {
           id: "disable-wait",
           target: { field: "tool", toolName: "wait" },
           operation: { type: "delete_part" },
-          cardinality: { min: 1, max: 1 },
         }),
       ],
       { harness: { kind: "tui" } },
@@ -107,7 +104,6 @@ describe("transformResponseCreate", () => {
             find: "Old schema guidance",
             replacement: "Short guidance",
           },
-          cardinality: { min: 1, max: 1 },
         }),
       ],
       { harness: { kind: "tui" } },
@@ -130,24 +126,54 @@ describe("transformResponseCreate", () => {
       { harness: { kind: "tui" } },
     );
 
-    expect(result.applied).toEqual([]);
+    expect(result.executions).toEqual([]);
     expect(result.payload).toEqual(payload);
   });
 
-  it("fails explicitly when match cardinality is unexpected", () => {
-    expect(() =>
-      transformResponseCreate(
-        payload,
-        [
-          rule({
-            id: "required",
-            operation: { type: "replace_all", find: "not present", replacement: "x" },
-            cardinality: { min: 1, max: 1 },
-          }),
-        ],
-        { harness: { kind: "tui" } },
-      ),
-    ).toThrow(new TransformationError("required", 0, { min: 1, max: 1 }));
+  it("passes through a request and records a miss when a rule does not match", () => {
+    const result = transformResponseCreate(
+      payload,
+      [
+        rule({
+          id: "missing",
+          operation: { type: "replace_all", find: "not present", replacement: "x" },
+        }),
+      ],
+      { harness: { kind: "tui" } },
+    );
+
+    expect(result.payload).toEqual(payload);
+    expect(result.executions).toEqual([
+      { transformationId: "missing", status: "miss", matchCount: 0 },
+    ]);
+  });
+
+  it("passes through a request and records an error for an invalid rule", () => {
+    const result = transformResponseCreate(
+      payload,
+      [
+        rule({
+          id: "invalid-regexp",
+          operation: {
+            type: "regex",
+            pattern: "(",
+            replacement: "x",
+            flags: "",
+            replaceAll: true,
+          },
+        }),
+      ],
+      { harness: { kind: "tui" } },
+    );
+
+    expect(result.payload).toEqual(payload);
+    expect(result.executions).toEqual([
+      expect.objectContaining({
+        transformationId: "invalid-regexp",
+        status: "error",
+        matchCount: 0,
+      }),
+    ]);
   });
 });
 
@@ -159,7 +185,6 @@ function rule(overrides: Partial<Transformation>): Transformation {
     scope: {},
     target: { field: "message_text" },
     operation: { type: "replace_all", find: "x", replacement: "y" },
-    cardinality: { min: 0 },
     ...overrides,
   };
 }

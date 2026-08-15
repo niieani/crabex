@@ -59,10 +59,18 @@ export interface Transformation {
         flags: string;
         replaceAll: boolean;
       };
-  cardinality: { min: number; max?: number };
 }
 
 export interface TransformationSet {
   version: 1;
   transformations: Transformation[];
+}
+
+export interface TransformationTelemetry {
+  transformationId: string;
+  hits: number;
+  misses: number;
+  errors: number;
+  matchCount: number;
+  lastRunAt: string;
 }

@@ -2,10 +2,12 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { buildSnapshots, type ContextSnapshot } from "../context/snapshot.ts";
+import type { TransformationTelemetry } from "../context/transformation.ts";
 import type { CaptureEvent } from "./capture.ts";
 
 export interface SnapshotSource {
   list(): Promise<ContextSnapshot[]>;
+  transformationTelemetry(): Promise<TransformationTelemetry[]>;
 }
 
 export class FileCaptureRepository implements SnapshotSource {
@@ -16,6 +18,36 @@ export class FileCaptureRepository implements SnapshotSource {
   }
 
   async list(): Promise<ContextSnapshot[]> {
+    const snapshots = (await this.#eventGroups()).flatMap(buildSnapshots);
+    return snapshots.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+  }
+
+  async transformationTelemetry(): Promise<TransformationTelemetry[]> {
+    const telemetry = new Map<string, TransformationTelemetry>();
+    for (const event of (await this.#eventGroups()).flat()) {
+      for (const execution of event.transformationExecutions ?? []) {
+        const current = telemetry.get(execution.transformationId) ?? {
+          transformationId: execution.transformationId,
+          hits: 0,
+          misses: 0,
+          errors: 0,
+          matchCount: 0,
+          lastRunAt: event.timestamp,
+        };
+        current.hits += execution.status === "hit" ? 1 : 0;
+        current.misses += execution.status === "miss" ? 1 : 0;
+        current.errors += execution.status === "error" ? 1 : 0;
+        current.matchCount += execution.matchCount;
+        if (event.timestamp > current.lastRunAt) current.lastRunAt = event.timestamp;
+        telemetry.set(execution.transformationId, current);
+      }
+    }
+    return [...telemetry.values()].sort((left, right) =>
+      left.transformationId.localeCompare(right.transformationId),
+    );
+  }
+
+  async #eventGroups(): Promise<CaptureEvent[][]> {
     let names: string[];
     try {
       names = (await readdir(this.#directory)).filter((name) => name.endsWith(".ndjson")).sort();
@@ -23,14 +55,9 @@ export class FileCaptureRepository implements SnapshotSource {
       if (isMissingDirectory(error)) return [];
       throw error;
     }
-    const snapshots = (
-      await Promise.all(
-        names.map(async (name) =>
-          buildSnapshots(parseEvents(await readFile(join(this.#directory, name), "utf8"))),
-        ),
-      )
-    ).flat();
-    return snapshots.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+    return Promise.all(
+      names.map(async (name) => parseEvents(await readFile(join(this.#directory, name), "utf8"))),
+    );
   }
 }
 

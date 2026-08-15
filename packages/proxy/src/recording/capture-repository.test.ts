@@ -37,6 +37,50 @@ describe("file capture repository", () => {
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]).toMatchObject({ model: "gpt-5.6-luna", usage: { inputTokens: 12 } });
   });
+
+  it("aggregates hit, miss, and error executions by transformation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
+    const first = event(1, "client_to_upstream", { type: "response.create" });
+    first.transformationExecutions = [
+      { transformationId: "trim", status: "hit", matchCount: 3 },
+      { transformationId: "optional", status: "miss", matchCount: 0 },
+    ];
+    const second = event(2, "client_to_upstream", { type: "response.create" });
+    second.transformationExecutions = [
+      { transformationId: "trim", status: "miss", matchCount: 0 },
+      {
+        transformationId: "optional",
+        status: "error",
+        matchCount: 0,
+        error: "invalid expression",
+      },
+    ];
+    await writeFile(
+      join(directory, "capture.ndjson"),
+      `${JSON.stringify(first)}\n${JSON.stringify(second)}\n`,
+    );
+
+    const telemetry = await new FileCaptureRepository(directory).transformationTelemetry();
+
+    expect(telemetry).toEqual([
+      {
+        transformationId: "optional",
+        hits: 0,
+        misses: 1,
+        errors: 1,
+        matchCount: 0,
+        lastRunAt: second.timestamp,
+      },
+      {
+        transformationId: "trim",
+        hits: 1,
+        misses: 1,
+        errors: 0,
+        matchCount: 3,
+        lastRunAt: second.timestamp,
+      },
+    ]);
+  });
 });
 
 function event(
