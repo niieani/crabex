@@ -153,6 +153,42 @@ describe("transformResponseCreate", () => {
     expect(result.executions[0]).toMatchObject({ status: "hit", matchCount: 1 });
   });
 
+  it("limits a text replacement to one structured tool definition", () => {
+    const result = transformResponseCreate(
+      {
+        type: "response.create",
+        input: [
+          {
+            type: "additional_tools",
+            tools: [
+              {
+                type: "namespace",
+                name: "functions",
+                tools: [
+                  { type: "function", name: "exec", description: "Shared guidance" },
+                  { type: "function", name: "wait", description: "Shared guidance" },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      [
+        rule({
+          scope: { tools: ["tool:functions.exec"] },
+          target: { field: "tool_description" },
+          operation: { type: "replace_all", find: "Shared", replacement: "Scoped" },
+        }),
+      ],
+      { harness: { kind: "tui" } },
+    );
+
+    const serialized = JSON.stringify(result.payload);
+    expect(serialized).toContain('"name":"exec","description":"Scoped guidance"');
+    expect(serialized).toContain('"name":"wait","description":"Shared guidance"');
+    expect(result.executions[0]).toMatchObject({ status: "hit", matchCount: 1 });
+  });
+
   it("passes through a request and records a miss when a rule does not match", () => {
     const result = transformResponseCreate(
       payload,
@@ -287,6 +323,40 @@ describe("transformResponseCreate", () => {
     expect(JSON.parse(encoded).code_mode_tool_names).toEqual({
       apply_patch: { name: "apply_patch", namespace: null },
     });
+  });
+
+  it("deletes a complete code-mode tool group by namespace prefix", () => {
+    const metadata = {
+      code_mode_tool_names: {
+        mcp__codex_apps__sites_list_sites: { name: "sites_list_sites" },
+        mcp__codex_apps__github_get_repo: { name: "github_get_repo" },
+        mcp__node_repl__js: { name: "js" },
+        apply_patch: { name: "apply_patch" },
+      },
+    };
+    const result = transformResponseCreate(
+      {
+        type: "response.create",
+        client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) },
+        input: [],
+      },
+      [
+        rule({
+          target: { field: "tool", identifier: "registry-group:mcp__codex_apps" },
+          operation: { type: "delete_part" },
+        }),
+      ],
+      { harness: { kind: "desktop" } },
+    );
+
+    const encoded = (result.payload.client_metadata as Record<string, string>)[
+      "x-codex-turn-metadata"
+    ];
+    expect(Object.keys(JSON.parse(encoded).code_mode_tool_names)).toEqual([
+      "mcp__node_repl__js",
+      "apply_patch",
+    ]);
+    expect(result.executions[0]).toMatchObject({ status: "hit", matchCount: 2 });
   });
 });
 

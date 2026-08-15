@@ -14,6 +14,7 @@ export interface TransformationScope {
   models?: string[];
   projects?: string[];
   segments?: string[];
+  tools?: string[];
 }
 
 export interface TransformationTarget {

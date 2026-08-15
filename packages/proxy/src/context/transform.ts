@@ -71,6 +71,7 @@ function applyTransformation<T extends ResponseCreatePayload>(
     if (item === undefined) continue;
     const itemPath = `input[${inputIndex}]`;
     if (item.type === "message") {
+      if (transformation.scope.tools !== undefined) continue;
       matchCount += transformMessage(item, itemPath, transformation);
       if (Array.isArray(item.content) && item.content.length === 0) input.splice(inputIndex, 1);
     } else if (item.type === "additional_tools") {
@@ -157,60 +158,63 @@ function transformTools(
       name === undefined ? undefined : namespace === undefined ? name : `${namespace}.${name}`;
     const identifier = qualifiedName === undefined ? undefined : `tool:${qualifiedName}`;
     const serialized = JSON.stringify(tool);
-    if (
-      transformation.target.field === "tool" &&
-      matchesTarget(transformation, "tool", path, serialized, name, identifier)
-    ) {
-      if (transformation.operation.type !== "delete_part") {
-        throw new Error(`tool transformation ${transformation.id} must delete the whole tool`);
-      }
-      tools.splice(index, 1);
-      count += 1;
-      continue;
-    }
-    if (typeof tool.description === "string") {
-      const descriptionPath = `${path}.description`;
-      const identified = transformIdentifiedText(
-        tool.description,
-        transformation,
-        identifier,
-        identifier === undefined ? [] : markdownSections(tool.description, identifier),
-      );
-      if (identified !== undefined) {
-        if (identified.deleted) delete tool.description;
-        else tool.description = identified.value;
-        count += identified.matchCount;
-      } else if (
-        matchesTarget(
-          transformation,
-          "tool_description",
-          descriptionPath,
-          tool.description,
-          name,
-          identifier,
-        )
+    const nestedTools = Array.isArray(tool.tools) ? tool.tools : undefined;
+    if (nestedTools === undefined && isInToolScope(transformation, identifier)) {
+      if (
+        transformation.target.field === "tool" &&
+        matchesTarget(transformation, "tool", path, serialized, name, identifier)
       ) {
-        if (transformation.operation.type === "delete_part") {
-          delete tool.description;
-          count += 1;
-        } else {
-          const changed = transformText(tool.description, transformation.operation);
-          tool.description = changed.value;
-          count += changed.matchCount;
+        if (transformation.operation.type !== "delete_part") {
+          throw new Error(`tool transformation ${transformation.id} must delete the whole tool`);
+        }
+        tools.splice(index, 1);
+        count += 1;
+        continue;
+      }
+      if (typeof tool.description === "string") {
+        const descriptionPath = `${path}.description`;
+        const identified = transformIdentifiedText(
+          tool.description,
+          transformation,
+          identifier,
+          identifier === undefined ? [] : markdownSections(tool.description, identifier),
+        );
+        if (identified !== undefined) {
+          if (identified.deleted) delete tool.description;
+          else tool.description = identified.value;
+          count += identified.matchCount;
+        } else if (
+          matchesTarget(
+            transformation,
+            "tool_description",
+            descriptionPath,
+            tool.description,
+            name,
+            identifier,
+          )
+        ) {
+          if (transformation.operation.type === "delete_part") {
+            delete tool.description;
+            count += 1;
+          } else {
+            const changed = transformText(tool.description, transformation.operation);
+            tool.description = changed.value;
+            count += changed.matchCount;
+          }
         }
       }
+      if (transformation.target.field === "all_text") {
+        count += transformNestedToolText(
+          tool,
+          path,
+          transformation,
+          name,
+          new Set(["description", "tools"]),
+        );
+      }
     }
-    if (transformation.target.field === "all_text") {
-      count += transformNestedToolText(
-        tool,
-        path,
-        transformation,
-        name,
-        new Set(["description", "tools"]),
-      );
-    }
-    if (Array.isArray(tool.tools)) {
-      count += transformTools(tool.tools, `${path}.tools`, transformation, qualifiedName);
+    if (nestedTools !== undefined) {
+      count += transformTools(nestedTools, `${path}.tools`, transformation, qualifiedName);
     }
   }
   return count;
@@ -336,6 +340,18 @@ function transformMetadataTools(
     clientMetadata[metadataKey] = JSON.stringify(metadata);
     return 1;
   }
+  if (identifier?.startsWith("registry-group:") === true) {
+    const prefix = identifier.slice("registry-group:".length);
+    let count = 0;
+    for (const name of Object.keys(registry)) {
+      if (name !== prefix && !name.startsWith(`${prefix}__`)) continue;
+      delete registry[name];
+      count += 1;
+    }
+    if (count === 0) return 0;
+    clientMetadata[metadataKey] = JSON.stringify(metadata);
+    return count;
+  }
   const name = identifier?.startsWith("tool:") ? identifier.slice("tool:".length) : undefined;
   if (name === undefined) return 0;
   if (!(name in registry)) return 0;
@@ -353,6 +369,14 @@ function isInSegmentScope(
     segments === undefined ||
     (segmentIdentifier !== undefined && segments.includes(segmentIdentifier))
   );
+}
+
+function isInToolScope(
+  transformation: Transformation,
+  toolIdentifier: string | undefined,
+): boolean {
+  const tools = transformation.scope.tools;
+  return tools === undefined || (toolIdentifier !== undefined && tools.includes(toolIdentifier));
 }
 
 function transformText(

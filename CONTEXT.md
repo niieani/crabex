@@ -24,6 +24,10 @@ _Avoid_: Semantic topic
 The deduplicated set of code-mode tool names observed across the linked requests of a Snapshot. Names are grouped mechanically by their double-underscore namespace segments.
 _Avoid_: Tool request, MCP session
 
+**Tool Group**:
+A Tool Registry namespace prefix whose members share complete double-underscore-delimited name segments. Disabling a Tool Group disables every current member matching that prefix.
+_Avoid_: Tool category
+
 **Variant**:
 One exact observed value of a Context Part, identified by its content digest and observation conditions.
 _Avoid_: Version
@@ -45,7 +49,7 @@ The observed outcome of one eligible Transformation against one request: hit, mi
 _Avoid_: Validation, assertion
 
 **Transformation Scope**:
-The observation conditions and optional stable Codex segments in which a Transformation is eligible to run. Scope limits where matching occurs; it does not identify the text being changed.
+The observation conditions and optional stable Codex segment or structured tool definition in which a Transformation is eligible to run. Scope limits where matching occurs; it does not identify the text being changed.
 _Avoid_: Filter
 
 **Effective Payload**:

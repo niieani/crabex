@@ -215,6 +215,60 @@ describe("buildSnapshots", () => {
     expect(removed).toMatchObject({ deleted: true, originalText: "# Remove\nb", text: "" });
   });
 
+  it("keeps disabled parts and sections in their original payload positions", () => {
+    const original = {
+      type: "response.create",
+      input: [
+        {
+          type: "additional_tools",
+          tools: [
+            {
+              type: "namespace",
+              name: "functions",
+              tools: [
+                { type: "function", name: "exec", description: "Exec" },
+                { type: "function", name: "wait", description: "Wait" },
+              ],
+            },
+          ],
+        },
+        message("developer", "<plugins_instructions>\n# Remove first\na\n# Keep second\nb"),
+      ],
+    };
+    const effective = {
+      ...original,
+      input: [
+        {
+          type: "additional_tools",
+          tools: [
+            {
+              type: "namespace",
+              name: "functions",
+              tools: [{ type: "function", name: "wait", description: "Wait" }],
+            },
+          ],
+        },
+        message("developer", "<plugins_instructions>\n# Keep second\nb"),
+      ],
+    };
+    const request = event(1, "client_to_upstream", original);
+    request.effectivePayload = JSON.stringify(effective);
+
+    const parts = buildSnapshots([request])[0]!.parts;
+
+    expect(parts.map((part) => part.identifier)).toEqual([
+      "tool:functions.exec",
+      "tool:functions.wait",
+      "segment:plugins",
+    ]);
+    expect(parts[0]).toMatchObject({ deleted: true });
+    expect(parts[2]!.sections?.map((section) => section.identifier)).toEqual([
+      "section:segment:plugins/remove-first",
+      "section:segment:plugins/keep-second",
+    ]);
+    expect(parts[2]!.sections?.[0]).toMatchObject({ deleted: true });
+  });
+
   it("aggregates duplicate code mode tool registries across linked requests", () => {
     const registry = {
       mcp__codex_apps__sites_list_sites: { name: "sites_list_sites" },

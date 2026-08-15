@@ -117,51 +117,58 @@ function snapshotFrom(
 function partsFrom(request: RequestRecord): ContextPart[] {
   const effectiveParts = rawPartsFrom(request, request.payload);
   const originals = rawPartsFrom(request, request.originalPayload);
-  const unmatched = new Set(originals);
-  const merged = effectiveParts.map((part) => {
-    const original = takeMatchingOriginal(part, originals, unmatched);
-    if (original !== undefined) unmatched.delete(original);
-    if (original === undefined) return part;
-    return {
-      ...part,
-      ...(original.text === part.text ? {} : { originalText: original.text }),
-      ...(original.description === part.description
-        ? {}
-        : { originalDescription: original.description }),
-      ...(original.json === part.json ? {} : { originalJson: original.json }),
-      sections: mergeSections(part.sections ?? [], original.sections ?? []),
-    };
+  const unmatched = new Set(effectiveParts);
+  const merged = originals.map((original) => {
+    const effective = takeMatchingPart(original, effectiveParts, unmatched);
+    if (effective === undefined) return deletedPart(original);
+    unmatched.delete(effective);
+    return mergePart(effective, original);
   });
-  for (const original of originals) {
-    if (!unmatched.has(original)) continue;
-    merged.push({
-      ...original,
-      text: "",
-      characters: 0,
-      estimatedTokens: 0,
-      originalText: original.text,
-      deleted: true,
-    });
-  }
+  for (const effective of effectiveParts) if (unmatched.has(effective)) merged.push(effective);
   return merged;
 }
 
-function takeMatchingOriginal(
-  effective: ContextPart,
-  originals: ContextPart[],
+function takeMatchingPart(
+  reference: ContextPart,
+  candidates: ContextPart[],
   unmatched: ReadonlySet<ContextPart>,
 ): ContextPart | undefined {
-  const stable = originals.find(
-    (original) => unmatched.has(original) && stablePartKey(original) === stablePartKey(effective),
+  const stable = candidates.find(
+    (candidate) =>
+      unmatched.has(candidate) && stablePartKey(candidate) === stablePartKey(reference),
   );
   if (stable !== undefined) return stable;
-  return originals.find(
-    (original) =>
-      unmatched.has(original) &&
-      original.kind === effective.kind &&
-      original.role === effective.role &&
-      original.name === effective.name,
+  return candidates.find(
+    (candidate) =>
+      unmatched.has(candidate) &&
+      candidate.kind === reference.kind &&
+      candidate.role === reference.role &&
+      candidate.name === reference.name,
   );
+}
+
+function mergePart(effective: ContextPart, original: ContextPart): ContextPart {
+  return {
+    ...effective,
+    path: original.path,
+    ...(original.text === effective.text ? {} : { originalText: original.text }),
+    ...(original.description === effective.description
+      ? {}
+      : { originalDescription: original.description }),
+    ...(original.json === effective.json ? {} : { originalJson: original.json }),
+    sections: mergeSections(effective.sections ?? [], original.sections ?? []),
+  };
+}
+
+function deletedPart(original: ContextPart): ContextPart {
+  return {
+    ...original,
+    text: "",
+    characters: 0,
+    estimatedTokens: 0,
+    originalText: original.text,
+    deleted: true,
+  };
 }
 
 function stablePartKey(part: ContextPart): string {
@@ -316,18 +323,18 @@ function sectionsValue(sections: ContentSection[]): ContextSection[] {
 }
 
 function mergeSections(effective: ContextSection[], original: ContextSection[]): ContextSection[] {
-  const unmatched = new Map(original.map((section) => [section.identifier, section]));
-  const merged = effective.map((section) => {
-    const previous = unmatched.get(section.identifier);
-    unmatched.delete(section.identifier);
-    if (previous === undefined) return section;
+  const unmatched = new Map(effective.map((section) => [section.identifier, section]));
+  const merged = original.map((previous) => {
+    const section = unmatched.get(previous.identifier);
+    unmatched.delete(previous.identifier);
+    if (section === undefined) return deletedSection(previous);
     return {
       ...section,
       ...(previous.text === section.text ? {} : { originalText: previous.text }),
       children: mergeSections(section.children, previous.children),
     };
   });
-  for (const section of unmatched.values()) merged.push(deletedSection(section));
+  for (const section of unmatched.values()) merged.push(section);
   return merged;
 }
 
