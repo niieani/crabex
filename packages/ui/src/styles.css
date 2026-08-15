@@ -1,1 +1,64 @@
 @import "tailwindcss";
+
+@theme {
+  --color-canvas: #0d0f12;
+  --color-panel: #13161a;
+  --color-panel-raised: #1a1e23;
+  --color-line: #292e35;
+  --color-ink: #f2f1ed;
+  --color-content: #d3d1ca;
+  --color-muted: #828891;
+  --color-accent: #6ee7b7;
+  --color-accent-bright: #8df3ca;
+  --color-accent-dim: #16382f;
+  --color-violet: #c4b5fd;
+  --color-violet-dim: #2a2344;
+  --color-danger: #fda4af;
+  --color-danger-dim: #3b1f27;
+  --font-sans: "Inter", "SF Pro Text", system-ui, sans-serif;
+  --font-mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", monospace;
+}
+
+@layer base {
+  * {
+    scrollbar-color: var(--color-line) transparent;
+  }
+
+  body {
+    margin: 0;
+    min-width: 20rem;
+    background: var(--color-canvas);
+  }
+
+  button,
+  select,
+  input,
+  textarea {
+    font: inherit;
+  }
+}
+
+@utility section-label {
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+@utility input {
+  width: 100%;
+  border: 1px solid var(--color-line);
+  border-radius: 0.5rem;
+  background: var(--color-canvas);
+  padding: 0.55rem 0.65rem;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  color: var(--color-ink);
+  outline: none;
+
+  &:focus {
+    border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+}
