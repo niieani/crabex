@@ -1,11 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { CaptureEvent } from "../recording/capture.ts";
-import {
-  classifyMessage,
-  markdownSections,
-  type ContentSection,
-} from "./classification.ts";
+import { classifyMessage, markdownSections, type ContentSection } from "./classification.ts";
 import type { HarnessIdentity } from "./harness.ts";
 
 export interface ContextSection {
@@ -116,17 +112,17 @@ function snapshotFrom(
 
 function partsFrom(request: RequestRecord): ContextPart[] {
   const effectiveParts = rawPartsFrom(request, request.payload);
-  const originalByPath = new Map(
-    rawPartsFrom(request, request.originalPayload).map((part) => [part.path, part]),
-  );
+  const originals = rawPartsFrom(request, request.originalPayload);
+  const unmatched = new Set(originals);
   const merged = effectiveParts.map((part) => {
-    const original = originalByPath.get(part.path);
-    originalByPath.delete(part.path);
+    const original = takeMatchingOriginal(part, originals, unmatched);
+    if (original !== undefined) unmatched.delete(original);
     return original === undefined || original.text === part.text
       ? part
       : { ...part, originalText: original.text };
   });
-  for (const original of originalByPath.values()) {
+  for (const original of originals) {
+    if (!unmatched.has(original)) continue;
     merged.push({
       ...original,
       text: "",
@@ -137,6 +133,30 @@ function partsFrom(request: RequestRecord): ContextPart[] {
     });
   }
   return merged;
+}
+
+function takeMatchingOriginal(
+  effective: ContextPart,
+  originals: ContextPart[],
+  unmatched: ReadonlySet<ContextPart>,
+): ContextPart | undefined {
+  const stable = originals.find(
+    (original) => unmatched.has(original) && stablePartKey(original) === stablePartKey(effective),
+  );
+  if (stable !== undefined) return stable;
+  return originals.find(
+    (original) =>
+      unmatched.has(original) &&
+      original.kind === effective.kind &&
+      original.role === effective.role &&
+      original.name === effective.name,
+  );
+}
+
+function stablePartKey(part: ContextPart): string {
+  return part.identifier === undefined
+    ? `content:${part.kind}:${part.role ?? ""}:${part.digest}`
+    : `identifier:${part.identifier}`;
 }
 
 function rawPartsFrom(request: RequestRecord, payload: Record<string, unknown>): ContextPart[] {

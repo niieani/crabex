@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { ContextSnapshot } from "../../lib/types.ts";
 import { ContextInspector } from "./ContextInspector.tsx";
+
+vi.mock("./ContextDiff.tsx", () => ({
+  ContextDiff: ({ effective }: { effective: string }) => (
+    <pre data-testid="context-diff">{effective}</pre>
+  ),
+}));
 
 afterEach(cleanup);
 
@@ -27,16 +33,16 @@ const snapshot: ContextSnapshot = {
 describe("ContextInspector", () => {
   it("puts captured content front and center and can sort by size", async () => {
     const user = userEvent.setup();
-    render(<ContextInspector snapshot={snapshot} />);
+    const { container } = render(<ContextInspector snapshot={snapshot} />);
 
     expect(screen.getByRole("heading", { name: "user message" })).toBeTruthy();
-    expect(screen.getByText("hi")).toBeTruthy();
+    await waitFor(() => expect(diffText(container)).toContain("hi"));
 
     await user.click(screen.getByRole("button", { name: "Largest first" }));
     await user.click(screen.getByRole("button", { name: /functions\.exec/ }));
 
     expect(screen.getByRole("heading", { name: "functions.exec" })).toBeTruthy();
-    expect(screen.getByText("large tool definition")).toBeTruthy();
+    await waitFor(() => expect(diffText(container)).toContain("large tool definition"));
   });
 
   it("shows function description and abbreviated JSON in separate tabs", async () => {
@@ -51,18 +57,13 @@ describe("ContextInspector", () => {
         },
       ],
     };
-    render(<ContextInspector snapshot={functionSnapshot} />);
+    const { container } = render(<ContextInspector snapshot={functionSnapshot} />);
 
-    expect(
-      screen.getByText(
-        (_content, element) =>
-          element?.tagName === "PRE" && element.textContent === "Wait for output.\nLong detail.",
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByText(/Wait for output.…/)).toBeNull();
+    await waitFor(() => expect(diffText(container)).toContain("Wait for output."));
+    expect(diffText(container)).not.toContain("Wait for output.…");
 
     await user.click(screen.getByRole("button", { name: "JSON" }));
-    expect(screen.getByText(/Wait for output.…/)).toBeTruthy();
+    await waitFor(() => expect(diffText(container)).toContain("Wait for output.…"));
   });
 
   it("toggles classified parts and nested skills by identifier", async () => {
@@ -99,9 +100,7 @@ describe("ContextInspector", () => {
         },
       ],
     };
-    render(
-      <ContextInspector snapshot={classified} onToggleIdentifier={onToggleIdentifier} />,
-    );
+    render(<ContextInspector snapshot={classified} onToggleIdentifier={onToggleIdentifier} />);
 
     await user.click(screen.getByRole("switch", { name: "Disable Skills instructions" }));
     expect(onToggleIdentifier).toHaveBeenCalledWith("segment:skills", true);
@@ -109,6 +108,17 @@ describe("ContextInspector", () => {
     await user.click(screen.getByRole("button", { name: "Expand Skills" }));
     await user.click(screen.getByRole("switch", { name: "Disable imagegen" }));
     expect(onToggleIdentifier).toHaveBeenCalledWith("skill:imagegen", true);
+  });
+
+  it("searches Markdown across context parts", async () => {
+    const user = userEvent.setup();
+    render(<ContextInspector snapshot={snapshot} />);
+
+    await user.type(screen.getByRole("searchbox", { name: "Search markdown" }), "hi");
+
+    expect(screen.getByText("1 matching parts")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /functions\.exec/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /user message/ })).toBeTruthy();
   });
 });
 
@@ -131,4 +141,8 @@ function part(
     phase,
     kind,
   };
+}
+
+function diffText(container: HTMLElement): string {
+  return container.querySelector('[data-testid="context-diff"]')?.textContent ?? "";
 }

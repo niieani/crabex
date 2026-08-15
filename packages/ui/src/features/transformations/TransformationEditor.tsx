@@ -5,9 +5,11 @@ import type { ContextPart, HarnessKind, Transformation } from "../../lib/types.t
 export function TransformationEditor({
   onCreate,
   selectedPart,
+  initialFind = "",
 }: {
   onCreate: (transformation: Transformation) => void;
   selectedPart?: ContextPart;
+  initialFind?: string;
 }) {
   const [name, setName] = useState("");
   const [field, setField] = useState<Transformation["target"]["field"]>(
@@ -16,7 +18,7 @@ export function TransformationEditor({
   const [operation, setOperation] = useState<"replace" | "replace_all" | "regex" | "delete_part">(
     "replace_all",
   );
-  const [find, setFind] = useState("");
+  const [find, setFind] = useState(initialFind);
   const [replacement, setReplacement] = useState("");
   const [flags, setFlags] = useState("");
   const [harness, setHarness] = useState<"all" | HarnessKind>("all");

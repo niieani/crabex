@@ -2,7 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { ContextInspector, EmptyState } from "../features/catalog/ContextInspector.tsx";
-import { getSnapshots, getTransformations, putTransformations } from "../lib/api.ts";
+import {
+  getSnapshots,
+  getTransformations,
+  previewSnapshot,
+  putTransformations,
+} from "../lib/api.ts";
 import type { Transformation } from "../lib/types.ts";
 
 export function CatalogPage() {
@@ -22,6 +27,12 @@ export function CatalogPage() {
     if (selectedId === undefined && snapshots[0] !== undefined) setSelectedId(snapshots[0].id);
   }, [selectedId, snapshots]);
   const snapshot = snapshots.find((value) => value.id === selectedId) ?? snapshots[0];
+  const previewQuery = useQuery({
+    queryKey: ["preview", snapshot?.id, transformationsQuery.data?.transformations],
+    queryFn: () => previewSnapshot(snapshot!.id, transformationsQuery.data!.transformations),
+    enabled: snapshot !== undefined && transformationsQuery.data !== undefined,
+  });
+  const displayedSnapshot = previewQuery.data ?? snapshot;
   const mutation = useMutation({
     mutationFn: putTransformations,
     onSuccess: (set) => queryClient.setQueryData(["transformations"], set),
@@ -131,14 +142,14 @@ export function CatalogPage() {
         />
       ) : snapshotsQuery.isError ? (
         <EmptyState title="Proxy API unavailable" detail={snapshotsQuery.error.message} />
-      ) : snapshot === undefined ? (
+      ) : displayedSnapshot === undefined ? (
         <EmptyState
           title="No Probes captured"
           detail="Run a trivial Codex prompt through the proxy, then return here."
         />
       ) : (
         <ContextInspector
-          snapshot={snapshot}
+          snapshot={displayedSnapshot}
           onCreateTransformation={createTransformation}
           disabledIdentifiers={disabledIdentifiers}
           onToggleIdentifier={toggleIdentifier}

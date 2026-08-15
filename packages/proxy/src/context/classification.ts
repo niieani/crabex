@@ -67,7 +67,10 @@ const MESSAGE_CLASSIFICATIONS: Array<{
   },
 ];
 
-export function classifyMessage(role: string | undefined, text: string): ContentClassification | undefined {
+export function classifyMessage(
+  role: string | undefined,
+  text: string,
+): ContentClassification | undefined {
   const found = MESSAGE_CLASSIFICATIONS.find(
     (classification) => classification.role === role && text.startsWith(classification.prefix),
   );
@@ -148,7 +151,9 @@ function nextBoundary(
   level: number,
   fallback: number,
 ): number {
-  return headings.slice(index + 1).find((heading) => heading.level <= level)?.line.start ?? fallback;
+  return (
+    headings.slice(index + 1).find((heading) => heading.level <= level)?.line.start ?? fallback
+  );
 }
 
 function stripHeadingMarkup(value: string): string {

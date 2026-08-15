@@ -167,6 +167,10 @@ The global catalog supports comparison across captured conditions:
 
 Diagnostics expose the original NDJSON event stream and raw JSON, but they are secondary navigation.
 
+The inspector replays the current Transformation Set against the selected immutable historical Probe. The center panel renders a stacked, unified `@pierre/diffs` comparison without changing the capture. Selecting text exposes a **Transform** action that seeds the literal transformation editor. Catalog search scans all message Markdown and function descriptions, filters the composition list, and highlights every occurrence in the editor with Pierre markers.
+
+Function entries expose two tabs: **Description** shows the complete description; **JSON** shows the structured definition with its description collapsed to the first line plus an ellipsis. Stable segments, Markdown sections, individual declared skills, structured functions, generated function sections, and observed MCP registry entries expose direct enable/disable switches backed by identifier-targeted `delete_part` rules.
+
 ## Implementation plan
 
 1. **Domain and capture metadata**
@@ -187,5 +191,5 @@ Diagnostics expose the original NDJSON event stream and raw JSON, but they are s
 5. **Verification**
    - Unit-test classification, reconstruction, selectors, mutation operations, rule layering, drift, and persistence.
    - Integration-test HTTP and WebSocket rewriting while proving OAuth headers remain passthrough-only.
-   - Drive the local interface in Chrome at desktop and narrow widths.
+   - Drive the local interface in the in-app Browser at desktop and narrow widths.
    - Run a real OAuth Codex Probe through the proxy with a unique injected instruction and verify both the model response and capture audit.

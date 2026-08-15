@@ -2,11 +2,16 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { buildSnapshots, type ContextSnapshot } from "../context/snapshot.ts";
-import type { TransformationTelemetry } from "../context/transformation.ts";
+import { transformResponseCreate, type ResponseCreatePayload } from "../context/transform.ts";
+import type { Transformation, TransformationTelemetry } from "../context/transformation.ts";
 import type { CaptureEvent } from "./capture.ts";
 
 export interface SnapshotSource {
   list(): Promise<ContextSnapshot[]>;
+  preview(
+    snapshotId: string,
+    transformations: Transformation[],
+  ): Promise<ContextSnapshot | undefined>;
   transformationTelemetry(): Promise<TransformationTelemetry[]>;
 }
 
@@ -47,6 +52,18 @@ export class FileCaptureRepository implements SnapshotSource {
     );
   }
 
+  async preview(
+    snapshotId: string,
+    transformations: Transformation[],
+  ): Promise<ContextSnapshot | undefined> {
+    for (const events of await this.#eventGroups()) {
+      const previewEvents = events.map((event) => previewEvent(event, transformations));
+      const snapshot = buildSnapshots(previewEvents).find((item) => item.id === snapshotId);
+      if (snapshot !== undefined) return snapshot;
+    }
+    return undefined;
+  }
+
   async #eventGroups(): Promise<CaptureEvent[][]> {
     let names: string[];
     try {
@@ -59,6 +76,28 @@ export class FileCaptureRepository implements SnapshotSource {
       names.map(async (name) => parseEvents(await readFile(join(this.#directory, name), "utf8"))),
     );
   }
+}
+
+function previewEvent(event: CaptureEvent, transformations: Transformation[]): CaptureEvent {
+  if (event.direction !== "client_to_upstream" || event.encoding !== "utf8") return event;
+  let payload: ResponseCreatePayload;
+  try {
+    payload = JSON.parse(event.payload) as ResponseCreatePayload;
+  } catch {
+    return event;
+  }
+  if (payload.type !== "response.create") return event;
+  const result = transformResponseCreate(payload, transformations, {
+    harness: event.harness ?? { kind: "unknown" },
+    project: event.project,
+  });
+  const effectivePayload = JSON.stringify(result.payload);
+  const preview = structuredClone(event);
+  delete preview.effectivePayload;
+  delete preview.transformationExecutions;
+  if (effectivePayload !== event.payload) preview.effectivePayload = effectivePayload;
+  preview.transformationExecutions = result.executions;
+  return preview;
 }
 
 function parseEvents(content: string): CaptureEvent[] {

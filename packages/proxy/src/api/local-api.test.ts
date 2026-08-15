@@ -21,6 +21,11 @@ describe("local context API", () => {
     const api = createLocalApi({
       snapshots: {
         list: async () => snapshots,
+        preview: async (id, transformations) => ({
+          ...snapshots[0]!,
+          id,
+          parts: transformations.length === 0 ? [] : snapshots[0]!.parts,
+        }),
         transformationTelemetry: async () => [
           {
             transformationId: "rule-1",
@@ -75,6 +80,16 @@ describe("local context API", () => {
         },
       ],
     };
+    const preview = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ snapshotId: "session:2", transformations: next.transformations }),
+      }),
+    );
+    expect(preview?.status).toBe(200);
+    expect(await preview?.json()).toMatchObject({ snapshot: { id: "session:2" } });
+
     const update = await api.handle(
       new Request("http://localhost/__agent-context-trimmer/api/transformations", {
         method: "PUT",
@@ -88,7 +103,11 @@ describe("local context API", () => {
 
   it("returns undefined outside the reserved API surface", async () => {
     const api = createLocalApi({
-      snapshots: { list: async () => [], transformationTelemetry: async () => [] },
+      snapshots: {
+        list: async () => [],
+        preview: async () => undefined,
+        transformationTelemetry: async () => [],
+      },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
         replace: async () => {},

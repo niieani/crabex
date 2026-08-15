@@ -161,9 +161,7 @@ describe("subscription reverse proxy", () => {
 
     expect(captures.events[0]).toMatchObject({
       harness: { kind: "tui", version: "0.146.0" },
-      transformationExecutions: [
-        { transformationId: "smoke", status: "hit", matchCount: 1 },
-      ],
+      transformationExecutions: [{ transformationId: "smoke", status: "hit", matchCount: 1 }],
     });
     expect(captures.events[0]?.payload).toContain("original-smoke");
     expect(captures.events[0]?.effectivePayload).toContain("transformed-smoke");

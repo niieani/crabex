@@ -319,7 +319,8 @@ function transformMetadataTools(
   if (name === undefined) return 0;
   const clientMetadata = objectValue(payload.client_metadata);
   const metadataKey = "x-codex-turn-metadata";
-  const encoded = clientMetadata?.[metadataKey];
+  if (clientMetadata === undefined) return 0;
+  const encoded = clientMetadata[metadataKey];
   if (typeof encoded !== "string") return 0;
   let metadata: Record<string, unknown>;
   try {

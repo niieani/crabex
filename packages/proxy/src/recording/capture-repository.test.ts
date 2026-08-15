@@ -6,6 +6,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { CaptureEvent } from "./capture.ts";
 import { FileCaptureRepository } from "./capture-repository.ts";
+import type { Transformation } from "../context/transformation.ts";
 
 describe("file capture repository", () => {
   it("builds snapshots across capture files and tolerates an unfinished trailing line", async () => {
@@ -81,7 +82,82 @@ describe("file capture repository", () => {
       },
     ]);
   });
+
+  it("previews current transformations against an immutable historical snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
+    const events = [
+      event(1, "client_to_upstream", {
+        type: "response.create",
+        model: "gpt-5.6-luna",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "before" }],
+          },
+        ],
+      }),
+    ];
+    await writeFile(join(directory, "capture.ndjson"), `${JSON.stringify(events[0])}\n`);
+    const transformations: Transformation[] = [
+      {
+        id: "rewrite",
+        name: "Rewrite",
+        enabled: true,
+        scope: {},
+        target: { field: "message_text" },
+        operation: { type: "replace_all", find: "before", replacement: "after" },
+      },
+    ];
+
+    const preview = await new FileCaptureRepository(directory).preview(
+      "session:1",
+      transformations,
+    );
+
+    expect(preview?.parts[0]).toMatchObject({ text: "after", originalText: "before" });
+    expect(JSON.parse(events[0]!.payload)).toMatchObject({
+      input: [{ content: [{ text: "before" }] }],
+    });
+  });
+
+  it("keeps later messages aligned when a classified segment is deleted", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
+    const captured = event(1, "client_to_upstream", {
+      type: "response.create",
+      input: [message("developer", "You are Codex, a coding agent."), message("user", "hi")],
+    });
+    await writeFile(join(directory, "capture.ndjson"), `${JSON.stringify(captured)}\n`);
+
+    const preview = await new FileCaptureRepository(directory).preview("session:1", [
+      {
+        id: "disable-base",
+        name: "Disable Codex base",
+        enabled: true,
+        scope: {},
+        target: { field: "message_text", identifier: "segment:codex_base" },
+        operation: { type: "delete_part" },
+      },
+    ]);
+
+    expect(preview?.parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identifier: "segment:codex_base",
+          originalText: "You are Codex, a coding agent.",
+          text: "",
+          deleted: true,
+        }),
+        expect.objectContaining({ text: "hi" }),
+      ]),
+    );
+    expect(preview?.parts.find((part) => part.text === "hi")).not.toHaveProperty("originalText");
+  });
 });
+
+function message(role: string, text: string) {
+  return { type: "message", role, content: [{ type: "input_text", text }] };
+}
 
 function event(
   sequence: number,

@@ -26,6 +26,17 @@ export function createLocalApi(options: {
         if (url.pathname === `${API_PREFIX}/transformation-telemetry` && request.method === "GET") {
           return json({ telemetry: await options.snapshots.transformationTelemetry() });
         }
+        if (url.pathname === `${API_PREFIX}/preview` && request.method === "POST") {
+          const body = (await request.json()) as Record<string, unknown>;
+          if (typeof body.snapshotId !== "string" || !Array.isArray(body.transformations)) {
+            throw new Error("invalid preview request");
+          }
+          const set = parseTransformationSet({ version: 1, transformations: body.transformations });
+          const snapshot = await options.snapshots.preview(body.snapshotId, set.transformations);
+          return snapshot === undefined
+            ? json({ error: "snapshot not found" }, 404)
+            : json({ snapshot });
+        }
         if (url.pathname === `${API_PREFIX}/transformations` && request.method === "PUT") {
           const set = parseTransformationSet(await request.json());
           await options.transformations.replace(set);

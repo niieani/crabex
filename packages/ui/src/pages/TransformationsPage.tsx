@@ -2,16 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
 import { TransformationEditor } from "../features/transformations/TransformationEditor.tsx";
-import {
-  getTransformations,
-  getTransformationTelemetry,
-  putTransformations,
-} from "../lib/api.ts";
-import type {
-  Transformation,
-  TransformationSet,
-  TransformationTelemetry,
-} from "../lib/types.ts";
+import { getTransformations, getTransformationTelemetry, putTransformations } from "../lib/api.ts";
+import type { Transformation, TransformationSet, TransformationTelemetry } from "../lib/types.ts";
 
 export function TransformationsPage() {
   const queryClient = useQueryClient();
@@ -62,9 +54,7 @@ export function TransformationsPage() {
                 key={rule.id}
                 rule={rule}
                 index={index}
-                telemetry={telemetryQuery.data?.find(
-                  (item) => item.transformationId === rule.id,
-                )}
+                telemetry={telemetryQuery.data?.find((item) => item.transformationId === rule.id)}
                 onToggle={() =>
                   replace(updateRule(set, rule.id, { ...rule, enabled: !rule.enabled }))
                 }

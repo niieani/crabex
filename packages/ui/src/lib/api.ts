@@ -1,8 +1,4 @@
-import type {
-  ContextSnapshot,
-  TransformationSet,
-  TransformationTelemetry,
-} from "./types.ts";
+import type { ContextSnapshot, TransformationSet, TransformationTelemetry } from "./types.ts";
 
 const API = "/__agent-context-trimmer/api";
 
@@ -28,6 +24,18 @@ export async function putTransformations(set: TransformationSet): Promise<Transf
 export async function getTransformationTelemetry(): Promise<TransformationTelemetry[]> {
   const response = await request(`${API}/transformation-telemetry`);
   return ((await response.json()) as { telemetry: TransformationTelemetry[] }).telemetry;
+}
+
+export async function previewSnapshot(
+  snapshotId: string,
+  transformations: TransformationSet["transformations"],
+): Promise<ContextSnapshot> {
+  const response = await request(`${API}/preview`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ snapshotId, transformations }),
+  });
+  return ((await response.json()) as { snapshot: ContextSnapshot }).snapshot;
 }
 
 async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {

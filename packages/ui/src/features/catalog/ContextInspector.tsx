@@ -7,6 +7,7 @@ import type {
   Transformation,
 } from "../../lib/types.ts";
 import { TransformationEditor } from "../transformations/TransformationEditor.tsx";
+import { ContextDiff } from "./ContextDiff.tsx";
 
 export function ContextInspector({
   snapshot,
@@ -22,6 +23,8 @@ export function ContextInspector({
   const [sort, setSort] = useState<"payload" | "size">("payload");
   const [view, setView] = useState<"original" | "effective">("effective");
   const [toolView, setToolView] = useState<"description" | "json">("description");
+  const [search, setSearch] = useState("");
+  const [selection, setSelection] = useState("");
   const ordered = useMemo(
     () =>
       sort === "size"
@@ -29,6 +32,11 @@ export function ContextInspector({
         : snapshot.parts,
     [snapshot.parts, sort],
   );
+  const visible = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase();
+    if (needle === "") return ordered;
+    return ordered.filter((part) => searchableText(part).toLocaleLowerCase().includes(needle));
+  }, [ordered, search]);
   const [selectedId, setSelectedId] = useState(snapshot.parts[0]?.id);
   const selected = snapshot.parts.find((part) => part.id === selectedId) ?? snapshot.parts[0];
   const totalCharacters = snapshot.parts.reduce((total, part) => total + part.characters, 0);
@@ -65,8 +73,21 @@ export function ContextInspector({
             </button>
           </div>
         </div>
+        <div className="border-b border-line p-2">
+          <input
+            type="search"
+            aria-label="Search markdown"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className="input"
+            placeholder="Search all Markdown…"
+          />
+          {search.trim() === "" ? null : (
+            <p className="mt-1 px-1 text-[10px] text-muted">{visible.length} matching parts</p>
+          )}
+        </div>
         <div className="max-h-[calc(100vh-13rem)] overflow-y-auto p-2">
-          {ordered.map((part) => (
+          {visible.map((part) => (
             <PartButton
               key={part.id}
               part={part}
@@ -141,9 +162,16 @@ export function ContextInspector({
           </div>
         )}
         <div className="h-[calc(100vh-15.5rem)] overflow-auto p-6">
-          <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-content">
-            {selectedContent(selected, view, toolView)}
-          </pre>
+          <ContextDiff
+            key={`${selected.id}:${view}:${toolView}`}
+            original={diffOriginal(selected, view, toolView)}
+            effective={selectedContent(selected, view, toolView)}
+            filename={
+              selected.kind === "tool" && toolView === "json" ? "context.json" : "context.md"
+            }
+            search={search}
+            onTransformSelection={setSelection}
+          />
         </div>
         <div className="flex items-center justify-between border-t border-line px-6 py-2 font-mono text-[10px] text-muted">
           <span>sha256 {selected.digest.slice(0, 16)}…</span>
@@ -157,8 +185,9 @@ export function ContextInspector({
           Mechanical matching only. The original capture remains immutable.
         </p>
         <TransformationEditor
-          key={selected.id}
+          key={`${selected.id}:${selection}`}
           selectedPart={selected}
+          initialFind={selection}
           onCreate={onCreateTransformation ?? (() => {})}
         />
       </aside>
@@ -192,22 +221,22 @@ function PartButton({
     >
       <div className="flex items-start gap-1 px-2 py-2">
         <button type="button" onClick={onClick} className="min-w-0 flex-1 px-1 text-left">
-      <div className="flex items-center justify-between gap-3">
-        <span className="truncate text-xs font-medium">{part.name}</span>
-        <span className="shrink-0 font-mono text-[10px] text-muted">
-          {formatCompact(part.characters)} ch
-        </span>
-      </div>
-      <div className="mt-2 h-1 overflow-hidden rounded-full bg-line">
-        <div
-          className="h-full rounded-full bg-accent"
-          style={{ width: `${Math.max(percent, 1)}%` }}
-        />
-      </div>
-      <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted">
-        <span>{part.phase}</span>
-        <span>~{formatCompact(part.estimatedTokens)} tok</span>
-      </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="truncate text-xs font-medium">{part.name}</span>
+            <span className="shrink-0 font-mono text-[10px] text-muted">
+              {formatCompact(part.characters)} ch
+            </span>
+          </div>
+          <div className="mt-2 h-1 overflow-hidden rounded-full bg-line">
+            <div
+              className="h-full rounded-full bg-accent"
+              style={{ width: `${Math.max(percent, 1)}%` }}
+            />
+          </div>
+          <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted">
+            <span>{part.phase}</span>
+            <span>~{formatCompact(part.estimatedTokens)} tok</span>
+          </div>
         </button>
         {part.identifier === undefined ? null : (
           <IdentifierToggle
@@ -349,6 +378,19 @@ function selectedContent(
 ): string {
   if (part.description === undefined) return selectedText(part, view);
   return toolView === "description" ? part.description : (part.json ?? part.text);
+}
+
+function diffOriginal(
+  part: ContextPart,
+  view: "original" | "effective",
+  toolView: "description" | "json",
+): string | undefined {
+  if (view === "original" || toolView === "json") return undefined;
+  return part.originalText;
+}
+
+function searchableText(part: ContextPart): string {
+  return part.kind === "message" ? part.text : (part.description ?? "");
 }
 
 function phaseBadge(phase: ContextPart["phase"]): string {
