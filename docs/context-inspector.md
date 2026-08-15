@@ -171,6 +171,10 @@ The inspector replays the current Transformation Set against the selected immuta
 
 Function entries expose two tabs: **Description** shows the complete description; **JSON** shows the structured definition with its description collapsed to the first line plus an ellipsis. Stable segments, Markdown sections, individual declared skills, structured functions, generated function sections, and observed MCP registry entries expose direct enable/disable switches backed by identifier-targeted `delete_part` rules.
 
+Disabled parts and sections remain in the composition tree as inactive entries so their switches can re-enable them. Expansion state follows stable structural identifiers rather than content digests, so preview refreshes do not collapse the tree. Code-mode tool metadata is shown once per Snapshot as a deduplicated **Code mode tools** registry; double-underscore name segments form mechanical namespace groups such as `mcp → codex_apps → sites_list_sites`.
+
+Text replacements may include a stable Codex segment in their Transformation Scope. This constrains matching to that segment while leaving the selected text or field as the target. Description and JSON previews maintain independent original/effective pairs.
+
 ## Implementation plan
 
 1. **Domain and capture metadata**

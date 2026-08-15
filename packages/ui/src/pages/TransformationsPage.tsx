@@ -133,6 +133,9 @@ function RuleCard({
             {rule.scope.projects?.map((value) => (
               <Tag key={value}>project:{value}</Tag>
             ))}
+            {rule.scope.segments?.map((value) => (
+              <Tag key={value}>{value}</Tag>
+            ))}
           </div>
           <RuleTelemetry telemetry={telemetry} />
           {"find" in rule.operation ? <CodePreview>{rule.operation.find}</CodePreview> : null}
@@ -176,7 +179,7 @@ function Tag({ children }: { children: React.ReactNode }) {
 
 function CodePreview({ children }: { children: React.ReactNode }) {
   return (
-    <pre className="mt-3 truncate rounded-md bg-canvas px-3 py-2 font-mono text-[10px] text-content">
+    <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-canvas px-3 py-2 font-mono text-[10px] text-content">
       {children}
     </pre>
   );

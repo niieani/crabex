@@ -37,8 +37,11 @@ export function ContextInspector({
     if (needle === "") return ordered;
     return ordered.filter((part) => searchableText(part).toLocaleLowerCase().includes(needle));
   }, [ordered, search]);
-  const [selectedId, setSelectedId] = useState(snapshot.parts[0]?.id);
-  const selected = snapshot.parts.find((part) => part.id === selectedId) ?? snapshot.parts[0];
+  const [selectedKey, setSelectedKey] = useState(
+    snapshot.parts[0] === undefined ? undefined : partKey(snapshot.parts[0]),
+  );
+  const selected =
+    snapshot.parts.find((part) => partKey(part) === selectedKey) ?? snapshot.parts[0];
   const totalCharacters = snapshot.parts.reduce((total, part) => total + part.characters, 0);
   const hasTransformations = snapshot.parts.some((part) => part.originalText !== undefined);
 
@@ -89,11 +92,11 @@ export function ContextInspector({
         <div className="max-h-[calc(100vh-13rem)] overflow-y-auto p-2">
           {visible.map((part) => (
             <PartButton
-              key={part.id}
+              key={partKey(part)}
               part={part}
               totalCharacters={totalCharacters}
-              selected={part.id === selected.id}
-              onClick={() => setSelectedId(part.id)}
+              selected={partKey(part) === partKey(selected)}
+              onClick={() => setSelectedKey(partKey(part))}
               disabledIdentifiers={disabledIdentifiers}
               onToggleIdentifier={onToggleIdentifier}
             />
@@ -217,7 +220,7 @@ function PartButton({
         selected
           ? "border-accent/50 bg-accent-dim"
           : "border-transparent hover:border-line hover:bg-panel-raised"
-      }`}
+      } ${part.deleted ? "opacity-60" : ""}`}
     >
       <div className="flex items-start gap-1 px-2 py-2">
         <button type="button" onClick={onClick} className="min-w-0 flex-1 px-1 text-left">
@@ -234,7 +237,7 @@ function PartButton({
             />
           </div>
           <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted">
-            <span>{part.phase}</span>
+            <span>{part.deleted ? "turned off" : part.phase}</span>
             <span>~{formatCompact(part.estimatedTokens)} tok</span>
           </div>
         </button>
@@ -273,7 +276,9 @@ function SectionTree({
     <div className="space-y-0.5">
       {sections.map((section) => (
         <details key={section.identifier} className="group">
-          <summary className="flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] text-muted">
+          <summary
+            className={`flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] text-muted ${section.deleted ? "opacity-60 line-through" : ""}`}
+          >
             {section.children.length === 0 ? (
               <span className="w-3" />
             ) : (
@@ -286,12 +291,14 @@ function SectionTree({
               </span>
             )}
             <span className="min-w-0 flex-1 truncate">{section.label}</span>
-            <IdentifierToggle
-              identifier={section.identifier}
-              label={section.label}
-              disabled={disabledIdentifiers.has(section.identifier)}
-              onToggle={onToggleIdentifier}
-            />
+            {section.kind === "tool_group" ? null : (
+              <IdentifierToggle
+                identifier={section.identifier}
+                label={section.label}
+                disabled={disabledIdentifiers.has(section.identifier)}
+                onToggle={onToggleIdentifier}
+              />
+            )}
           </summary>
           {section.children.length === 0 ? null : (
             <div className="ml-3 border-l border-line pl-2">
@@ -377,7 +384,12 @@ function selectedContent(
   toolView: "description" | "json",
 ): string {
   if (part.description === undefined) return selectedText(part, view);
-  return toolView === "description" ? part.description : (part.json ?? part.text);
+  if (toolView === "description") {
+    return view === "original" ? (part.originalDescription ?? part.description) : part.description;
+  }
+  return view === "original"
+    ? (part.originalJson ?? part.json ?? part.text)
+    : (part.json ?? part.text);
 }
 
 function diffOriginal(
@@ -385,8 +397,13 @@ function diffOriginal(
   view: "original" | "effective",
   toolView: "description" | "json",
 ): string | undefined {
-  if (view === "original" || toolView === "json") return undefined;
-  return part.originalText;
+  if (view === "original") return undefined;
+  if (part.description === undefined) return part.originalText;
+  return toolView === "description" ? part.originalDescription : part.originalJson;
+}
+
+function partKey(part: ContextPart): string {
+  return `${part.phase}:${part.identifier ?? part.path}`;
 }
 
 function searchableText(part: ContextPart): string {

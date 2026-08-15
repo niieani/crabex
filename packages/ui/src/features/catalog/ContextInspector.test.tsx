@@ -8,8 +8,11 @@ import type { ContextSnapshot } from "../../lib/types.ts";
 import { ContextInspector } from "./ContextInspector.tsx";
 
 vi.mock("./ContextDiff.tsx", () => ({
-  ContextDiff: ({ effective }: { effective: string }) => (
-    <pre data-testid="context-diff">{effective}</pre>
+  ContextDiff: ({ original, effective }: { original?: string; effective: string }) => (
+    <div data-testid="context-diff">
+      <pre data-testid="diff-original">{original}</pre>
+      <pre data-testid="diff-effective">{effective}</pre>
+    </div>
   ),
 }));
 
@@ -53,17 +56,23 @@ describe("ContextInspector", () => {
         {
           ...snapshot.parts[1]!,
           description: "Wait for output.\nLong detail.",
+          originalDescription: "Wait originally.\nOriginal detail.",
           json: '{\n  "description": "Wait for output.…"\n}',
+          originalJson: '{\n  "description": "Wait originally.…"\n}',
+          originalText: '{"description":"Wait originally.\\nOriginal detail."}',
         },
       ],
     };
     const { container } = render(<ContextInspector snapshot={functionSnapshot} />);
 
     await waitFor(() => expect(diffText(container)).toContain("Wait for output."));
+    expect(originalDiffText(container)).toContain("Wait originally.");
+    expect(originalDiffText(container)).not.toContain('{"description"');
     expect(diffText(container)).not.toContain("Wait for output.…");
 
     await user.click(screen.getByRole("button", { name: "JSON" }));
     await waitFor(() => expect(diffText(container)).toContain("Wait for output.…"));
+    expect(originalDiffText(container)).toContain("Wait originally.…");
   });
 
   it("toggles classified parts and nested skills by identifier", async () => {
@@ -120,7 +129,104 @@ describe("ContextInspector", () => {
     expect(screen.queryByRole("button", { name: /functions\.exec/ })).toBeNull();
     expect(screen.getByRole("button", { name: /user message/ })).toBeTruthy();
   });
+
+  it("keeps disabled parts and sections visible and re-enableable", async () => {
+    const disabledPart = {
+      ...snapshot.parts[0]!,
+      id: "new-digest-id",
+      name: "Plugins instructions",
+      identifier: "segment:plugins",
+      text: "",
+      characters: 0,
+      deleted: true,
+      originalText: "<plugins_instructions>\n# Removed\ntext",
+      sections: [
+        {
+          identifier: "section:segment:plugins/removed",
+          label: "Removed",
+          kind: "heading" as const,
+          text: "",
+          originalText: "# Removed\ntext",
+          deleted: true,
+          characters: 0,
+          estimatedTokens: 0,
+          children: [],
+        },
+      ],
+    };
+
+    render(
+      <ContextInspector
+        snapshot={{ ...snapshot, parts: [disabledPart] }}
+        disabledIdentifiers={
+          new Set([disabledPart.identifier, disabledPart.sections[0]!.identifier])
+        }
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Plugins instructions/ })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Enable Plugins instructions" })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Enable Removed" })).toBeTruthy();
+  });
+
+  it("preserves expanded section state when preview content changes", async () => {
+    const user = userEvent.setup();
+    const classified = classifiedSnapshot("first-id", "## Skills\ntext");
+    const { rerender } = render(<ContextInspector snapshot={classified} />);
+    await user.click(screen.getByRole("button", { name: "Expand Skills" }));
+    const details = screen
+      .getByRole("button", { name: "Expand Skills" })
+      .closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(true);
+
+    rerender(
+      <ContextInspector snapshot={classifiedSnapshot("changed-id", "## Skills\nchanged")} />,
+    );
+
+    expect(
+      (
+        screen
+          .getByRole("button", { name: "Expand Skills" })
+          .closest("details") as HTMLDetailsElement
+      ).open,
+    ).toBe(true);
+  });
 });
+
+function classifiedSnapshot(id: string, sectionText: string): ContextSnapshot {
+  return {
+    ...snapshot,
+    parts: [
+      {
+        ...snapshot.parts[0]!,
+        id,
+        name: "Skills instructions",
+        identifier: "segment:skills",
+        sections: [
+          {
+            identifier: "section:segment:skills/skills",
+            label: "Skills",
+            kind: "heading",
+            text: sectionText,
+            characters: sectionText.length,
+            estimatedTokens: Math.ceil(sectionText.length / 4),
+            children: [
+              {
+                identifier: "skill:imagegen",
+                label: "imagegen",
+                kind: "skill",
+                text: "- imagegen: Generate",
+                characters: 20,
+                estimatedTokens: 5,
+                children: [],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
 
 function part(
   id: string,
@@ -144,5 +250,9 @@ function part(
 }
 
 function diffText(container: HTMLElement): string {
-  return container.querySelector('[data-testid="context-diff"]')?.textContent ?? "";
+  return container.querySelector('[data-testid="diff-effective"]')?.textContent ?? "";
+}
+
+function originalDiffText(container: HTMLElement): string {
+  return container.querySelector('[data-testid="diff-original"]')?.textContent ?? "";
 }

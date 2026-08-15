@@ -71,7 +71,10 @@ export function CatalogPage() {
               enabled: true,
               scope: {},
               target: {
-                field: identifier.startsWith("tool:") ? "tool" : "message_text",
+                field:
+                  identifier.startsWith("tool:") || identifier.startsWith("registry:")
+                    ? "tool"
+                    : "message_text",
                 identifier,
               },
               operation: { type: "delete_part" },

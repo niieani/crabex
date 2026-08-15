@@ -62,4 +62,40 @@ describe("TransformationEditor", () => {
       }),
     );
   });
+
+  it("scopes a selected-text replacement to its stable Codex segment", async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn();
+    const selectedPart: ContextPart = {
+      id: "plugins",
+      name: "Plugins instructions",
+      identifier: "segment:plugins",
+      text: "shared text",
+      characters: 11,
+      estimatedTokens: 3,
+      digest: "b".repeat(64),
+      path: "input[0].content[0].text",
+      phase: "inference",
+      kind: "message",
+    };
+    render(
+      <TransformationEditor onCreate={onCreate} selectedPart={selectedPart} initialFind="shared" />,
+    );
+
+    expect(screen.getByText("Scope")).toBeTruthy();
+    expect(screen.queryByText("Scope and safety")).toBeNull();
+    expect((screen.getByLabelText("Codex segment") as HTMLSelectElement).value).toBe(
+      "segment:plugins",
+    );
+    await user.type(screen.getByLabelText("Name"), "Scoped plugin rewrite");
+    await user.type(screen.getByLabelText("Replace with"), "short");
+    await user.click(screen.getByRole("button", { name: "Add transformation" }));
+
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: { segments: ["segment:plugins"] },
+        target: { field: "message_text" },
+      }),
+    );
+  });
 });

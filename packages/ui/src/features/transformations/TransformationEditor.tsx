@@ -24,6 +24,9 @@ export function TransformationEditor({
   const [harness, setHarness] = useState<"all" | HarnessKind>("all");
   const [model, setModel] = useState("");
   const [project, setProject] = useState("");
+  const [segment, setSegment] = useState(
+    selectedPart?.identifier?.startsWith("segment:") === true ? selectedPart.identifier : "all",
+  );
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -35,6 +38,7 @@ export function TransformationEditor({
         ...(harness === "all" ? {} : { harnesses: [harness] }),
         ...(model.trim() === "" ? {} : { models: [model.trim()] }),
         ...(project.trim() === "" ? {} : { projects: [project.trim()] }),
+        ...(segment === "all" ? {} : { segments: [segment] }),
       },
       target: {
         field,
@@ -42,7 +46,9 @@ export function TransformationEditor({
           ? selectedPart === undefined
             ? {}
             : { path: selectedPart.path }
-          : { identifier: selectedPart.identifier }),
+          : operation === "delete_part" || selectedPart.kind === "tool"
+            ? { identifier: selectedPart.identifier }
+            : {}),
       },
       operation: operationValue(operation, find, replacement, flags),
     });
@@ -119,11 +125,9 @@ export function TransformationEditor({
           />
         </Field>
       ) : null}
-      <details className="rounded-lg border border-line bg-canvas p-3">
-        <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">
-          Scope and safety
-        </summary>
-        <div className="mt-3 space-y-3">
+      <div className="space-y-3 pt-1">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">Scope</p>
+        <div className="grid grid-cols-2 gap-2">
           <Field label="Harness">
             <select
               value={harness}
@@ -135,6 +139,22 @@ export function TransformationEditor({
               <option value="desktop">Codex Desktop</option>
             </select>
           </Field>
+          <Field label="Codex segment">
+            <select
+              value={segment}
+              onChange={(event) => setSegment(event.target.value)}
+              className="input"
+            >
+              <option value="all">Any segment</option>
+              {CODEX_SEGMENTS.map(([identifier, label]) => (
+                <option key={identifier} value={identifier}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <div className="space-y-3">
           <Field label="Model">
             <input
               value={model}
@@ -152,7 +172,7 @@ export function TransformationEditor({
             />
           </Field>
         </div>
-      </details>
+      </div>
       <button
         type="submit"
         className="w-full rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-canvas transition hover:bg-accent-bright focus:outline-none focus:ring-2 focus:ring-accent/40"
@@ -162,6 +182,17 @@ export function TransformationEditor({
     </form>
   );
 }
+
+const CODEX_SEGMENTS = [
+  ["segment:codex_base", "Codex base instructions"],
+  ["segment:skills", "Skills instructions"],
+  ["segment:permissions", "Permissions"],
+  ["segment:apps", "Apps instructions"],
+  ["segment:plugins", "Plugins instructions"],
+  ["segment:recommended_plugins", "Recommended plugins"],
+  ["segment:project_instructions", "Project instructions"],
+  ["segment:environment", "Environment context"],
+] as const;
 
 function Field({ label, children }: { label: string; children: React.ReactElement }) {
   return (

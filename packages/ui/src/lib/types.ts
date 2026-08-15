@@ -22,17 +22,21 @@ export interface ContextPart {
   json?: string;
   sections?: ContextSection[];
   originalText?: string;
+  originalDescription?: string;
+  originalJson?: string;
   deleted?: boolean;
 }
 
 export interface ContextSection {
   identifier: string;
   label: string;
-  kind: "heading" | "skill" | "tool" | "mcp";
+  kind: "heading" | "skill" | "tool" | "mcp" | "tool_group";
   text: string;
   characters: number;
   estimatedTokens: number;
   children: ContextSection[];
+  originalText?: string;
+  deleted?: boolean;
 }
 
 export interface ContextSnapshot {
@@ -55,6 +59,7 @@ export interface Transformation {
     harnesses?: HarnessKind[];
     models?: string[];
     projects?: string[];
+    segments?: string[];
   };
   target: {
     field: "message_text" | "tool_description" | "all_text" | "tool";
