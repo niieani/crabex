@@ -17,8 +17,22 @@ export interface ContextPart {
   characters: number;
   estimatedTokens: number;
   digest: string;
+  identifier?: string;
+  description?: string;
+  json?: string;
+  sections?: ContextSection[];
   originalText?: string;
   deleted?: boolean;
+}
+
+export interface ContextSection {
+  identifier: string;
+  label: string;
+  kind: "heading" | "skill" | "tool" | "mcp";
+  text: string;
+  characters: number;
+  estimatedTokens: number;
+  children: ContextSection[];
 }
 
 export interface ContextSnapshot {
@@ -46,6 +60,7 @@ export interface Transformation {
     field: "message_text" | "tool_description" | "all_text" | "tool";
     path?: string;
     toolName?: string;
+    identifier?: string;
     variantDigest?: string;
   };
   operation:

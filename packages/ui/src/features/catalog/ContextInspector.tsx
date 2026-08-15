@@ -1,17 +1,27 @@
 import { useMemo, useState } from "react";
 
-import type { ContextPart, ContextSnapshot, Transformation } from "../../lib/types.ts";
+import type {
+  ContextPart,
+  ContextSection,
+  ContextSnapshot,
+  Transformation,
+} from "../../lib/types.ts";
 import { TransformationEditor } from "../transformations/TransformationEditor.tsx";
 
 export function ContextInspector({
   snapshot,
   onCreateTransformation,
+  disabledIdentifiers = new Set(),
+  onToggleIdentifier,
 }: {
   snapshot: ContextSnapshot;
   onCreateTransformation?: (transformation: Transformation) => void;
+  disabledIdentifiers?: ReadonlySet<string>;
+  onToggleIdentifier?: (identifier: string, disabled: boolean) => void;
 }) {
   const [sort, setSort] = useState<"payload" | "size">("payload");
   const [view, setView] = useState<"original" | "effective">("effective");
+  const [toolView, setToolView] = useState<"description" | "json">("description");
   const ordered = useMemo(
     () =>
       sort === "size"
@@ -63,6 +73,8 @@ export function ContextInspector({
               totalCharacters={totalCharacters}
               selected={part.id === selected.id}
               onClick={() => setSelectedId(part.id)}
+              disabledIdentifiers={disabledIdentifiers}
+              onToggleIdentifier={onToggleIdentifier}
             />
           ))}
         </div>
@@ -110,14 +122,32 @@ export function ContextInspector({
             </div>
           </div>
         </div>
+        {selected.description === undefined ? null : (
+          <div className="flex gap-1 border-b border-line px-6 py-2 text-[11px]">
+            <button
+              type="button"
+              className={viewButton(toolView === "description")}
+              onClick={() => setToolView("description")}
+            >
+              Description
+            </button>
+            <button
+              type="button"
+              className={viewButton(toolView === "json")}
+              onClick={() => setToolView("json")}
+            >
+              JSON
+            </button>
+          </div>
+        )}
         <div className="h-[calc(100vh-15.5rem)] overflow-auto p-6">
           <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-content">
-            {selectedText(selected, view)}
+            {selectedContent(selected, view, toolView)}
           </pre>
         </div>
         <div className="flex items-center justify-between border-t border-line px-6 py-2 font-mono text-[10px] text-muted">
           <span>sha256 {selected.digest.slice(0, 16)}…</span>
-          <span>Opaque content · no semantic parsing</span>
+          <span>{selected.identifier === undefined ? "Opaque content" : selected.identifier}</span>
         </div>
       </section>
 
@@ -141,23 +171,27 @@ function PartButton({
   totalCharacters,
   selected,
   onClick,
+  disabledIdentifiers,
+  onToggleIdentifier,
 }: {
   part: ContextPart;
   totalCharacters: number;
   selected: boolean;
   onClick: () => void;
+  disabledIdentifiers: ReadonlySet<string>;
+  onToggleIdentifier?: (identifier: string, disabled: boolean) => void;
 }) {
   const percent = totalCharacters === 0 ? 0 : (part.characters / totalCharacters) * 100;
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`mb-1 w-full rounded-lg border px-3 py-2.5 text-left transition ${
+    <div
+      className={`mb-1 rounded-lg border transition ${
         selected
           ? "border-accent/50 bg-accent-dim"
           : "border-transparent hover:border-line hover:bg-panel-raised"
       }`}
     >
+      <div className="flex items-start gap-1 px-2 py-2">
+        <button type="button" onClick={onClick} className="min-w-0 flex-1 px-1 text-left">
       <div className="flex items-center justify-between gap-3">
         <span className="truncate text-xs font-medium">{part.name}</span>
         <span className="shrink-0 font-mono text-[10px] text-muted">
@@ -174,6 +208,104 @@ function PartButton({
         <span>{part.phase}</span>
         <span>~{formatCompact(part.estimatedTokens)} tok</span>
       </div>
+        </button>
+        {part.identifier === undefined ? null : (
+          <IdentifierToggle
+            identifier={part.identifier}
+            label={part.name}
+            disabled={disabledIdentifiers.has(part.identifier)}
+            onToggle={onToggleIdentifier}
+          />
+        )}
+      </div>
+      {!selected || part.sections === undefined ? null : (
+        <div className="border-t border-line/70 px-2 py-1.5">
+          <SectionTree
+            sections={part.sections}
+            disabledIdentifiers={disabledIdentifiers}
+            onToggleIdentifier={onToggleIdentifier}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SectionTree({
+  sections,
+  disabledIdentifiers,
+  onToggleIdentifier,
+}: {
+  sections: ContextSection[];
+  disabledIdentifiers: ReadonlySet<string>;
+  onToggleIdentifier?: (identifier: string, disabled: boolean) => void;
+}) {
+  return (
+    <div className="space-y-0.5">
+      {sections.map((section) => (
+        <details key={section.identifier} className="group">
+          <summary className="flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] text-muted">
+            {section.children.length === 0 ? (
+              <span className="w-3" />
+            ) : (
+              <span
+                aria-label={`Expand ${section.label}`}
+                role="button"
+                className="w-3 text-center group-open:rotate-90"
+              >
+                ›
+              </span>
+            )}
+            <span className="min-w-0 flex-1 truncate">{section.label}</span>
+            <IdentifierToggle
+              identifier={section.identifier}
+              label={section.label}
+              disabled={disabledIdentifiers.has(section.identifier)}
+              onToggle={onToggleIdentifier}
+            />
+          </summary>
+          {section.children.length === 0 ? null : (
+            <div className="ml-3 border-l border-line pl-2">
+              <SectionTree
+                sections={section.children}
+                disabledIdentifiers={disabledIdentifiers}
+                onToggleIdentifier={onToggleIdentifier}
+              />
+            </div>
+          )}
+        </details>
+      ))}
+    </div>
+  );
+}
+
+function IdentifierToggle({
+  identifier,
+  label,
+  disabled,
+  onToggle,
+}: {
+  identifier: string;
+  label: string;
+  disabled: boolean;
+  onToggle?: (identifier: string, disabled: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={!disabled}
+      aria-label={`${disabled ? "Enable" : "Disable"} ${label}`}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggle?.(identifier, !disabled);
+      }}
+      className={`relative mt-0.5 h-4 w-7 shrink-0 rounded-full transition ${disabled ? "bg-line" : "bg-accent"}`}
+    >
+      <span
+        className={`absolute top-0.5 size-3 rounded-full bg-white transition ${disabled ? "left-0.5" : "left-3.5"}`}
+      />
     </button>
   );
 }
@@ -208,6 +340,15 @@ function viewButton(active: boolean): string {
 
 function selectedText(part: ContextPart, view: "original" | "effective"): string {
   return view === "original" ? (part.originalText ?? part.text) : part.text;
+}
+
+function selectedContent(
+  part: ContextPart,
+  view: "original" | "effective",
+  toolView: "description" | "json",
+): string {
+  if (part.description === undefined) return selectedText(part, view);
+  return toolView === "description" ? part.description : (part.json ?? part.text);
 }
 
 function phaseBadge(phase: ContextPart["phase"]): string {

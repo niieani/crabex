@@ -33,6 +33,43 @@ export function CatalogPage() {
     mutation.mutate({ version: 1, transformations: [...current.transformations, transformation] });
   }
 
+  const disabledIdentifiers = new Set(
+    (transformationsQuery.data?.transformations ?? [])
+      .filter(
+        (rule) =>
+          rule.enabled &&
+          rule.operation.type === "delete_part" &&
+          rule.target.identifier !== undefined,
+      )
+      .map((rule) => rule.target.identifier!),
+  );
+
+  function toggleIdentifier(identifier: string, disabled: boolean) {
+    const current = transformationsQuery.data;
+    if (current === undefined) return;
+    const id = `disable:${identifier}`;
+    const withoutToggle = current.transformations.filter((rule) => rule.id !== id);
+    mutation.mutate({
+      version: 1,
+      transformations: disabled
+        ? [
+            ...withoutToggle,
+            {
+              id,
+              name: `Disable ${identifier}`,
+              enabled: true,
+              scope: {},
+              target: {
+                field: identifier.startsWith("tool:") ? "tool" : "message_text",
+                identifier,
+              },
+              operation: { type: "delete_part" },
+            },
+          ]
+        : withoutToggle,
+    });
+  }
+
   return (
     <div>
       <div className="flex min-h-20 flex-wrap items-center justify-between gap-4 border-b border-line bg-panel px-5 py-3">
@@ -100,7 +137,12 @@ export function CatalogPage() {
           detail="Run a trivial Codex prompt through the proxy, then return here."
         />
       ) : (
-        <ContextInspector snapshot={snapshot} onCreateTransformation={createTransformation} />
+        <ContextInspector
+          snapshot={snapshot}
+          onCreateTransformation={createTransformation}
+          disabledIdentifiers={disabledIdentifiers}
+          onToggleIdentifier={toggleIdentifier}
+        />
       )}
       {mutation.isError ? <Toast tone="error">{mutation.error.message}</Toast> : null}
       {mutation.isSuccess ? <Toast tone="success">Transformation saved</Toast> : null}

@@ -36,7 +36,11 @@ export function TransformationEditor({
       },
       target: {
         field,
-        ...(selectedPart === undefined ? {} : { path: selectedPart.path }),
+        ...(selectedPart?.identifier === undefined
+          ? selectedPart === undefined
+            ? {}
+            : { path: selectedPart.path }
+          : { identifier: selectedPart.identifier }),
       },
       operation: operationValue(operation, find, replacement, flags),
     });

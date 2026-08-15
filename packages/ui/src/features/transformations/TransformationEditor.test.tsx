@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { TransformationEditor } from "./TransformationEditor.tsx";
+import type { ContextPart } from "../../lib/types.ts";
+
+afterEach(cleanup);
 
 describe("TransformationEditor", () => {
   it("creates a globally scoped literal replacement", async () => {
@@ -28,6 +31,34 @@ describe("TransformationEditor", () => {
           find: "original-smoke",
           replacement: "transformed-smoke",
         },
+      }),
+    );
+  });
+
+  it("targets a classified part by identifier", async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn();
+    const selectedPart: ContextPart = {
+      id: "skills",
+      name: "Skills instructions",
+      identifier: "segment:skills",
+      text: "skills",
+      characters: 6,
+      estimatedTokens: 2,
+      digest: "a".repeat(64),
+      path: "input[0].content[0].text",
+      phase: "inference",
+      kind: "message",
+    };
+    render(<TransformationEditor onCreate={onCreate} selectedPart={selectedPart} />);
+
+    await user.type(screen.getByLabelText("Name"), "Trim skills");
+    await user.selectOptions(screen.getByLabelText("Operation"), "delete_part");
+    await user.click(screen.getByRole("button", { name: "Add transformation" }));
+
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { field: "message_text", identifier: "segment:skills" },
       }),
     );
   });
