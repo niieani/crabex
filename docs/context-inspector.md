@@ -51,6 +51,8 @@ User-Agent: codex-tui/0.146.0 (...) (codex-tui; 0.146.0)
 
 `Originator` is the primary discriminator. `User-Agent` corroborates the kind and supplies version/build metadata. A disagreement is recorded as a conflict rather than guessed. Captures continue to exclude request headers, authorization, account IDs, and cookies; only normalized, allowlisted harness metadata is retained.
 
+Codex processes launched from inside Codex Desktop can inherit Desktop originator identity. A `codex exec` subprocess used by an agent in Desktop is therefore a valid Desktop Probe, not proof of TUI behavior. A true TUI Probe must be launched independently of Codex Desktop and verified from its captured normalized harness metadata.
+
 Model comes directly from `response.create`. Project identity must be supplied explicitly to the proxy or Probe instead of being extracted from opaque environment prose.
 
 ## Core model
