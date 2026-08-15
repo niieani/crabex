@@ -4,7 +4,10 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
+import { createLocalApi } from "./api/local-api.ts";
+import { openTransformationStore } from "./config/transformation-store.ts";
 import { startReverseProxy } from "./proxy/server.ts";
+import { FileCaptureRepository } from "./recording/capture-repository.ts";
 import { openNdjsonCaptureSink } from "./recording/ndjson-capture-sink.ts";
 
 const HELP = `Usage:
@@ -14,6 +17,9 @@ Options:
   --listen <host:port>  Listener address (default: 127.0.0.1:8765)
   --upstream <origin>   Upstream origin (default: https://chatgpt.com)
   --captures <dir>      Capture directory (default: .agent-context-trimmer/captures)
+  --transformations <file>
+                        Transformation set (default: .agent-context-trimmer/transformations.json)
+  --project <key>       Optional project scope for captures and transformations
 `;
 
 async function main(): Promise<void> {
@@ -26,11 +32,18 @@ async function main(): Promise<void> {
   const options = parseCliOptions(args);
   const capturePath = join(options.capturesDirectory, captureFileName());
   const captureSink = await openNdjsonCaptureSink(capturePath);
+  const transformationStore = await openTransformationStore(options.transformationsPath);
   const proxy = await startReverseProxy({
     host: options.host,
     port: options.port,
     upstreamOrigin: options.upstreamOrigin,
     captureSink,
+    transformationSource: { get: () => transformationStore.get().transformations },
+    project: options.project,
+    localApi: createLocalApi({
+      snapshots: new FileCaptureRepository(options.capturesDirectory),
+      transformations: transformationStore,
+    }),
   });
 
   process.stdout.write(`listening ${proxy.origin}\ncapturing ${capturePath}\n`);

@@ -10,6 +10,7 @@ describe("parseCliOptions", () => {
       port: 8765,
       upstreamOrigin: "https://chatgpt.com",
       capturesDirectory: ".agent-context-trimmer/captures",
+      transformationsPath: ".agent-context-trimmer/transformations.json",
     });
   });
 
@@ -23,6 +24,10 @@ describe("parseCliOptions", () => {
         "http://127.0.0.1:8317",
         "--captures",
         "captures.local",
+        "--transformations",
+        "rules.local.json",
+        "--project",
+        "fixture-project",
       ]),
     ).toEqual({
       command: "proxy",
@@ -30,6 +35,8 @@ describe("parseCliOptions", () => {
       port: 9000,
       upstreamOrigin: "http://127.0.0.1:8317",
       capturesDirectory: "captures.local",
+      transformationsPath: "rules.local.json",
+      project: "fixture-project",
     });
   });
 

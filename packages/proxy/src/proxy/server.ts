@@ -6,7 +6,11 @@ import type {
   CaptureSink,
   CaptureTransport,
 } from "../recording/capture.ts";
+import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
+import { transformResponseCreate, type ResponseCreatePayload } from "../context/transform.ts";
+import type { AppliedTransformation, Transformation } from "../context/transformation.ts";
 import { CloudflareCookieJar } from "./cloudflare-cookie-jar.ts";
+import type { LocalApi } from "../api/local-api.ts";
 
 const DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024;
 const HOP_BY_HOP_HEADERS = [
@@ -36,6 +40,13 @@ export interface ReverseProxyOptions {
   maxRequestBytes?: number;
   now?: () => Date;
   createSessionId?: () => string;
+  transformationSource?: TransformationSource;
+  project?: string;
+  localApi?: LocalApi;
+}
+
+export interface TransformationSource {
+  get(): Transformation[];
 }
 
 export interface RunningProxy {
@@ -50,6 +61,9 @@ interface SocketData {
   clientToUpstream: Promise<void>;
   upstreamToClient: Promise<void>;
   pendingUpstream: MessageEvent[];
+  harness: HarnessIdentity;
+  project?: string;
+  transformationSource: TransformationSource;
 }
 
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
@@ -61,13 +75,24 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     options.createSessionId ?? randomUUID,
   );
   const cookies = new CloudflareCookieJar();
+  const transformationSource = options.transformationSource ?? { get: () => [] };
 
   const server = Bun.serve<SocketData>({
     hostname: host,
     port: options.port ?? 8765,
     async fetch(request, bunServer) {
+      const localResponse = await options.localApi?.handle(request);
+      if (localResponse !== undefined) return localResponse;
       if (isWebSocketUpgrade(request)) {
-        return upgradeWebSocket(request, bunServer, upstreamOrigin, recorder, cookies);
+        return upgradeWebSocket(
+          request,
+          bunServer,
+          upstreamOrigin,
+          recorder,
+          cookies,
+          transformationSource,
+          options.project,
+        );
       }
       return proxyHttpRequest(
         request,
@@ -75,6 +100,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         recorder,
         cookies,
         options.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES,
+        transformationSource,
+        options.project,
       );
     },
     websocket: {
@@ -93,11 +120,23 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         const encoding = typeof message === "string" ? "utf8" : "base64";
         data.clientToUpstream = data.clientToUpstream
           .then(async () => {
-            await data.recorder.record("websocket", "client_to_upstream", message, encoding);
+            const processed = processClientPayload(
+              message,
+              encoding,
+              data.transformationSource.get(),
+              data.harness,
+              data.project,
+            );
+            await data.recorder.record("websocket", "client_to_upstream", message, encoding, {
+              effectivePayload: processed.effectivePayload,
+              appliedTransformations: processed.appliedTransformations,
+              harness: data.harness,
+              project: data.project,
+            });
             if (data.upstream.readyState !== WebSocket.OPEN) {
               throw new Error("upstream websocket is not open");
             }
-            data.upstream.send(message);
+            data.upstream.send(processed.value);
           })
           .catch(() => closePair(data, 1011, "capture failed"));
       },
@@ -119,19 +158,34 @@ async function proxyHttpRequest(
   recorder: EventRecorder,
   cookies: CloudflareCookieJar,
   maxRequestBytes: number,
+  transformationSource: TransformationSource,
+  project: string | undefined,
 ): Promise<Response> {
   try {
     const declaredLength = Number(request.headers.get("content-length") ?? 0);
     if (declaredLength > maxRequestBytes) throw new RequestTooLarge();
     const body = Buffer.from(await request.arrayBuffer());
     if (body.byteLength > maxRequestBytes) throw new RequestTooLarge();
-    await recorder.record("http", "client_to_upstream", body, "utf8");
+    const harness = classifyHarness(request.headers);
+    const processed = processClientPayload(
+      body,
+      "utf8",
+      transformationSource.get(),
+      harness,
+      project,
+    );
+    await recorder.record("http", "client_to_upstream", body, "utf8", {
+      effectivePayload: processed.effectivePayload,
+      appliedTransformations: processed.appliedTransformations,
+      harness,
+      project,
+    });
 
     const headers = forwardedHeaders(request.headers, cookies.header());
     const response = await fetch(targetUrl(upstreamOrigin, request.url), {
       method: request.method,
       headers,
-      body: request.method === "GET" || request.method === "HEAD" ? undefined : body,
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : processed.value,
       redirect: "manual",
       decompress: false,
     });
@@ -156,6 +210,8 @@ async function upgradeWebSocket(
   upstreamOrigin: URL,
   recorder: EventRecorder,
   cookies: CloudflareCookieJar,
+  transformationSource: TransformationSource,
+  project: string | undefined,
 ): Promise<Response | undefined> {
   try {
     const target = targetUrl(upstreamOrigin, request.url);
@@ -171,6 +227,9 @@ async function upgradeWebSocket(
       clientToUpstream: Promise.resolve(),
       upstreamToClient: Promise.resolve(),
       pendingUpstream: [],
+      harness: classifyHarness(request.headers),
+      ...(project === undefined ? {} : { project }),
+      transformationSource,
     };
     upstream.binaryType = "nodebuffer";
     upstream.addEventListener("message", (event) => {
@@ -198,7 +257,10 @@ function queueUpstreamMessage(data: SocketData, event: MessageEvent): void {
     .then(async () => {
       const message = await websocketMessage(event.data);
       const encoding = typeof message === "string" ? "utf8" : "base64";
-      await data.recorder.record("websocket", "upstream_to_client", message, encoding);
+      await data.recorder.record("websocket", "upstream_to_client", message, encoding, {
+        harness: data.harness,
+        project: data.project,
+      });
       const client = data.client;
       if (client === undefined || client.readyState !== WebSocket.OPEN) {
         throw new Error("client websocket is not open");
@@ -249,6 +311,12 @@ class EventRecorder {
     direction: CaptureDirection,
     value: string | ArrayBuffer | Uint8Array,
     encoding: CaptureEncoding,
+    metadata: {
+      effectivePayload?: string;
+      appliedTransformations?: AppliedTransformation[];
+      harness?: HarnessIdentity;
+      project?: string;
+    } = {},
   ): Promise<void> {
     const payload =
       typeof value === "string"
@@ -263,11 +331,49 @@ class EventRecorder {
         direction,
         encoding,
         payload,
+        ...(metadata.effectivePayload === undefined
+          ? {}
+          : { effectivePayload: metadata.effectivePayload }),
+        ...(metadata.appliedTransformations === undefined
+          ? {}
+          : { appliedTransformations: metadata.appliedTransformations }),
+        ...(metadata.harness === undefined ? {} : { harness: metadata.harness }),
+        ...(metadata.project === undefined ? {} : { project: metadata.project }),
       });
     } catch (error) {
       throw new CaptureFailure(error);
     }
   }
+}
+
+function processClientPayload(
+  value: string | ArrayBuffer | Uint8Array,
+  encoding: CaptureEncoding,
+  transformations: Transformation[],
+  harness: HarnessIdentity,
+  project: string | undefined,
+): {
+  value: string | ArrayBuffer | Uint8Array;
+  effectivePayload?: string;
+  appliedTransformations?: AppliedTransformation[];
+} {
+  if (encoding !== "utf8" || transformations.length === 0) return { value };
+  const original = typeof value === "string" ? value : bufferFrom(value).toString("utf8");
+  let payload: ResponseCreatePayload;
+  try {
+    payload = JSON.parse(original) as ResponseCreatePayload;
+  } catch {
+    return { value };
+  }
+  if (payload.type !== "response.create") return { value };
+  const result = transformResponseCreate(payload, transformations, { harness, project });
+  if (result.applied.length === 0) return { value };
+  const effectivePayload = JSON.stringify(result.payload);
+  return {
+    value: effectivePayload,
+    effectivePayload,
+    appliedTransformations: result.applied,
+  };
 }
 
 class CaptureFailure extends Error {

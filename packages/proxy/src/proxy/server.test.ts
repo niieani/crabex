@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import WebSocket, { type RawData, WebSocketServer } from "ws";
 
 import type { CaptureEvent, CaptureSink } from "../recording/capture.ts";
+import type { Transformation } from "../context/transformation.ts";
 import { startReverseProxy, type RunningProxy } from "./server.ts";
 
 class MemoryCaptureSink implements CaptureSink {
@@ -106,6 +107,67 @@ describe("subscription reverse proxy", () => {
     ]);
   });
 
+  it("rewrites a WebSocket response.create and records original and effective payloads", async () => {
+    const upstream = await startWebSocketServer((socket) => {
+      socket.on("message", (message) => {
+        expect(JSON.parse(rawDataText(message))).toMatchObject({
+          input: [{ content: [{ text: "Reply with exactly: transformed-smoke" }] }],
+        });
+        socket.send('{"type":"response.completed","response":{"id":"resp_1"}}');
+      });
+    });
+    const captures = new MemoryCaptureSink();
+    const transformations: Transformation[] = [
+      {
+        id: "smoke",
+        name: "Smoke rewrite",
+        enabled: true,
+        scope: { harnesses: ["tui"] },
+        target: { field: "message_text" },
+        operation: {
+          type: "replace",
+          find: "Reply with exactly: original-smoke",
+          replacement: "Reply with exactly: transformed-smoke",
+        },
+        cardinality: { min: 1, max: 1 },
+      },
+    ];
+    const proxy = await startProxy(upstream.origin, captures, transformations);
+    const client = new WebSocket(
+      proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+      {
+        headers: {
+          originator: "codex-tui",
+          "user-agent": "codex-tui/0.146.0 (Mac OS 26.5.0; arm64)",
+        },
+      },
+    );
+    closeables.push(async () => client.close());
+    await opened(client);
+    client.send(
+      JSON.stringify({
+        type: "response.create",
+        model: "gpt-5.6-luna",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Reply with exactly: original-smoke" }],
+          },
+        ],
+      }),
+    );
+    await nextMessage(client);
+    await eventually(() => expect(captures.events).toHaveLength(2));
+
+    expect(captures.events[0]).toMatchObject({
+      harness: { kind: "tui", version: "0.146.0" },
+      appliedTransformations: [{ transformationId: "smoke", matchCount: 1 }],
+    });
+    expect(captures.events[0]?.payload).toContain("original-smoke");
+    expect(captures.events[0]?.effectivePayload).toContain("transformed-smoke");
+  });
+
   it("fails closed before an HTTP request reaches upstream when capture fails", async () => {
     let upstreamRequests = 0;
     const upstream = await startHttpServer((_request, response) => {
@@ -153,12 +215,17 @@ describe("subscription reverse proxy", () => {
   });
 });
 
-async function startProxy(upstreamOrigin: string, captureSink: CaptureSink): Promise<RunningProxy> {
+async function startProxy(
+  upstreamOrigin: string,
+  captureSink: CaptureSink,
+  transformations: Transformation[] = [],
+): Promise<RunningProxy> {
   const proxy = await startReverseProxy({
     host: "127.0.0.1",
     port: 0,
     upstreamOrigin,
     captureSink,
+    transformationSource: { get: () => transformations },
   });
   closeables.push(() => proxy.close());
   return proxy;

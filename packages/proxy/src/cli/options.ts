@@ -4,6 +4,8 @@ export interface ProxyCliOptions {
   port: number;
   upstreamOrigin: string;
   capturesDirectory: string;
+  transformationsPath: string;
+  project?: string;
 }
 
 export function parseCliOptions(args: string[]): ProxyCliOptions {
@@ -17,6 +19,7 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     port: 8765,
     upstreamOrigin: "https://chatgpt.com",
     capturesDirectory: ".agent-context-trimmer/captures",
+    transformationsPath: ".agent-context-trimmer/transformations.json",
   };
 
   for (let index = 1; index < args.length; index += 1) {
@@ -36,6 +39,14 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     } else if (argument === "--captures") {
       if (value === undefined) throw new Error("missing value for --captures");
       options.capturesDirectory = value;
+      index += 1;
+    } else if (argument === "--transformations") {
+      if (value === undefined) throw new Error("missing value for --transformations");
+      options.transformationsPath = value;
+      index += 1;
+    } else if (argument === "--project") {
+      if (value === undefined) throw new Error("missing value for --project");
+      options.project = value;
       index += 1;
     } else {
       throw new Error(`unknown argument: ${argument}`);
