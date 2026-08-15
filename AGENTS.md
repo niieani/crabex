@@ -20,7 +20,7 @@ release. Add a tool name to select part of the graph. For example, run
 ## Review Checklist
 
 - [ ] Run `vp install` after pulling remote changes and before getting started.
-- [ ] Run `vp check` and `vp test` to format, lint, type check and test changes.
+- [ ] Run `vp check` and `vp run test` to format, lint, type check and test changes.
 - [ ] Check if there are `vite.config.ts` tasks or `package.json` scripts necessary for validation, run via `vp run <script>`.
 - [ ] If setup, runtime, or package-manager behavior looks wrong, run `vp env doctor` and include its output when asking for help.
 
@@ -30,11 +30,12 @@ release. Add a tool name to select part of the graph. For example, run
 
 - Current Codex source: `/Volumes/Projects/SoftwareReferences/codex`; inspect it before relying on Codex docs.
 - Tests need Bun-native APIs: run `vp run test`, not bare `vp test`.
+- Monorepo packages: `packages/proxy` (Bun CLI/server) and `packages/ui` (React/Tailwind UI).
 
 ## Live OAuth test
 
 - Build with `vp run build`; put logs/captures under `temp.local/$(date +%F)/`.
-- Start `./dist/cli.mjs proxy` on an unused localhost port, preferably in tmux.
+- Start `./packages/proxy/dist/cli.mjs proxy` on an unused localhost port, preferably in tmux.
 - Run `codex exec --ephemeral --model <model> -c 'model_reasoning_effort="<effort>"' -c 'openai_base_url="http://127.0.0.1:<port>/backend-api/codex"' 'Reply with exactly: audit-ok'` using the existing ChatGPT login—never an API key.
 - Inspect NDJSON with `jq`: confirm WebSocket `response.create`, requested model/effort, `generate:false` warmup, chained `previous_response_id`, and `response.completed`.
 - Stop the proxy after verification.

@@ -8,7 +8,7 @@ responses, and WebSocket messages pass through to the ChatGPT Codex backend.
 
 ```sh
 vp install
-vp run dev
+vp run dev:proxy
 ```
 
 The default listener is `http://127.0.0.1:8765`. Captures are append-only NDJSON
@@ -46,4 +46,10 @@ agent-context-trimmer proxy \
 vp run test
 vp check
 vp run build
+vp run dev:ui
 ```
+
+## Workspace layout
+
+- `packages/proxy`: Bun server and CLI.
+- `packages/ui`: React and Tailwind context inspector.

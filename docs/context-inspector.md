@@ -17,19 +17,19 @@ The effective initial context must therefore be reconstructed as a request chain
 
 Observed data from that Probe:
 
-| Context | Characters |
-| --- | ---: |
-| Base developer instructions | 17,730 |
-| Serialized tool namespace | 28,544 |
-| `exec` tool description | 24,607 |
-| Skills instructions | 21,448 |
-| Permissions instructions | 362 |
-| Apps instructions | 646 |
-| Plugin instructions | 1,014 |
-| Recommended plugins | 1,798 |
-| AGENTS.md instructions | 7,206 |
-| Environment context | 428 |
-| Smoke prompt | 28 |
+| Context                     | Characters |
+| --------------------------- | ---------: |
+| Base developer instructions |     17,730 |
+| Serialized tool namespace   |     28,544 |
+| `exec` tool description     |     24,607 |
+| Skills instructions         |     21,448 |
+| Permissions instructions    |        362 |
+| Apps instructions           |        646 |
+| Plugin instructions         |      1,014 |
+| Recommended plugins         |      1,798 |
+| AGENTS.md instructions      |      7,206 |
+| Environment context         |        428 |
+| Smoke prompt                |         28 |
 
 The prewarm response reported 9,872 input tokens. The final response reported 17,938 input tokens, including 8,960 cached tokens, and 6 output tokens. Server usage is authoritative only at the request level; per-part token counts must be labeled estimates.
 
