@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { RE2JS } from "re2js";
 
+import { classifyMessage, markdownSections, type ContentSection } from "./classification.ts";
 import type { HarnessIdentity } from "./harness.ts";
 import type {
   Transformation,
@@ -71,10 +72,13 @@ function applyTransformation<T extends ResponseCreatePayload>(
     const itemPath = `input[${inputIndex}]`;
     if (item.type === "message") {
       matchCount += transformMessage(item, itemPath, transformation);
+      if (Array.isArray(item.content) && item.content.length === 0) input.splice(inputIndex, 1);
     } else if (item.type === "additional_tools") {
       matchCount += transformToolContainer(item, itemPath, transformation);
     }
   }
+
+  matchCount += transformMetadataTools(payload, transformation);
 
   return { payload, matchCount };
 }
@@ -90,7 +94,30 @@ function transformMessage(
     const block = objectAt(message.content, index);
     if (block === undefined || typeof block.text !== "string") continue;
     const path = `${itemPath}.content[${index}].text`;
-    if (!matchesTarget(transformation, "message_text", path, block.text)) continue;
+    const classification = classifyMessage(stringValue(message.role), block.text);
+    const identified = transformIdentifiedText(
+      block.text,
+      transformation,
+      classification?.id,
+      classification === undefined ? [] : markdownSections(block.text, classification.id),
+    );
+    if (identified !== undefined) {
+      if (identified.deleted) message.content.splice(index, 1);
+      else block.text = identified.value;
+      count += identified.matchCount;
+      continue;
+    }
+    if (
+      !matchesTarget(
+        transformation,
+        "message_text",
+        path,
+        block.text,
+        undefined,
+        classification?.id,
+      )
+    )
+      continue;
     if (transformation.operation.type === "delete_part") {
       message.content.splice(index, 1);
       count += 1;
@@ -116,16 +143,21 @@ function transformTools(
   tools: unknown[],
   parentPath: string,
   transformation: Transformation,
+  namespace?: string,
 ): number {
   let count = 0;
   for (let index = tools.length - 1; index >= 0; index -= 1) {
     const tool = objectAt(tools, index);
     if (tool === undefined) continue;
     const path = `${parentPath}[${index}]`;
+    const name = stringValue(tool.name);
+    const qualifiedName =
+      name === undefined ? undefined : namespace === undefined ? name : `${namespace}.${name}`;
+    const identifier = qualifiedName === undefined ? undefined : `tool:${qualifiedName}`;
     const serialized = JSON.stringify(tool);
     if (
       transformation.target.field === "tool" &&
-      matchesTarget(transformation, "tool", path, serialized, stringValue(tool.name))
+      matchesTarget(transformation, "tool", path, serialized, name, identifier)
     ) {
       if (transformation.operation.type !== "delete_part") {
         throw new Error(`tool transformation ${transformation.id} must delete the whole tool`);
@@ -136,13 +168,24 @@ function transformTools(
     }
     if (typeof tool.description === "string") {
       const descriptionPath = `${path}.description`;
-      if (
+      const identified = transformIdentifiedText(
+        tool.description,
+        transformation,
+        identifier,
+        identifier === undefined ? [] : markdownSections(tool.description, identifier),
+      );
+      if (identified !== undefined) {
+        if (identified.deleted) delete tool.description;
+        else tool.description = identified.value;
+        count += identified.matchCount;
+      } else if (
         matchesTarget(
           transformation,
           "tool_description",
           descriptionPath,
           tool.description,
-          stringValue(tool.name),
+          name,
+          identifier,
         )
       ) {
         if (transformation.operation.type === "delete_part") {
@@ -160,12 +203,12 @@ function transformTools(
         tool,
         path,
         transformation,
-        stringValue(tool.name),
+        name,
         new Set(["description", "tools"]),
       );
     }
     if (Array.isArray(tool.tools)) {
-      count += transformTools(tool.tools, `${path}.tools`, transformation);
+      count += transformTools(tool.tools, `${path}.tools`, transformation, qualifiedName);
     }
   }
   return count;
@@ -214,13 +257,81 @@ function matchesTarget(
   path: string,
   value: string,
   toolName?: string,
+  identifier?: string,
 ): boolean {
   const target = transformation.target;
   if (target.field !== field && target.field !== "all_text") return false;
   if (target.path !== undefined && target.path !== path) return false;
   if (target.toolName !== undefined && target.toolName !== toolName) return false;
+  if (target.identifier !== undefined && target.identifier !== identifier) return false;
   if (target.variantDigest !== undefined && target.variantDigest !== digest(value)) return false;
   return true;
+}
+
+function transformIdentifiedText(
+  value: string,
+  transformation: Transformation,
+  partIdentifier: string | undefined,
+  sections: ContentSection[],
+): { value: string; matchCount: number; deleted: boolean } | undefined {
+  const identifier = transformation.target.identifier;
+  if (identifier === undefined) return undefined;
+  if (identifier === partIdentifier) {
+    if (transformation.operation.type === "delete_part") {
+      return { value: "", matchCount: 1, deleted: true };
+    }
+    return { ...transformText(value, transformation.operation), deleted: false };
+  }
+  const section = findSection(sections, identifier);
+  if (section === undefined) return { value, matchCount: 0, deleted: false };
+  if (transformation.operation.type === "delete_part") {
+    return {
+      value: value.slice(0, section.start) + value.slice(section.end),
+      matchCount: 1,
+      deleted: false,
+    };
+  }
+  const changed = transformText(section.text, transformation.operation);
+  return {
+    value: value.slice(0, section.start) + changed.value + value.slice(section.end),
+    matchCount: changed.matchCount,
+    deleted: false,
+  };
+}
+
+function findSection(sections: ContentSection[], identifier: string): ContentSection | undefined {
+  for (const section of sections) {
+    if (section.id === identifier) return section;
+    const child = findSection(section.children, identifier);
+    if (child !== undefined) return child;
+  }
+  return undefined;
+}
+
+function transformMetadataTools(
+  payload: ResponseCreatePayload,
+  transformation: Transformation,
+): number {
+  if (transformation.operation.type !== "delete_part" || transformation.target.field !== "tool")
+    return 0;
+  const identifier = transformation.target.identifier;
+  const name = identifier?.startsWith("tool:") ? identifier.slice("tool:".length) : undefined;
+  if (name === undefined) return 0;
+  const clientMetadata = objectValue(payload.client_metadata);
+  const metadataKey = "x-codex-turn-metadata";
+  const encoded = clientMetadata?.[metadataKey];
+  if (typeof encoded !== "string") return 0;
+  let metadata: Record<string, unknown>;
+  try {
+    metadata = JSON.parse(encoded) as Record<string, unknown>;
+  } catch {
+    return 0;
+  }
+  const registry = objectValue(metadata.code_mode_tool_names);
+  if (registry === undefined || !(name in registry)) return 0;
+  delete registry[name];
+  clientMetadata[metadataKey] = JSON.stringify(metadata);
+  return 1;
 }
 
 function transformText(
@@ -297,6 +408,12 @@ function digest(value: string): string {
 
 function objectAt(values: unknown[], index: number): Record<string, unknown> | undefined {
   const value = values[index];
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
     : undefined;

@@ -73,6 +73,93 @@ describe("buildSnapshots", () => {
       originalText: "original",
     });
   });
+
+  it("names classified segments and exposes Markdown subsections", () => {
+    const events = [
+      event(1, "client_to_upstream", {
+        type: "response.create",
+        model: "gpt-5.6-luna",
+        input: [
+          message(
+            "developer",
+            "<skills_instructions>\n## Skills\n### Available skills\n- imagegen: Generate.\n</skills_instructions>",
+          ),
+        ],
+      }),
+    ];
+
+    const snapshot = buildSnapshots(events)[0];
+
+    expect(snapshot?.parts[0]).toMatchObject({
+      identifier: "segment:skills",
+      name: "Skills instructions",
+      sections: [
+        {
+          label: "Skills",
+          children: [
+            {
+              label: "Available skills",
+              children: [{ identifier: "skill:imagegen", label: "imagegen" }],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("exposes function description, abbreviated JSON, and MCP registry tools", () => {
+    const events = [
+      event(1, "client_to_upstream", {
+        type: "response.create",
+        model: "gpt-5.6-luna",
+        client_metadata: {
+          "x-codex-turn-metadata": JSON.stringify({
+            code_mode_tool_names: {
+              mcp__codex_apps__github_get_issue_comment_reactions: {
+                name: "_get_issue_comment_reactions",
+                namespace: "mcp__codex_apps__github",
+              },
+            },
+          }),
+        },
+        input: [
+          {
+            type: "additional_tools",
+            tools: [
+              {
+                type: "namespace",
+                name: "functions",
+                tools: [
+                  {
+                    type: "function",
+                    name: "wait",
+                    description: "Wait for output.\nLong detail.",
+                    parameters: { type: "object" },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ];
+
+    const parts = buildSnapshots(events)[0]?.parts;
+
+    expect(parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identifier: "tool:functions.wait",
+          description: "Wait for output.\nLong detail.",
+          json: expect.stringContaining('"description": "Wait for output.…"'),
+        }),
+        expect.objectContaining({
+          identifier: "tool:mcp__codex_apps__github_get_issue_comment_reactions",
+          name: "mcp__codex_apps__github_get_issue_comment_reactions",
+        }),
+      ]),
+    );
+  });
 });
 
 function event(

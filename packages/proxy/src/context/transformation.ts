@@ -19,6 +19,7 @@ export interface TransformationTarget {
   field: "message_text" | "tool_description" | "all_text" | "tool";
   path?: string;
   toolName?: string;
+  identifier?: string;
   variantDigest?: string;
 }
 

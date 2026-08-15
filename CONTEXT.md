@@ -13,8 +13,12 @@ The complete effective inference context reconstructed from the linked requests 
 _Avoid_: Session, capture file
 
 **Context Part**:
-An opaque, structurally identified text or tool-definition leaf present in a Snapshot.
-_Avoid_: Section, prompt fragment
+A structurally identified message or tool-definition leaf present in a Snapshot. Known harness wrappers may give it a stable identifier; unknown content remains opaque.
+_Avoid_: Prompt fragment
+
+**Context Section**:
+A recognized Markdown heading subtree, skill entry, or generated tool declaration inside a Context Part. Its identifier is mechanical; its prose is not interpreted.
+_Avoid_: Semantic topic
 
 **Variant**:
 One exact observed value of a Context Part, identified by its content digest and observation conditions.

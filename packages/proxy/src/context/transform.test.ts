@@ -175,6 +175,96 @@ describe("transformResponseCreate", () => {
       }),
     ]);
   });
+
+  it("deletes a classified message segment by stable identifier", () => {
+    const result = transformResponseCreate(
+      {
+        type: "response.create",
+        input: [
+          {
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: "<apps_instructions>\napps" }],
+          },
+          { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        ],
+      },
+      [
+        rule({
+          target: { field: "message_text", identifier: "segment:apps" },
+          operation: { type: "delete_part" },
+        }),
+      ],
+      { harness: { kind: "desktop" } },
+    );
+
+    expect(result.executions[0]).toMatchObject({ status: "hit", matchCount: 1 });
+    expect(result.payload.input).toHaveLength(1);
+  });
+
+  it("deletes one classified Markdown subsection", () => {
+    const result = transformResponseCreate(
+      {
+        type: "response.create",
+        input: [
+          {
+            type: "message",
+            role: "developer",
+            content: [
+              {
+                type: "input_text",
+                text: "You are Codex, agent.\n# Keep\na\n# Remove\nb\n# Also keep\nc",
+              },
+            ],
+          },
+        ],
+      },
+      [
+        rule({
+          target: {
+            field: "message_text",
+            identifier: "section:segment:codex_base/remove",
+          },
+          operation: { type: "delete_part" },
+        }),
+      ],
+      { harness: { kind: "desktop" } },
+    );
+
+    expect(JSON.stringify(result.payload)).not.toContain("# Remove");
+    expect(JSON.stringify(result.payload)).toContain("# Also keep");
+  });
+
+  it("deletes an MCP tool from structured client metadata", () => {
+    const mcpName = "mcp__codex_apps__github_get_issue_comment_reactions";
+    const metadata = {
+      code_mode_tool_names: {
+        [mcpName]: { name: "_get_issue_comment_reactions", namespace: "mcp__codex_apps__github" },
+        apply_patch: { name: "apply_patch", namespace: null },
+      },
+    };
+    const result = transformResponseCreate(
+      {
+        type: "response.create",
+        client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) },
+        input: [],
+      },
+      [
+        rule({
+          target: { field: "tool", identifier: `tool:${mcpName}` },
+          operation: { type: "delete_part" },
+        }),
+      ],
+      { harness: { kind: "desktop" } },
+    );
+
+    const encoded = (result.payload.client_metadata as Record<string, string>)[
+      "x-codex-turn-metadata"
+    ];
+    expect(JSON.parse(encoded).code_mode_tool_names).toEqual({
+      apply_patch: { name: "apply_patch", namespace: null },
+    });
+  });
 });
 
 function rule(overrides: Partial<Transformation>): Transformation {

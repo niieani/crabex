@@ -1,7 +1,22 @@
 import { createHash } from "node:crypto";
 
 import type { CaptureEvent } from "../recording/capture.ts";
+import {
+  classifyMessage,
+  markdownSections,
+  type ContentSection,
+} from "./classification.ts";
 import type { HarnessIdentity } from "./harness.ts";
+
+export interface ContextSection {
+  identifier: string;
+  label: string;
+  kind: ContentSection["kind"];
+  text: string;
+  characters: number;
+  estimatedTokens: number;
+  children: ContextSection[];
+}
 
 export interface ContextPart {
   id: string;
@@ -14,6 +29,10 @@ export interface ContextPart {
   characters: number;
   estimatedTokens: number;
   digest: string;
+  identifier?: string;
+  description?: string;
+  json?: string;
+  sections?: ContextSection[];
   originalText?: string;
   deleted?: boolean;
 }
@@ -131,10 +150,16 @@ function rawPartsFrom(request: RequestRecord, payload: Record<string, unknown>):
         const content = objectValue(contentValue);
         if (typeof content?.text !== "string") continue;
         const path = `input[${inputIndex}].content[${contentIndex}].text`;
+        const classification = classifyMessage(stringValue(item.role), content.text);
         parts.push(
           part(request, phase, "message", path, content.text, {
             role: stringValue(item.role),
-            name: `${stringValue(item.role) ?? "message"} message`,
+            name: classification?.label ?? `${stringValue(item.role) ?? "message"} message`,
+            identifier: classification?.id,
+            sections:
+              classification === undefined
+                ? undefined
+                : sectionsValue(markdownSections(content.text, classification.id)),
           }),
         );
       }
@@ -142,6 +167,7 @@ function rawPartsFrom(request: RequestRecord, payload: Record<string, unknown>):
       collectTools(request, phase, item.tools, `input[${inputIndex}].tools`, parts);
     }
   }
+  collectMetadataTools(request, phase, payload, parts);
   return parts;
 }
 
@@ -162,10 +188,45 @@ function collectTools(
     if (Array.isArray(tool.tools)) {
       collectTools(request, phase, tool.tools, `${path}.tools`, parts, qualifiedName);
     } else {
+      const identifier = `tool:${qualifiedName}`;
+      const description = stringValue(tool.description);
       parts.push(
-        part(request, phase, "tool", path, JSON.stringify(tool, null, 2), { name: qualifiedName }),
+        part(request, phase, "tool", path, JSON.stringify(tool, null, 2), {
+          name: qualifiedName,
+          identifier,
+          description,
+          json: JSON.stringify(abbreviatedTool(tool), null, 2),
+          sections:
+            description === undefined
+              ? undefined
+              : sectionsValue(markdownSections(description, identifier)),
+        }),
       );
     }
+  }
+}
+
+function collectMetadataTools(
+  request: RequestRecord,
+  phase: "prewarm" | "inference",
+  payload: Record<string, unknown>,
+  parts: ContextPart[],
+): void {
+  const clientMetadata = objectValue(payload.client_metadata);
+  const encoded = stringValue(clientMetadata?.["x-codex-turn-metadata"]);
+  if (encoded === undefined) return;
+  const metadata = parseObject(encoded);
+  const registry = objectValue(metadata?.code_mode_tool_names);
+  if (registry === undefined) return;
+  for (const [name, value] of Object.entries(registry)) {
+    const path = `client_metadata.x-codex-turn-metadata.code_mode_tool_names.${name}`;
+    parts.push(
+      part(request, phase, "tool", path, JSON.stringify(value, null, 2), {
+        name,
+        identifier: `tool:${name}`,
+        json: JSON.stringify(value, null, 2),
+      }),
+    );
   }
 }
 
@@ -175,7 +236,14 @@ function part(
   kind: "message" | "tool",
   path: string,
   text: string,
-  metadata: { role?: string; name: string },
+  metadata: {
+    role?: string;
+    name: string;
+    identifier?: string;
+    description?: string;
+    json?: string;
+    sections?: ContextSection[];
+  },
 ): ContextPart {
   const digest = sha256(text);
   return {
@@ -184,11 +252,38 @@ function part(
     kind,
     ...(metadata.role === undefined ? {} : { role: metadata.role }),
     name: metadata.name,
+    ...(metadata.identifier === undefined ? {} : { identifier: metadata.identifier }),
+    ...(metadata.description === undefined ? {} : { description: metadata.description }),
+    ...(metadata.json === undefined ? {} : { json: metadata.json }),
+    ...(metadata.sections === undefined || metadata.sections.length === 0
+      ? {}
+      : { sections: metadata.sections }),
     path,
     text,
     characters: text.length,
     estimatedTokens: Math.ceil(text.length / 4),
     digest,
+  };
+}
+
+function sectionsValue(sections: ContentSection[]): ContextSection[] {
+  return sections.map((section) => ({
+    identifier: section.id,
+    label: section.label,
+    kind: section.kind,
+    text: section.text,
+    characters: section.text.length,
+    estimatedTokens: Math.ceil(section.text.length / 4),
+    children: sectionsValue(section.children),
+  }));
+}
+
+function abbreviatedTool(tool: Record<string, unknown>): Record<string, unknown> {
+  if (typeof tool.description !== "string") return tool;
+  const [firstLine = ""] = tool.description.split("\n", 1);
+  return {
+    ...tool,
+    description: tool.description.includes("\n") ? `${firstLine}…` : firstLine,
   };
 }
 
