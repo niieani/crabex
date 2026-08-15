@@ -1,3 +1,6 @@
+import type { AppliedTransformation } from "../context/transformation.ts";
+import type { HarnessIdentity } from "../context/harness.ts";
+
 export type CaptureTransport = "http" | "websocket";
 export type CaptureDirection = "client_to_upstream" | "upstream_to_client";
 export type CaptureEncoding = "utf8" | "base64";
@@ -10,6 +13,10 @@ export interface CaptureEvent {
   direction: CaptureDirection;
   encoding: CaptureEncoding;
   payload: string;
+  effectivePayload?: string;
+  appliedTransformations?: AppliedTransformation[];
+  harness?: HarnessIdentity;
+  project?: string;
 }
 
 export interface CaptureSink {

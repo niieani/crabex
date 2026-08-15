@@ -10,6 +10,9 @@
     "dev": "bun src/cli.ts proxy",
     "build": "vp pack"
   },
+  "dependencies": {
+    "re2js": "^2.8.6"
+  },
   "devDependencies": {
     "@types/bun": "^1.3.14",
     "@types/node": "^26.2.0",
