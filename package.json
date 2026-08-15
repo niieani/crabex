@@ -1,0 +1,33 @@
+{
+  "name": "agent-context-trimmer",
+  "version": "0.0.0",
+  "private": true,
+  "bin": {
+    "agent-context-trimmer": "./dist/cli.mjs"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "bun src/cli.ts proxy",
+    "build": "vp pack",
+    "test": "bunx --bun vp test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/node": "^26.2.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "~6.0.2",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.2.9",
+    "vite-plus": "0.2.9",
+    "ws": "^8.21.3"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.2.9"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "bun",
+      "version": "1.3.14",
+      "onFail": "download"
+    }
+  }
+}
