@@ -72,7 +72,9 @@ export function CatalogPage() {
               scope: {},
               target: {
                 field:
-                  identifier.startsWith("tool:") || identifier.startsWith("registry:")
+                  identifier.startsWith("tool:") ||
+                  identifier.startsWith("registry:") ||
+                  identifier.startsWith("registry-group:")
                     ? "tool"
                     : "message_text",
                 identifier,
@@ -85,8 +87,8 @@ export function CatalogPage() {
   }
 
   return (
-    <div>
-      <div className="flex min-h-20 flex-wrap items-center justify-between gap-4 border-b border-line bg-panel px-5 py-3">
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto xl:overflow-hidden">
+      <div className="flex min-h-20 shrink-0 flex-wrap items-center justify-between gap-4 border-b border-line bg-panel px-5 py-3">
         <div className="flex items-center gap-5">
           <div>
             <p className="section-label">Observed snapshot</p>

@@ -173,7 +173,11 @@ Function entries expose two tabs: **Description** shows the complete description
 
 Disabled parts and sections remain in the composition tree as inactive entries so their switches can re-enable them. Expansion state follows stable structural identifiers rather than content digests, so preview refreshes do not collapse the tree. Code-mode tool metadata is shown once per Snapshot as a deduplicated **Code mode tools** registry; double-underscore name segments form mechanical namespace groups such as `mcp → codex_apps → sites_list_sites`.
 
-Text replacements may include a stable Codex segment in their Transformation Scope. This constrains matching to that segment while leaving the selected text or field as the target. Description and JSON previews maintain independent original/effective pairs.
+Disabled nodes retain their original payload positions; a preview never reorders surviving or deleted parts merely because array indexes shifted. Tool Registry groups expose switches that delete all names under a complete double-underscore namespace prefix.
+
+Text replacements may include a stable Codex segment or exact structured tool definition in their Transformation Scope. This constrains matching while leaving the selected text or field as the target. Description and JSON previews maintain independent original/effective pairs.
+
+At desktop widths the application owns the viewport and suppresses document scrolling. Composition, content, and transformation panes scroll independently; mobile layouts use one page-level pane scroll.
 
 ## Implementation plan
 

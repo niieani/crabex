@@ -191,6 +191,48 @@ describe("ContextInspector", () => {
       ).open,
     ).toBe(true);
   });
+
+  it("toggles a complete code-mode tool group by prefix identifier", async () => {
+    const user = userEvent.setup();
+    const onToggleIdentifier = vi.fn();
+    const registry: ContextSnapshot = {
+      ...snapshot,
+      parts: [
+        {
+          ...snapshot.parts[1]!,
+          name: "Code mode tools",
+          identifier: "registry:code_mode_tool_names",
+          sections: [
+            {
+              identifier: "registry-group:mcp",
+              label: "mcp",
+              kind: "tool_group",
+              text: "",
+              characters: 10,
+              estimatedTokens: 3,
+              children: [
+                {
+                  identifier: "registry-group:mcp__codex_apps",
+                  label: "codex_apps",
+                  kind: "tool_group",
+                  text: "",
+                  characters: 10,
+                  estimatedTokens: 3,
+                  children: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    render(<ContextInspector snapshot={registry} onToggleIdentifier={onToggleIdentifier} />);
+
+    await user.click(screen.getByRole("button", { name: "Expand mcp" }));
+    await user.click(screen.getByRole("switch", { name: "Disable codex_apps" }));
+
+    expect(onToggleIdentifier).toHaveBeenCalledWith("registry-group:mcp__codex_apps", true);
+  });
 });
 
 function classifiedSnapshot(id: string, sectionText: string): ContextSnapshot {

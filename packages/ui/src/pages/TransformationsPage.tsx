@@ -29,8 +29,8 @@ export function TransformationsPage() {
     replace({ version: 1, transformations: [...set.transformations, rule] });
 
   return (
-    <div className="grid min-h-[calc(100vh-3.5rem)] grid-cols-1 lg:grid-cols-[1fr_24rem]">
-      <section className="border-r border-line p-6 lg:p-8">
+    <div className="grid h-full min-h-0 grid-cols-1 overflow-y-auto lg:grid-cols-[1fr_24rem] lg:overflow-hidden">
+      <section className="border-r border-line p-6 lg:min-h-0 lg:overflow-y-auto lg:p-8">
         <div className="mb-6 flex items-end justify-between">
           <div>
             <p className="section-label">Ordered pipeline</p>
@@ -69,7 +69,7 @@ export function TransformationsPage() {
           )}
         </div>
       </section>
-      <aside className="bg-panel p-5">
+      <aside className="bg-panel p-5 lg:min-h-0 lg:overflow-y-auto">
         <p className="section-label">New transformation</p>
         <p className="mt-2 text-xs leading-5 text-muted">
           Global by default. Open scope controls for harness, model, or project overrides.
@@ -134,6 +134,9 @@ function RuleCard({
               <Tag key={value}>project:{value}</Tag>
             ))}
             {rule.scope.segments?.map((value) => (
+              <Tag key={value}>{value}</Tag>
+            ))}
+            {rule.scope.tools?.map((value) => (
               <Tag key={value}>{value}</Tag>
             ))}
           </div>

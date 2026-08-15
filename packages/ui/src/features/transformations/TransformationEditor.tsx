@@ -27,6 +27,11 @@ export function TransformationEditor({
   const [segment, setSegment] = useState(
     selectedPart?.identifier?.startsWith("segment:") === true ? selectedPart.identifier : "all",
   );
+  const [toolDefinition, setToolDefinition] = useState(
+    selectedPart?.kind === "tool" && selectedPart.identifier?.startsWith("tool:") === true
+      ? selectedPart.identifier
+      : "",
+  );
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -39,6 +44,7 @@ export function TransformationEditor({
         ...(model.trim() === "" ? {} : { models: [model.trim()] }),
         ...(project.trim() === "" ? {} : { projects: [project.trim()] }),
         ...(segment === "all" ? {} : { segments: [segment] }),
+        ...(toolDefinition.trim() === "" ? {} : { tools: [toolDefinition.trim()] }),
       },
       target: {
         field,
@@ -46,7 +52,7 @@ export function TransformationEditor({
           ? selectedPart === undefined
             ? {}
             : { path: selectedPart.path }
-          : operation === "delete_part" || selectedPart.kind === "tool"
+          : operation === "delete_part"
             ? { identifier: selectedPart.identifier }
             : {}),
       },
@@ -155,6 +161,14 @@ export function TransformationEditor({
           </Field>
         </div>
         <div className="space-y-3">
+          <Field label="Tool definition">
+            <input
+              value={toolDefinition}
+              onChange={(event) => setToolDefinition(event.target.value)}
+              className="input font-mono"
+              placeholder="Any tool definition"
+            />
+          </Field>
           <Field label="Model">
             <input
               value={model}

@@ -2,8 +2,8 @@ import { Link, Outlet } from "@tanstack/react-router";
 
 export function AppShell() {
   return (
-    <div className="min-h-screen bg-canvas text-ink">
-      <header className="flex h-14 items-center justify-between border-b border-line bg-panel px-5">
+    <div className="flex h-screen flex-col overflow-hidden bg-canvas text-ink">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-line bg-panel px-5">
         <div className="flex items-center gap-3">
           <div className="grid size-8 place-items-center rounded-lg bg-accent text-sm font-black text-canvas">
             CT
@@ -28,7 +28,7 @@ export function AppShell() {
           </Link>
         </nav>
       </header>
-      <main className="min-h-[calc(100vh-3.5rem)]">
+      <main className="min-h-0 flex-1 overflow-hidden">
         <Outlet />
       </main>
     </div>

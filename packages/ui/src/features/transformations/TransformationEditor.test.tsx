@@ -98,4 +98,43 @@ describe("TransformationEditor", () => {
       }),
     );
   });
+
+  it("scopes a replacement to the selected structured tool definition", async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn();
+    const selectedPart: ContextPart = {
+      id: "exec",
+      name: "functions.exec",
+      identifier: "tool:functions.exec",
+      text: "definition",
+      description: "Execute commands safely",
+      characters: 10,
+      estimatedTokens: 3,
+      digest: "c".repeat(64),
+      path: "input[0].tools[0].tools[0]",
+      phase: "prewarm",
+      kind: "tool",
+    };
+    render(
+      <TransformationEditor
+        onCreate={onCreate}
+        selectedPart={selectedPart}
+        initialFind="commands"
+      />,
+    );
+
+    expect((screen.getByLabelText("Tool definition") as HTMLInputElement).value).toBe(
+      "tool:functions.exec",
+    );
+    await user.type(screen.getByLabelText("Name"), "Trim exec");
+    await user.type(screen.getByLabelText("Replace with"), "tasks");
+    await user.click(screen.getByRole("button", { name: "Add transformation" }));
+
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: { tools: ["tool:functions.exec"] },
+        target: { field: "tool_description" },
+      }),
+    );
+  });
 });

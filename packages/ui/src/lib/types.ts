@@ -60,6 +60,7 @@ export interface Transformation {
     models?: string[];
     projects?: string[];
     segments?: string[];
+    tools?: string[];
   };
   target: {
     field: "message_text" | "tool_description" | "all_text" | "tool";
