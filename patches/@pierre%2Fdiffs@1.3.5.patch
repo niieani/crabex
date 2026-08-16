@@ -1,0 +1,145 @@
+diff --git a/dist/editor/editor.d.ts b/dist/editor/editor.d.ts
+index af9e2ad32ee689737adb94e782cf8006f1ba70f4..5be2dd5a740c31eb2cc3a502a16a3f4b3fcc66be 100644
+--- a/dist/editor/editor.d.ts
++++ b/dist/editor/editor.d.ts
+@@ -8,6 +8,11 @@ import { PersistStateStorage } from "./stateStorage.js";
+ 
+ //#region src/editor/editor.d.ts
+ interface EditorOptions<LAnnotation> {
++  /**
++   * Keep editor selection, search, markers, copying, and selection actions active
++   * while preventing document mutations. Defaults to false.
++   */
++  readOnly?: boolean;
+   /** The maximum number of entries to keep in the undo stack. */
+   historyMaxEntries?: number;
+   /** Custom keymap groups checked before defaults; later groups take precedence. */
+diff --git a/dist/editor/editor.js b/dist/editor/editor.js
+index b7b69976faebc4a7edfeb19f240c0845bca0b5a0..0c63590d9026a1585baa081e57e6be411e4d7729 100644
+--- a/dist/editor/editor.js
++++ b/dist/editor/editor.js
+@@ -130,6 +130,7 @@ var Editor = class {
+ 	}
+ 	setOptions(options) {
+ 		const previousStorageOption = this.#options.persistStateStorage ?? "inMemory";
++		const previousReadOnly = this.#options.readOnly === true;
+ 		const nextOptions = {
+ 			...this.#options,
+ 			...options
+@@ -139,6 +140,15 @@ var Editor = class {
+ 			if (file !== void 0) requirePersistedCacheKey(file);
+ 		}
+ 		this.#options = nextOptions;
++		if ((this.#options.readOnly === true) !== previousReadOnly && this.#contentElement !== void 0) {
++			this.#contentElement.contentEditable = "true";
++			this.#contentElement.setAttribute("aria-readonly", String(this.#options.readOnly === true));
++			if (this.#options.readOnly === true) {
++				this.#searchPanel?.close();
++				this.#searchPanel = void 0;
++				this.#retainSearchPanelFocus = false;
++			}
++		}
+ 		if (this.#options.persistState !== true) {
+ 			this.#textDocumentCache.clear();
+ 			this.#stateRestoreGeneration++;
+@@ -173,6 +183,7 @@ var Editor = class {
+ 	* are remapped during replay and the text edit still joins the undo timeline.
+ 	*/
+ 	applyEdits(edits, updateHistory = true) {
++		if (this.#options.readOnly === true) return;
+ 		const textDocument = this.#textDocument;
+ 		if (textDocument == null) throw new Error("Editor is not attached");
+ 		const wasFocused = this.#contentHasFocus;
+@@ -198,10 +209,12 @@ var Editor = class {
+ 	}
+ 	/** Undo the last edit. Does nothing when there is nothing to undo. */
+ 	undo() {
++		if (this.#options.readOnly === true) return;
+ 		this.#runCommand("undo");
+ 	}
+ 	/** Redo the last undone edit. Does nothing when there is nothing to redo. */
+ 	redo() {
++		if (this.#options.readOnly === true) return;
+ 		this.#runCommand("redo");
+ 	}
+ 	getFile() {
+@@ -489,8 +502,9 @@ var Editor = class {
+ 		if (this.#contentElement !== contentEl) {
+ 			this.#gutterElement = gutterEl;
+ 			this.#contentElement = extend(contentEl, {
+ 				contentEditable: "true",
+ 				role: "textbox",
++				ariaReadOnly: String(this.#options.readOnly === true),
+ 				ariaMultiLine: "true",
+ 				autocapitalize: "off",
+ 				writingSuggestions: "off",
+@@ -1137,6 +1151,13 @@ var Editor = class {
+ 	#runCommand(command) {
+ 		const textDocument = this.#textDocument;
+ 		if (textDocument === void 0) return;
++		if (this.#options.readOnly === true) {
++			if (command === "openSearchReplacePanel") {
++				this.#openSearchPanel("find");
++				return;
++			}
++			if (["moveLineUp", "moveLineDown", "copyLineUp", "copyLineDown", "insertBlankLine", "deleteHardLineForward", "toggleComment", "toggleBlockComment", "indent", "outdent", "indentLess", "indentMore", "undo", "redo"].includes(command)) return;
++		}
+ 		switch (command) {
+ 			case "openSearchPanel":
+ 				this.#openSearchPanel("find");
+@@ -1336,6 +1357,7 @@ var Editor = class {
+ 		}
+ 	}
+ 	#applyHistoryChange(command) {
++		if (this.#options.readOnly === true) return;
+ 		const textDocument = this.#textDocument;
+ 		if (textDocument === void 0) return;
+ 		if (command === "undo" && !textDocument.canUndo || command === "redo" && !textDocument.canRedo) return;
+@@ -1349,6 +1371,7 @@ var Editor = class {
+ 	}
+ 	/** Applies one undoable command batch and records its resulting selections. */
+ 	#applyCommandEdits(edits, resolveNextSelections) {
++		if (this.#options.readOnly === true) return;
+ 		const textDocument = this.#textDocument;
+ 		const selections = this.#selections;
+ 		if (textDocument === void 0 || selections === void 0) return;
+@@ -1698,6 +1721,7 @@ var Editor = class {
+ 		if (this.#options.__debug === true) console.log(`[diffs/editor] re-render in: ${round(performance.now() - t2)}ms,`, `tokenize in: ${round(t2 - t)}ms (${dirtyLines.size} dirty lines)`);
+ 	}
+ 	#handleInput(inputType, data) {
++		if (this.#options.readOnly === true) return;
+ 		switch (inputType) {
+ 			case "insertText": {
+ 				const text = data ?? "";
+@@ -2454,6 +2478,7 @@ var Editor = class {
+ 			initialMatch,
+ 			scrollToMatch,
+ 			applyReplace: (edits) => {
++				if (this.#options.readOnly === true) return;
+ 				if (edits.length === 0) return;
+ 				const change = textDocument.applyEdits(edits.map((edit) => ({
+ 					range: {
+@@ -2525,6 +2550,7 @@ var Editor = class {
+ 		const textDocument = this.#textDocument;
+ 		const selections = this.#selections;
+ 		if (textDocument === void 0 || selections === void 0 || selections.length === 0) return "";
++		if (this.#options.readOnly === true) return getSelectionText(textDocument, selections);
+ 		if (selections.some((selection) => isCollapsedSelection(selection))) {
+ 			const cut = resolveSelectionCut(textDocument, selections);
+ 			this.#applySelectionCutEdits(cut.edits, cut.nextSelectionOffsets);
+@@ -2535,6 +2561,7 @@ var Editor = class {
+ 		return text;
+ 	}
+ 	#applySelectionCutEdits(edits, nextSelectionOffsets) {
++		if (this.#options.readOnly === true) return;
+ 		const textDocument = this.#textDocument;
+ 		const selections = this.#selections;
+ 		if (textDocument === void 0 || selections === void 0 || edits.length === 0) return;
+@@ -2552,6 +2579,7 @@ var Editor = class {
+ 		this.#applyChange(change, nextSelections, this.#applyChangeToLineAnnotations(change));
+ 	}
+ 	#replaceSelectionText(text, selections = this.#selections, undoBoundary = false, textOrder = "selection") {
++		if (this.#options.readOnly === true) return;
+ 		if (selections === void 0) return;
+ 		const textDocument = this.#textDocument;
+ 		const primarySelection = selections.at(-1);

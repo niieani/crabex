@@ -32,6 +32,7 @@ export function ContextDiff({
   const createEditor = useCallback((options: EditorOptions<undefined>) => new Editor(options), []);
   const editorOptions = useMemo<EditorOptions<undefined>>(
     () => ({
+      readOnly: true,
       enabledSelectionAction: true,
       onAttach(editor) {
         editorRef.current = editor as Editor<undefined>;
