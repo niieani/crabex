@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+
+const { preloadHighlighter } = vi.hoisted(() => ({
+  preloadHighlighter: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock("@pierre/diffs", () => ({ preloadHighlighter }));
 
 vi.mock("@pierre/diffs/edit", () => ({
   Editor: class {
@@ -27,17 +33,40 @@ describe("ContextDiff read-only mode", () => {
   it.each([
     [undefined, "pierre-file"],
     ["original", "pierre-diff"],
-  ])("keeps the %s viewer selectable without making it editable", (original, testId) => {
-    render(
-      <ContextDiff
-        original={original}
-        effective="effective"
-        filename="context.md"
-        search=""
-        onTransformSelection={() => {}}
-      />,
+  ])("keeps the %s viewer selectable without making it editable", async (original, testId) => {
+    await act(() =>
+      render(
+        <ContextDiff
+          original={original}
+          effective="effective"
+          filename="context.md"
+          search=""
+          onTransformSelection={() => {}}
+        />,
+      ),
     );
 
-    expect(screen.getByTestId(testId).getAttribute("data-read-only")).toBe("true");
+    expect((await screen.findByTestId(testId)).getAttribute("data-read-only")).toBe("true");
+  });
+
+  it("loads JavaScript-family grammars before rendering Markdown", async () => {
+    await act(() =>
+      render(
+        <ContextDiff
+          effective={"```ts\nconst answer: number = 42\n```"}
+          filename="context.md"
+          search=""
+          onTransformSelection={() => {}}
+        />,
+      ),
+    );
+
+    await waitFor(() =>
+      expect(preloadHighlighter).toHaveBeenCalledWith({
+        langs: ["markdown", "javascript", "typescript", "jsx", "tsx"],
+        themes: ["pierre-dark"],
+      }),
+    );
+    expect(await screen.findByTestId("pierre-file")).toBeDefined();
   });
 });

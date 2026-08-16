@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import { markersForSearch } from "./ContextDiff.tsx";
+import { markersForSearch, setMarkersIfAttached } from "./ContextDiff.tsx";
 
 describe("markersForSearch", () => {
   it("returns zero-based ranges for every case-insensitive occurrence", () => {
@@ -13,5 +13,15 @@ describe("markersForSearch", () => {
 
   it("does not create markers for an empty query", () => {
     expect(markersForSearch("content", "  ")).toEqual([]);
+  });
+});
+
+describe("setMarkersIfAttached", () => {
+  it("does not update a detached Pierre editor", () => {
+    const setMarkers = vi.fn();
+
+    setMarkersIfAttached({ getFile: () => undefined, setMarkers }, []);
+
+    expect(setMarkers).not.toHaveBeenCalled();
   });
 });

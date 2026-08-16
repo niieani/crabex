@@ -1,6 +1,7 @@
+import { preloadHighlighter } from "@pierre/diffs";
 import { Editor, type EditorOptions } from "@pierre/diffs/edit";
 import { EditProvider, File, MultiFileDiff } from "@pierre/diffs/react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { Suspense, use, useCallback, useEffect, useMemo, useRef } from "react";
 
 import type { JsonPathSegment } from "../../lib/types.ts";
 import type { TextRange } from "./json-selection.ts";
@@ -10,14 +11,7 @@ export interface TransformSelection {
   jsonPath?: JsonPathSegment[];
 }
 
-export function ContextDiff({
-  original,
-  effective,
-  filename,
-  search,
-  onTransformSelection,
-  resolveTransformSelection,
-}: {
+interface ContextDiffProps {
   original?: string;
   effective: string;
   filename: string;
@@ -27,7 +21,30 @@ export function ContextDiff({
     text: string;
     range: TextRange;
   }) => TransformSelection | undefined;
-}) {
+}
+
+const contextDiffHighlighterReady = preloadHighlighter({
+  langs: ["markdown", "javascript", "typescript", "jsx", "tsx"],
+  themes: ["pierre-dark"],
+});
+
+export function ContextDiff(props: ContextDiffProps) {
+  return (
+    <Suspense fallback={null}>
+      <ReadyContextDiff {...props} />
+    </Suspense>
+  );
+}
+
+function ReadyContextDiff({
+  original,
+  effective,
+  filename,
+  search,
+  onTransformSelection,
+  resolveTransformSelection,
+}: ContextDiffProps) {
+  use(contextDiffHighlighterReady);
   const editorRef = useRef<Editor<undefined>>(undefined);
   const createEditor = useCallback((options: EditorOptions<undefined>) => new Editor(options), []);
   const editorOptions = useMemo<EditorOptions<undefined>>(
@@ -36,6 +53,7 @@ export function ContextDiff({
       enabledSelectionAction: true,
       onAttach(editor) {
         editorRef.current = editor as Editor<undefined>;
+        editorRef.current.setMarkers(markersForSearch(effective, search));
       },
       renderSelectionAction(context) {
         const selected = () => ({
@@ -66,11 +84,14 @@ export function ContextDiff({
         return button;
       },
     }),
-    [onTransformSelection, resolveTransformSelection],
+    [effective, onTransformSelection, resolveTransformSelection, search],
   );
 
   useEffect(() => {
-    editorRef.current?.setMarkers(markersForSearch(effective, search));
+    const editor = editorRef.current;
+    if (editor !== undefined) {
+      setMarkersIfAttached(editor, markersForSearch(effective, search));
+    }
   }, [effective, search]);
 
   const file = { name: filename, contents: effective, cacheKey: `${filename}:${effective.length}` };
@@ -126,4 +147,12 @@ export function markersForSearch(text: string, search: string) {
     }
   }
   return markers;
+}
+
+export function setMarkersIfAttached(
+  editor: Pick<Editor<undefined>, "getFile" | "setMarkers">,
+  markers: Parameters<Editor<undefined>["setMarkers"]>[0],
+) {
+  if (editor.getFile() === undefined) return;
+  editor.setMarkers(markers);
 }
