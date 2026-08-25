@@ -323,7 +323,10 @@ function transformMetadataTools(
   transformation: Transformation,
 ): number {
   if (transformation.scope.segments !== undefined) return 0;
-  if (transformation.operation.type !== "delete_part" || transformation.target.field !== "tool")
+  if (
+    transformation.target.field !== "json_value" &&
+    (transformation.operation.type !== "delete_part" || transformation.target.field !== "tool")
+  )
     return 0;
   const identifier = transformation.target.identifier;
   const clientMetadata = objectValue(payload.client_metadata);
@@ -339,6 +342,15 @@ function transformMetadataTools(
   }
   const registry = objectValue(metadata.code_mode_tool_names);
   if (registry === undefined) return 0;
+  if (transformation.target.field === "json_value") {
+    const jsonPath = transformation.target.jsonPath;
+    if (jsonPath === undefined) {
+      throw new Error(`JSON value transformation ${transformation.id} requires a path`);
+    }
+    const count = transformJsonValue(registry, jsonPath, transformation.operation);
+    if (count > 0) clientMetadata[metadataKey] = JSON.stringify(metadata);
+    return count;
+  }
   if (identifier === "registry:code_mode_tool_names") {
     delete metadata.code_mode_tool_names;
     clientMetadata[metadataKey] = JSON.stringify(metadata);

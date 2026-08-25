@@ -63,7 +63,7 @@ describe("ContextDiff read-only mode", () => {
 
     await waitFor(() =>
       expect(preloadHighlighter).toHaveBeenCalledWith({
-        langs: ["markdown", "javascript", "typescript", "jsx", "tsx"],
+        langs: ["json", "markdown", "javascript", "typescript", "jsx", "tsx"],
         themes: ["pierre-dark"],
       }),
     );

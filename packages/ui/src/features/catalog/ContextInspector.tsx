@@ -8,7 +8,7 @@ import type {
 } from "../../lib/types.ts";
 import { TransformationEditor } from "../transformations/TransformationEditor.tsx";
 import { ContextDiff, type TransformSelection } from "./ContextDiff.tsx";
-import { resolveJsonStringSelection } from "./json-selection.ts";
+import { resolveJsonStringSelection, type TextRange } from "./json-selection.ts";
 
 export function ContextInspector({
   snapshot,
@@ -26,6 +26,7 @@ export function ContextInspector({
   const [toolView, setToolView] = useState<"description" | "json">("description");
   const [search, setSearch] = useState("");
   const [selection, setSelection] = useState<TransformSelection>();
+  const [highlightRange, setHighlightRange] = useState<TextRange>();
   const ordered = useMemo(
     () =>
       sort === "size"
@@ -51,6 +52,9 @@ export function ContextInspector({
       <EmptyState title="No context parts" detail="The selected Probe has no text or tools." />
     );
   }
+
+  const selectedJsonView =
+    selected.json !== undefined && (selected.description === undefined || toolView === "json");
 
   return (
     <div className="grid min-h-[calc(100vh-8.75rem)] flex-1 grid-cols-1 xl:h-full xl:min-h-0 xl:grid-cols-[19rem_minmax(28rem,1fr)_22rem] xl:overflow-hidden">
@@ -100,9 +104,18 @@ export function ContextInspector({
               onClick={() => {
                 setSelectedKey(partKey(part));
                 setSelection(undefined);
+                setHighlightRange(undefined);
               }}
               disabledIdentifiers={disabledIdentifiers}
               onToggleIdentifier={onToggleIdentifier}
+              onSelectSection={(section) =>
+                setHighlightRange(
+                  textRangeForSubstring(
+                    selectedContent(selected, view, toolView),
+                    view === "original" ? (section.originalText ?? section.text) : section.text,
+                  ),
+                )
+              }
             />
           ))}
         </div>
@@ -127,6 +140,7 @@ export function ContextInspector({
                   onClick={() => {
                     setView("original");
                     setSelection(undefined);
+                    setHighlightRange(undefined);
                   }}
                   className={viewButton(view === "original")}
                 >
@@ -137,6 +151,7 @@ export function ContextInspector({
                   onClick={() => {
                     setView("effective");
                     setSelection(undefined);
+                    setHighlightRange(undefined);
                   }}
                   className={viewButton(view === "effective")}
                 >
@@ -151,33 +166,39 @@ export function ContextInspector({
               />
               <Metric
                 label="Est. tokens"
-                value={`~${formatNumber(Math.ceil(selectedText(selected, view).length / 4))}`}
+                value={`~${formatNumber(selectedTokenCount(selected, view))}`}
               />
             </div>
           </div>
         </div>
-        {selected.description === undefined ? null : (
+        {selected.description === undefined && selected.json === undefined ? null : (
           <div className="flex gap-1 border-b border-line px-6 py-2 text-[11px]">
-            <button
-              type="button"
-              className={viewButton(toolView === "description")}
-              onClick={() => {
-                setToolView("description");
-                setSelection(undefined);
-              }}
-            >
-              Description
-            </button>
-            <button
-              type="button"
-              className={viewButton(toolView === "json")}
-              onClick={() => {
-                setToolView("json");
-                setSelection(undefined);
-              }}
-            >
-              JSON
-            </button>
+            {selected.description === undefined ? null : (
+              <button
+                type="button"
+                className={viewButton(toolView === "description")}
+                onClick={() => {
+                  setToolView("description");
+                  setSelection(undefined);
+                  setHighlightRange(undefined);
+                }}
+              >
+                Description
+              </button>
+            )}
+            {selected.json === undefined ? null : (
+              <button
+                type="button"
+                className={viewButton(selectedJsonView)}
+                onClick={() => {
+                  setToolView("json");
+                  setSelection(undefined);
+                  setHighlightRange(undefined);
+                }}
+              >
+                JSON
+              </button>
+            )}
           </div>
         )}
         <div className="h-[calc(100vh-15.5rem)] overflow-auto p-6 xl:min-h-0 xl:flex-1">
@@ -185,13 +206,12 @@ export function ContextInspector({
             key={`${selected.id}:${view}:${toolView}`}
             original={diffOriginal(selected, view, toolView)}
             effective={selectedContent(selected, view, toolView)}
-            filename={
-              selected.kind === "tool" && toolView === "json" ? "context.json" : "context.md"
-            }
+            filename={selectedJsonView ? "context.json" : "context.md"}
             search={search}
+            highlightRange={highlightRange}
             onTransformSelection={setSelection}
             resolveTransformSelection={
-              selected.kind === "tool" && toolView === "json"
+              selectedJsonView
                 ? ({ range }) =>
                     resolveJsonStringSelection(
                       selectedContent(selected, view, toolView),
@@ -232,6 +252,7 @@ function PartButton({
   onClick,
   disabledIdentifiers,
   onToggleIdentifier,
+  onSelectSection,
 }: {
   part: ContextPart;
   totalCharacters: number;
@@ -239,6 +260,7 @@ function PartButton({
   onClick: () => void;
   disabledIdentifiers: ReadonlySet<string>;
   onToggleIdentifier?: (identifier: string, disabled: boolean) => void;
+  onSelectSection: (section: ContextSection) => void;
 }) {
   const percent = totalCharacters === 0 ? 0 : (part.characters / totalCharacters) * 100;
   return (
@@ -263,7 +285,7 @@ function PartButton({
               style={{ width: `${Math.max(percent, 1)}%` }}
             />
           </div>
-          <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted">
+          <div className="mt-1.5 flex items-center justify-between text-[10px] text-content">
             <span>{part.deleted ? "turned off" : part.phase}</span>
             <span>~{formatCompact(part.estimatedTokens)} tok</span>
           </div>
@@ -283,6 +305,7 @@ function PartButton({
             sections={part.sections}
             disabledIdentifiers={disabledIdentifiers}
             onToggleIdentifier={onToggleIdentifier}
+            onSelectSection={onSelectSection}
           />
         </div>
       )}
@@ -294,17 +317,20 @@ function SectionTree({
   sections,
   disabledIdentifiers,
   onToggleIdentifier,
+  onSelectSection,
 }: {
   sections: ContextSection[];
   disabledIdentifiers: ReadonlySet<string>;
   onToggleIdentifier?: (identifier: string, disabled: boolean) => void;
+  onSelectSection: (section: ContextSection) => void;
 }) {
   return (
     <div className="space-y-0.5">
       {sections.map((section) => (
         <details key={section.identifier} className="group">
           <summary
-            className={`flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] text-muted ${section.deleted ? "opacity-60 line-through" : ""}`}
+            onClick={() => onSelectSection(section)}
+            className={`flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] text-content ${section.deleted ? "opacity-60 line-through" : ""}`}
           >
             {section.children.length === 0 ? (
               <span className="w-3" />
@@ -331,6 +357,7 @@ function SectionTree({
                 sections={section.children}
                 disabledIdentifiers={disabledIdentifiers}
                 onToggleIdentifier={onToggleIdentifier}
+                onSelectSection={onSelectSection}
               />
             </div>
           )}
@@ -403,12 +430,22 @@ function selectedText(part: ContextPart, view: "original" | "effective"): string
   return view === "original" ? (part.originalText ?? part.text) : part.text;
 }
 
+function selectedTokenCount(part: ContextPart, view: "original" | "effective"): number {
+  return view === "original"
+    ? (part.originalEstimatedTokens ?? part.estimatedTokens)
+    : part.estimatedTokens;
+}
+
 function selectedContent(
   part: ContextPart,
   view: "original" | "effective",
   toolView: "description" | "json",
 ): string {
-  if (part.description === undefined) return selectedText(part, view);
+  if (part.description === undefined) {
+    return view === "original"
+      ? (part.originalJson ?? part.originalText ?? part.json ?? part.text)
+      : (part.json ?? part.text);
+  }
   if (toolView === "description") {
     return view === "original" ? (part.originalDescription ?? part.description) : part.description;
   }
@@ -423,7 +460,7 @@ function diffOriginal(
   toolView: "description" | "json",
 ): string | undefined {
   if (view === "original") return undefined;
-  if (part.description === undefined) return part.originalText;
+  if (part.description === undefined) return part.originalJson ?? part.originalText;
   return toolView === "description" ? part.originalDescription : part.originalJson;
 }
 
@@ -432,7 +469,26 @@ function partKey(part: ContextPart): string {
 }
 
 function searchableText(part: ContextPart): string {
-  return part.kind === "message" ? part.text : (part.description ?? "");
+  return part.kind === "message" ? part.text : (part.description ?? part.json ?? part.text);
+}
+
+function textRangeForSubstring(text: string, substring: string): TextRange | undefined {
+  if (substring === "") return undefined;
+  const startOffset = text.indexOf(substring);
+  if (startOffset === -1) return undefined;
+  return {
+    start: offsetToTextPosition(text, startOffset),
+    end: offsetToTextPosition(text, startOffset + substring.length),
+  };
+}
+
+function offsetToTextPosition(text: string, offset: number): { line: number; character: number } {
+  const before = text.slice(0, offset);
+  const lastNewline = before.lastIndexOf("\n");
+  return {
+    line: before.split("\n").length - 1,
+    character: offset - lastNewline - 1,
+  };
 }
 
 function phaseBadge(phase: ContextPart["phase"]): string {

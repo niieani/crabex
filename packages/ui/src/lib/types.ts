@@ -16,6 +16,7 @@ export interface ContextPart {
   text: string;
   characters: number;
   estimatedTokens: number;
+  originalEstimatedTokens?: number;
   digest: string;
   identifier?: string;
   description?: string;
@@ -34,6 +35,7 @@ export interface ContextSection {
   text: string;
   characters: number;
   estimatedTokens: number;
+  originalEstimatedTokens?: number;
   children: ContextSection[];
   originalText?: string;
   deleted?: boolean;
@@ -44,6 +46,7 @@ export interface ContextSnapshot {
   sessionId: string;
   timestamp: string;
   model: string;
+  tokenization: { encoding: "o200k_base"; fallback: boolean };
   harness: HarnessIdentity;
   project?: string;
   requestSequences: number[];

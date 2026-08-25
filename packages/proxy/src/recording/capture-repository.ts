@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { buildSnapshots, type ContextSnapshot } from "../context/snapshot.ts";
 import { transformResponseCreate, type ResponseCreatePayload } from "../context/transform.ts";
 import type { Transformation, TransformationTelemetry } from "../context/transformation.ts";
-import type { CaptureEvent } from "./capture.ts";
+import type { CaptureEvent, FullCaptureEvent } from "./capture.ts";
 
 export interface SnapshotSource {
   list(): Promise<ContextSnapshot[]>;
@@ -80,6 +80,7 @@ export class FileCaptureRepository implements SnapshotSource {
 
 function previewEvent(event: CaptureEvent, transformations: Transformation[]): CaptureEvent {
   if (event.direction !== "client_to_upstream" || event.encoding !== "utf8") return event;
+  if (!("payload" in event)) return event;
   let payload: ResponseCreatePayload;
   try {
     payload = JSON.parse(event.payload) as ResponseCreatePayload;
@@ -92,7 +93,7 @@ function previewEvent(event: CaptureEvent, transformations: Transformation[]): C
     project: event.project,
   });
   const effectivePayload = JSON.stringify(result.payload);
-  const preview = structuredClone(event);
+  const preview: FullCaptureEvent = structuredClone(event);
   delete preview.effectivePayload;
   delete preview.transformationExecutions;
   if (effectivePayload !== event.payload) preview.effectivePayload = effectivePayload;

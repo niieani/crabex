@@ -1,15 +1,10 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  CaptureDirection,
-  CaptureEncoding,
-  CaptureSink,
-  CaptureTransport,
-} from "../recording/capture.ts";
+import type { CaptureSink } from "../recording/capture.ts";
 import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
-import { transformResponseCreate, type ResponseCreatePayload } from "../context/transform.ts";
-import type { Transformation, TransformationExecution } from "../context/transformation.ts";
+import type { Transformation } from "../context/transformation.ts";
 import { CloudflareCookieJar } from "./cloudflare-cookie-jar.ts";
+import { CaptureFailure, EventRecorder, processClientPayload } from "./event-recorder.ts";
 import type { LocalApi } from "../api/local-api.ts";
 
 const DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024;
@@ -129,6 +124,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             );
             await data.recorder.record("websocket", "client_to_upstream", message, encoding, {
               effectivePayload: processed.effectivePayload,
+              requestSummary: processed.requestSummary,
+              transformationChanged: processed.transformationChanged,
               transformationExecutions: processed.transformationExecutions,
               harness: data.harness,
               project: data.project,
@@ -176,6 +173,8 @@ async function proxyHttpRequest(
     );
     await recorder.record("http", "client_to_upstream", body, "utf8", {
       effectivePayload: processed.effectivePayload,
+      requestSummary: processed.requestSummary,
+      transformationChanged: processed.transformationChanged,
       transformationExecutions: processed.transformationExecutions,
       harness,
       project,
@@ -294,94 +293,6 @@ function connectWebSocket(
   });
 }
 
-class EventRecorder {
-  #sequence = 0;
-  readonly #sessionId: string;
-  readonly #sink: CaptureSink;
-  readonly #now: () => Date;
-
-  constructor(sink: CaptureSink, now: () => Date, createSessionId: () => string) {
-    this.#sink = sink;
-    this.#now = now;
-    this.#sessionId = createSessionId();
-  }
-
-  async record(
-    transport: CaptureTransport,
-    direction: CaptureDirection,
-    value: string | ArrayBuffer | Uint8Array,
-    encoding: CaptureEncoding,
-    metadata: {
-      effectivePayload?: string;
-      transformationExecutions?: TransformationExecution[];
-      harness?: HarnessIdentity;
-      project?: string;
-    } = {},
-  ): Promise<void> {
-    const payload =
-      typeof value === "string"
-        ? value
-        : bufferFrom(value).toString(encoding === "base64" ? "base64" : "utf8");
-    try {
-      await this.#sink.record({
-        sessionId: this.#sessionId,
-        sequence: ++this.#sequence,
-        timestamp: this.#now().toISOString(),
-        transport,
-        direction,
-        encoding,
-        payload,
-        ...(metadata.effectivePayload === undefined
-          ? {}
-          : { effectivePayload: metadata.effectivePayload }),
-        ...(metadata.transformationExecutions === undefined
-          ? {}
-          : { transformationExecutions: metadata.transformationExecutions }),
-        ...(metadata.harness === undefined ? {} : { harness: metadata.harness }),
-        ...(metadata.project === undefined ? {} : { project: metadata.project }),
-      });
-    } catch (error) {
-      throw new CaptureFailure(error);
-    }
-  }
-}
-
-function processClientPayload(
-  value: string | ArrayBuffer | Uint8Array,
-  encoding: CaptureEncoding,
-  transformations: Transformation[],
-  harness: HarnessIdentity,
-  project: string | undefined,
-): {
-  value: string | ArrayBuffer | Uint8Array;
-  effectivePayload?: string;
-  transformationExecutions?: TransformationExecution[];
-} {
-  if (encoding !== "utf8" || transformations.length === 0) return { value };
-  const original = typeof value === "string" ? value : bufferFrom(value).toString("utf8");
-  let payload: ResponseCreatePayload;
-  try {
-    payload = JSON.parse(original) as ResponseCreatePayload;
-  } catch {
-    return { value };
-  }
-  if (payload.type !== "response.create") return { value };
-  const result = transformResponseCreate(payload, transformations, { harness, project });
-  const effectivePayload = JSON.stringify(result.payload);
-  const changed = effectivePayload !== original;
-  return {
-    value: changed ? effectivePayload : value,
-    ...(changed ? { effectivePayload } : {}),
-    transformationExecutions: result.executions,
-  };
-}
-
-class CaptureFailure extends Error {
-  constructor(cause: unknown) {
-    super("capture failed", { cause });
-  }
-}
-
 class RequestTooLarge extends Error {
   constructor() {
     super("request body too large");
@@ -469,12 +380,6 @@ function closeUpstream(socket: WebSocket, code: number, reason: string): void {
 
 function mergeCookies(existing: string | null, cloudflare: string): string {
   return existing === null || existing === "" ? cloudflare : `${existing}; ${cloudflare}`;
-}
-
-function bufferFrom(value: ArrayBuffer | Uint8Array): Buffer {
-  return value instanceof ArrayBuffer
-    ? Buffer.from(value)
-    : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
 }
 
 function errorMessage(error: unknown): string {

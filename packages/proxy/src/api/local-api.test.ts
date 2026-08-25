@@ -13,6 +13,7 @@ describe("local context API", () => {
         sessionId: "session",
         timestamp: "2026-08-15T00:00:00.000Z",
         model: "gpt-5.6-luna",
+        tokenization: { encoding: "o200k_base", fallback: false },
         harness: { kind: "tui", version: "0.146.0" },
         requestSequences: [1, 2],
         parts: [],

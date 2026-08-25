@@ -62,8 +62,14 @@ Codex subprocesses launched from inside Codex Desktop can inherit Desktop
 originator identity. Trust the harness shown in the capture; run the Probe from
 an independent terminal when specifically testing TUI-scoped transformations.
 
-Captures persist under `.agent-context-trimmer/captures`. To inspect captures
-from another directory, start the proxy with an explicit `--captures <dir>`.
+Captures persist under `.agent-context-trimmer/captures`. New captures retain
+full payloads only through the first ordinary user message in a Probe. Later
+client and upstream events retain metadata—protocol fields, message roles and
+stable harness classifications, payload size, usage, and transformation
+executions—but no raw payload or effective payload. Harness-injected messages
+such as `<environment_context>` do not end the full-capture window. Existing
+capture files are not rewritten. To inspect captures from another directory,
+start the proxy with an explicit `--captures <dir>`.
 
 ## Commands
 

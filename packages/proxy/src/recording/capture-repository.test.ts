@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 
 import { describe, expect, it } from "vite-plus/test";
 
-import type { CaptureEvent } from "./capture.ts";
+import type { CaptureEvent, FullCaptureEvent } from "./capture.ts";
 import { FileCaptureRepository } from "./capture-repository.ts";
 import type { Transformation } from "../context/transformation.ts";
 
@@ -163,7 +163,7 @@ function event(
   sequence: number,
   direction: CaptureEvent["direction"],
   payload: unknown,
-): CaptureEvent {
+): FullCaptureEvent {
   return {
     sessionId: "session",
     sequence,

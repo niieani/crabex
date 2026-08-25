@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { CaptureEvent } from "../recording/capture.ts";
+import type { CaptureEvent, FullCaptureEvent } from "../recording/capture.ts";
 import { buildSnapshots } from "./snapshot.ts";
 
 describe("buildSnapshots", () => {
@@ -37,6 +37,7 @@ describe("buildSnapshots", () => {
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]).toMatchObject({
       model: "gpt-5.6-luna",
+      tokenization: { encoding: "o200k_base", fallback: false },
       requestSequences: [1, 3],
       usage: { inputTokens: 180, cachedTokens: 90 },
     });
@@ -46,6 +47,46 @@ describe("buildSnapshots", () => {
       "hi",
     ]);
     expect(snapshots[0]?.parts.every((part) => part.digest.length === 64)).toBe(true);
+  });
+
+  it("uses metadata-only response completion events for usage correlation", () => {
+    const request = event(1, "client_to_upstream", {
+      type: "response.create",
+      model: "gpt-5.6-luna",
+      input: [message("user", "hi")],
+    });
+    const completed: CaptureEvent = {
+      sessionId: "session-1",
+      sequence: 2,
+      timestamp: new Date(2000).toISOString(),
+      transport: "websocket",
+      direction: "upstream_to_client",
+      encoding: "utf8",
+      payloadMode: "metadata",
+      payloadBytes: 120,
+      responseSummary: {
+        type: "response.completed",
+        id: "resp_1",
+        usage: { inputTokens: 12, cachedTokens: 4 },
+      },
+    };
+
+    expect(buildSnapshots([request, completed])[0]).toMatchObject({
+      usage: { inputTokens: 12, cachedTokens: 4 },
+    });
+  });
+
+  it("counts snapshot text with o200k_base", () => {
+    const snapshot = buildSnapshots([
+      event(1, "client_to_upstream", {
+        type: "response.create",
+        model: "gpt-5.6-luna",
+        input: [message("user", "お誕生日おめでとう")],
+      }),
+    ])[0];
+
+    expect(snapshot?.tokenization).toEqual({ encoding: "o200k_base", fallback: false });
+    expect(snapshot?.parts[0]?.estimatedTokens).toBe(8);
   });
 
   it("keeps original text beside transformed effective text", () => {
@@ -71,6 +112,8 @@ describe("buildSnapshots", () => {
     expect(snapshots[0]?.parts[0]).toMatchObject({
       text: "effective",
       originalText: "original",
+      estimatedTokens: 1,
+      originalEstimatedTokens: 1,
     });
   });
 
@@ -328,7 +371,7 @@ function event(
   sequence: number,
   direction: CaptureEvent["direction"],
   payload: unknown,
-): CaptureEvent {
+): FullCaptureEvent {
   return {
     sessionId: "session-1",
     sequence,

@@ -8,10 +8,22 @@ import type { ContextSnapshot } from "../../lib/types.ts";
 import { ContextInspector } from "./ContextInspector.tsx";
 
 vi.mock("./ContextDiff.tsx", () => ({
-  ContextDiff: ({ original, effective }: { original?: string; effective: string }) => (
+  ContextDiff: ({
+    original,
+    effective,
+    filename,
+    highlightRange,
+  }: {
+    original?: string;
+    effective: string;
+    filename: string;
+    highlightRange?: unknown;
+  }) => (
     <div data-testid="context-diff">
+      <output data-testid="diff-filename">{filename}</output>
       <pre data-testid="diff-original">{original}</pre>
       <pre data-testid="diff-effective">{effective}</pre>
+      <pre data-testid="diff-highlight-range">{JSON.stringify(highlightRange)}</pre>
     </div>
   ),
 }));
@@ -23,6 +35,7 @@ const snapshot: ContextSnapshot = {
   sessionId: "session",
   timestamp: "2026-08-15T00:00:00.000Z",
   model: "gpt-5.6-luna",
+  tokenization: { encoding: "o200k_base", fallback: false },
   harness: { kind: "tui", version: "0.146.0" },
   project: "fixture",
   requestSequences: [1, 3],
@@ -75,6 +88,29 @@ describe("ContextInspector", () => {
     expect(originalDiffText(container)).toContain("Wait originally.…");
   });
 
+  it("uses backend token counts for effective and original text", async () => {
+    const user = userEvent.setup();
+    render(
+      <ContextInspector
+        snapshot={{
+          ...snapshot,
+          parts: [
+            {
+              ...snapshot.parts[0]!,
+              estimatedTokens: 8,
+              originalText: "original text",
+              originalEstimatedTokens: 5,
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("~8")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Original" }));
+    expect(screen.getByText("~5")).toBeTruthy();
+  });
+
   it("toggles classified parts and nested skills by identifier", async () => {
     const user = userEvent.setup();
     const onToggleIdentifier = vi.fn();
@@ -117,6 +153,31 @@ describe("ContextInspector", () => {
     await user.click(screen.getByRole("button", { name: "Expand Skills" }));
     await user.click(screen.getByRole("switch", { name: "Disable imagegen" }));
     expect(onToggleIdentifier).toHaveBeenCalledWith("skill:imagegen", true);
+  });
+
+  it("keeps nested labels readable inside a selected part", () => {
+    render(<ContextInspector snapshot={classifiedSnapshot("selected-id", "## Skills\ntext")} />);
+
+    expect(screen.getByText("Skills").closest("summary")?.className).toContain("text-content");
+    expect(screen.getByText("imagegen").closest("summary")?.className).toContain("text-content");
+  });
+
+  it("highlights a clicked nested item in the viewer", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <ContextInspector
+        snapshot={classifiedSnapshot("clickable-id", "## Skills\ntext\n- imagegen: Generate")}
+      />,
+    );
+
+    await user.click(screen.getByText("imagegen"));
+
+    expect(container.querySelector('[data-testid="diff-highlight-range"]')?.textContent).toBe(
+      JSON.stringify({
+        start: { line: 2, character: 0 },
+        end: { line: 2, character: 20 },
+      }),
+    );
   });
 
   it("searches Markdown across context parts", async () => {
@@ -233,6 +294,28 @@ describe("ContextInspector", () => {
 
     expect(onToggleIdentifier).toHaveBeenCalledWith("registry-group:mcp__codex_apps", true);
   });
+
+  it("renders code-mode metadata as JSON even without a description", async () => {
+    const user = userEvent.setup();
+    const registry: ContextSnapshot = {
+      ...snapshot,
+      parts: [
+        {
+          ...snapshot.parts[1]!,
+          name: "Code mode tools",
+          identifier: "registry:code_mode_tool_names",
+          text: '{\n  "apply_patch": {\n    "name": "apply_patch"\n  }\n}',
+          json: '{\n  "apply_patch": {\n    "name": "apply_patch"\n  }\n}',
+        },
+      ],
+    };
+    const { container } = render(<ContextInspector snapshot={registry} />);
+
+    expect(screen.getByRole("button", { name: "JSON" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await waitFor(() => expect(diffText(container)).toContain('"apply_patch"'));
+    expect(screen.getByTestId("diff-filename").textContent).toBe("context.json");
+  });
 });
 
 function classifiedSnapshot(id: string, sectionText: string): ContextSnapshot {
@@ -242,6 +325,7 @@ function classifiedSnapshot(id: string, sectionText: string): ContextSnapshot {
       {
         ...snapshot.parts[0]!,
         id,
+        text: sectionText,
         name: "Skills instructions",
         identifier: "segment:skills",
         sections: [

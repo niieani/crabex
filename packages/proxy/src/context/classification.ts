@@ -11,6 +11,25 @@ export interface ContentSection extends ContentClassification {
   children: ContentSection[];
 }
 
+interface SourceLine {
+  value: string;
+  start: number;
+  end: number;
+}
+
+interface MarkdownHeading {
+  line: SourceLine;
+  level: number;
+  label: string;
+  toolName?: string;
+}
+
+interface GeneratedToolAnchor {
+  start: number;
+  footerEnd: number;
+  toolName: string;
+}
+
 const MESSAGE_CLASSIFICATIONS: Array<{
   role: string;
   prefix: string;
@@ -79,13 +98,20 @@ export function classifyMessage(
 
 export function markdownSections(text: string, parentId: string): ContentSection[] {
   const lines = sourceLines(text);
-  const headings = lines.flatMap((line) => {
-    const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line.value);
-    if (match === null) return [];
-    const rawLabel = (match[2] ?? "").trim();
-    const label = stripHeadingMarkup(rawLabel);
-    return [{ line, level: match[1]?.length ?? 1, label, toolName: toolHeadingName(rawLabel) }];
-  });
+  const parsedHeadings = markdownHeadings(lines);
+  const headings =
+    parentId === "tool:functions.exec"
+      ? generatedExecHeadings(lines, parsedHeadings)
+      : parsedHeadings;
+  return buildSectionTree(text, parentId, headings, lines);
+}
+
+function buildSectionTree(
+  text: string,
+  parentId: string,
+  headings: MarkdownHeading[],
+  lines: SourceLine[],
+): ContentSection[] {
   const roots: ContentSection[] = [];
   const stack: Array<{ level: number; section: ContentSection }> = [];
 
@@ -133,8 +159,150 @@ export function markdownSections(text: string, parentId: string): ContentSection
   return roots;
 }
 
-function sourceLines(text: string): Array<{ value: string; start: number; end: number }> {
-  const lines: Array<{ value: string; start: number; end: number }> = [];
+function markdownHeadings(lines: SourceLine[]): MarkdownHeading[] {
+  const headings: MarkdownHeading[] = [];
+  let fence: { marker: string; length: number } | undefined;
+
+  for (const line of lines) {
+    const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line.value);
+    if (fenceMatch !== null) {
+      const run = fenceMatch[1] ?? "";
+      const marker = run[0] ?? "";
+      if (fence === undefined) fence = { marker, length: run.length };
+      else if (marker === fence.marker && run.length >= fence.length) fence = undefined;
+      continue;
+    }
+    if (fence !== undefined) continue;
+
+    const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line.value);
+    if (match === null) continue;
+    const rawLabel = (match[2] ?? "").trim();
+    headings.push({
+      line,
+      level: match[1]?.length ?? 1,
+      label: stripHeadingMarkup(rawLabel),
+      toolName: toolHeadingName(rawLabel),
+    });
+  }
+
+  return headings;
+}
+
+function generatedExecHeadings(
+  lines: SourceLine[],
+  headings: MarkdownHeading[],
+): MarkdownHeading[] {
+  // Codex concatenates arbitrary tool-description Markdown beneath generated H3 headings.
+  // Declaration footers are the stable delimiters; raw heading levels inside a tool are not.
+  const anchors = generatedToolAnchors(lines, headings);
+  if (anchors.length === 0) return headings;
+
+  const anchorsByStart = new Map(anchors.map((anchor) => [anchor.start, anchor]));
+  const namespaceHeadings = new Map<number, string>();
+  for (const heading of headings) {
+    if (heading.level !== 2 || isInsideGeneratedTool(heading.line.start, anchors)) continue;
+    const nextTool = anchors.find((anchor) => anchor.start > heading.line.start);
+    if (nextTool === undefined) continue;
+    const namespace = normalizeCodeModeIdentifier(heading.label);
+    if (nextTool.toolName.startsWith(`${namespace}__`)) {
+      namespaceHeadings.set(heading.line.start, namespace);
+    }
+  }
+
+  const toolLevels = new Map<number, number>();
+  for (const anchor of anchors) {
+    const namespace = [...namespaceHeadings.entries()]
+      .filter(([start]) => start < anchor.start)
+      .at(-1)?.[1];
+    toolLevels.set(
+      anchor.start,
+      namespace !== undefined && anchor.toolName.startsWith(`${namespace}__`) ? 2 : 1,
+    );
+  }
+
+  const minimumToolHeadingLevels = new Map<number, number>();
+  for (const anchor of anchors) {
+    const levels = headings
+      .filter(
+        (heading) =>
+          heading.line.start > anchor.start &&
+          heading.line.start < anchor.footerEnd &&
+          !anchorsByStart.has(heading.line.start),
+      )
+      .map((heading) => heading.level);
+    if (levels.length > 0) minimumToolHeadingLevels.set(anchor.start, Math.min(...levels));
+  }
+
+  return headings.map((heading) => {
+    const anchor = anchorsByStart.get(heading.line.start);
+    if (anchor !== undefined) {
+      return { ...heading, level: toolLevels.get(anchor.start) ?? 1, toolName: anchor.toolName };
+    }
+    if (namespaceHeadings.has(heading.line.start)) {
+      return { ...heading, level: 1, toolName: undefined };
+    }
+
+    const owner = anchors.find(
+      (candidate) =>
+        heading.line.start > candidate.start && heading.line.start < candidate.footerEnd,
+    );
+    if (owner !== undefined) {
+      const toolLevel = toolLevels.get(owner.start) ?? 1;
+      const minimumLevel = minimumToolHeadingLevels.get(owner.start) ?? heading.level;
+      return {
+        ...heading,
+        level: toolLevel + 1 + heading.level - minimumLevel,
+        toolName: undefined,
+      };
+    }
+
+    return { ...heading, toolName: undefined };
+  });
+}
+
+function generatedToolAnchors(
+  lines: SourceLine[],
+  headings: MarkdownHeading[],
+): GeneratedToolAnchor[] {
+  const anchors: GeneratedToolAnchor[] = [];
+
+  for (const [index, line] of lines.entries()) {
+    if (line.value.trim() !== "exec tool declaration:") continue;
+    const openingFence = lines[index + 1];
+    const declaration = lines[index + 2];
+    if (openingFence?.value.trim() !== "```ts" || declaration === undefined) continue;
+    const declarationMatch = /^declare const tools: \{ ([a-zA-Z_$][a-zA-Z0-9_$]*)\(/.exec(
+      declaration.value,
+    );
+    const toolName = declarationMatch?.[1];
+    if (toolName === undefined) continue;
+    const closingFence = lines
+      .slice(index + 3)
+      .find((candidate) => candidate.value.trim() === "```");
+    if (closingFence === undefined) continue;
+    const heading = headings
+      .filter(
+        (candidate) =>
+          candidate.level === 3 &&
+          candidate.toolName === toolName &&
+          candidate.line.start < line.start,
+      )
+      .at(-1);
+    if (heading === undefined || anchors.some((anchor) => anchor.start === heading.line.start)) {
+      continue;
+    }
+    anchors.push({ start: heading.line.start, footerEnd: closingFence.end, toolName });
+  }
+
+  return anchors.sort((left, right) => left.start - right.start);
+}
+
+function isInsideGeneratedTool(offset: number, anchors: GeneratedToolAnchor[]): boolean {
+  return anchors.some((anchor) => offset > anchor.start && offset < anchor.footerEnd);
+}
+
+function sourceLines(text: string): SourceLine[] {
+  const lines: SourceLine[] = [];
   let start = 0;
   while (start < text.length) {
     const newline = text.indexOf("\n", start);
@@ -157,12 +325,25 @@ function nextBoundary(
 }
 
 function stripHeadingMarkup(value: string): string {
-  return value.replace(/^`|`$/g, "").trim();
+  return toolHeadingName(value) ?? value.replace(/^`|`$/g, "").trim();
 }
 
 function toolHeadingName(rawLabel: string): string | undefined {
-  const match = /^`([a-zA-Z0-9_]+)`$/.exec(rawLabel);
+  const match = /^`([a-zA-Z_$][a-zA-Z0-9_$]*)`(?: \(`[^`]+`\))?$/.exec(rawLabel);
   return match?.[1];
+}
+
+function normalizeCodeModeIdentifier(value: string): string {
+  const normalized = Array.from(value)
+    .map((character, index) => {
+      const valid =
+        character === "_" ||
+        character === "$" ||
+        (index === 0 ? /[a-zA-Z]/.test(character) : /[a-zA-Z0-9]/.test(character));
+      return valid ? character : "_";
+    })
+    .join("");
+  return normalized || "_";
 }
 
 function slug(value: string): string {

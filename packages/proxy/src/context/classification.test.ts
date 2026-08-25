@@ -89,4 +89,99 @@ describe("markdownSections", () => {
       },
     ]);
   });
+
+  it("keeps generated exec tools structural when descriptions contain higher-level headings", () => {
+    const text = [
+      "### `read_mcp_resource`",
+      "Read a resource.",
+      "",
+      "exec tool declaration:",
+      "```ts",
+      "declare const tools: { read_mcp_resource(args: {}): Promise<unknown>; };",
+      "```",
+      "",
+      "### `request_plugin_install`",
+      "# Suggest a recommended plugin installation",
+      "Details.",
+      "",
+      "exec tool declaration:",
+      "```ts",
+      "declare const tools: { request_plugin_install(args: {}): Promise<unknown>; };",
+      "```",
+      "",
+      "### `update_plan`",
+      "Updates the plan.",
+      "",
+      "exec tool declaration:",
+      "```ts",
+      "declare const tools: { update_plan(args: {}): Promise<unknown>; };",
+      "```",
+    ].join("\n");
+
+    const sections = markdownSections(text, "tool:functions.exec");
+
+    expect(sections).toMatchObject([
+      { id: "tool:read_mcp_resource", children: [] },
+      {
+        id: "tool:request_plugin_install",
+        children: [
+          {
+            id: "tool:request_plugin_install/suggest-a-recommended-plugin-installation",
+            label: "Suggest a recommended plugin installation",
+            kind: "heading",
+          },
+        ],
+      },
+      { id: "tool:update_plan", children: [] },
+    ]);
+    expect(sections[1]?.text).toContain("declare const tools: { request_plugin_install");
+    expect(sections[1]?.text).not.toContain("### `update_plan`");
+  });
+
+  it("keeps arbitrary Markdown headings inside the generated tool that owns them", () => {
+    const text = [
+      "## web",
+      "Tools in the web namespace.",
+      "",
+      "### `web__run`",
+      "Tool for accessing the internet.",
+      "",
+      "---",
+      "",
+      "## Examples of different commands available in this tool",
+      "Examples.",
+      "",
+      "### `illustrative_heading`",
+      "Not a generated tool declaration.",
+      "",
+      "## Usage hints",
+      "Hints.",
+      "",
+      "exec tool declaration:",
+      "```ts",
+      "declare const tools: { web__run(args: {}): Promise<unknown>; };",
+      "```",
+    ].join("\n");
+
+    expect(markdownSections(text, "tool:functions.exec")).toMatchObject([
+      {
+        label: "web",
+        kind: "heading",
+        children: [
+          {
+            id: "tool:web__run",
+            kind: "tool",
+            children: [
+              {
+                label: "Examples of different commands available in this tool",
+                kind: "heading",
+                children: [{ label: "illustrative_heading", kind: "heading" }],
+              },
+              { label: "Usage hints", kind: "heading" },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
 });

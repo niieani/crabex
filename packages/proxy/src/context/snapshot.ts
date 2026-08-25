@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { CaptureEvent } from "../recording/capture.ts";
 import { classifyMessage, markdownSections, type ContentSection } from "./classification.ts";
 import type { HarnessIdentity } from "./harness.ts";
+import { countTextTokens, tokenizationForModel } from "./token-counter.ts";
 
 export interface ContextSection {
   identifier: string;
@@ -11,6 +12,7 @@ export interface ContextSection {
   text: string;
   characters: number;
   estimatedTokens: number;
+  originalEstimatedTokens?: number;
   children: ContextSection[];
   originalText?: string;
   deleted?: boolean;
@@ -26,6 +28,7 @@ export interface ContextPart {
   text: string;
   characters: number;
   estimatedTokens: number;
+  originalEstimatedTokens?: number;
   digest: string;
   identifier?: string;
   description?: string;
@@ -42,6 +45,7 @@ export interface ContextSnapshot {
   sessionId: string;
   timestamp: string;
   model: string;
+  tokenization: { encoding: "o200k_base"; fallback: boolean };
   harness: HarnessIdentity;
   project?: string;
   requestSequences: number[];
@@ -63,20 +67,20 @@ export function buildSnapshots(events: CaptureEvent[]): ContextSnapshot[] {
   let pending: RequestRecord | undefined;
 
   for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
-    const originalPayload = parseObject(event.payload);
-    const payload = parseObject(event.effectivePayload ?? event.payload);
+    const originalPayload = originalPayloadOf(event);
+    const payload = effectivePayloadOf(event);
     if (payload?.type === "response.create" && event.direction === "client_to_upstream") {
       pending = { event, payload, originalPayload: originalPayload ?? payload };
       requests.push(pending);
       continue;
     }
-    if (payload?.type !== "response.completed" || event.direction !== "upstream_to_client")
-      continue;
-    const response = objectValue(payload.response);
-    const responseId = stringValue(response?.id);
+    if (event.direction !== "upstream_to_client") continue;
+    const response = objectValue(payload?.response);
+    const responseSummary = "responseSummary" in event ? event.responseSummary : undefined;
+    const responseId = stringValue(response?.id) ?? responseSummary?.id;
     if (pending === undefined || responseId === undefined) continue;
     pending.responseId = responseId;
-    pending.usage = usageValue(response?.usage);
+    pending.usage = usageValue(response?.usage) ?? responseSummary?.usage;
     byResponseId.set(responseId, pending);
     pending = undefined;
   }
@@ -99,13 +103,15 @@ function snapshotFrom(
     const previousResponseId = stringValue(request.payload.previous_response_id);
     request = previousResponseId === undefined ? undefined : byResponseId.get(previousResponseId);
   }
-  const parts = aggregateRegistries(chain.flatMap((item) => partsFrom(item)));
   const model = stringValue(inference.payload.model) ?? "unknown";
+  const tokenization = tokenizationForModel(model);
+  const parts = aggregateRegistries(chain.flatMap((item) => partsFrom(item)));
   return {
     id: `${inference.event.sessionId}:${inference.event.sequence}`,
     sessionId: inference.event.sessionId,
     timestamp: inference.event.timestamp,
     model,
+    tokenization,
     harness: inference.event.harness ?? { kind: "unknown" },
     ...(inference.event.project === undefined ? {} : { project: inference.event.project }),
     requestSequences: chain.map((item) => item.event.sequence),
@@ -151,7 +157,12 @@ function mergePart(effective: ContextPart, original: ContextPart): ContextPart {
   return {
     ...effective,
     path: original.path,
-    ...(original.text === effective.text ? {} : { originalText: original.text }),
+    ...(original.text === effective.text
+      ? {}
+      : {
+          originalText: original.text,
+          originalEstimatedTokens: original.estimatedTokens,
+        }),
     ...(original.description === effective.description
       ? {}
       : { originalDescription: original.description }),
@@ -166,6 +177,7 @@ function deletedPart(original: ContextPart): ContextPart {
     text: "",
     characters: 0,
     estimatedTokens: 0,
+    originalEstimatedTokens: original.estimatedTokens,
     originalText: original.text,
     deleted: true,
   };
@@ -305,7 +317,7 @@ function part(
     path,
     text,
     characters: text.length,
-    estimatedTokens: Math.ceil(text.length / 4),
+    estimatedTokens: countTextTokens(text),
     digest,
   };
 }
@@ -317,7 +329,7 @@ function sectionsValue(sections: ContentSection[]): ContextSection[] {
     kind: section.kind,
     text: section.text,
     characters: section.text.length,
-    estimatedTokens: Math.ceil(section.text.length / 4),
+    estimatedTokens: countTextTokens(section.text),
     children: sectionsValue(section.children),
   }));
 }
@@ -330,7 +342,12 @@ function mergeSections(effective: ContextSection[], original: ContextSection[]):
     if (section === undefined) return deletedSection(previous);
     return {
       ...section,
-      ...(previous.text === section.text ? {} : { originalText: previous.text }),
+      ...(previous.text === section.text
+        ? {}
+        : {
+            originalText: previous.text,
+            originalEstimatedTokens: previous.estimatedTokens,
+          }),
       children: mergeSections(section.children, previous.children),
     };
   });
@@ -344,6 +361,7 @@ function deletedSection(section: ContextSection): ContextSection {
     text: "",
     characters: 0,
     estimatedTokens: 0,
+    originalEstimatedTokens: section.estimatedTokens,
     originalText: section.text,
     deleted: true,
     children: section.children.map(deletedSection),
@@ -394,7 +412,7 @@ function sectionValue(
     kind,
     text,
     characters: text.length,
-    estimatedTokens: Math.ceil(text.length / 4),
+    estimatedTokens: countTextTokens(text),
     children: [],
   };
 }
@@ -431,7 +449,8 @@ function aggregateRegistries(parts: ContextPart[]): ContextPart[] {
     text,
     json: text,
     characters: text.length,
-    estimatedTokens: Math.ceil(text.length / 4),
+    estimatedTokens: countTextTokens(text),
+    ...(text === originalText ? {} : { originalEstimatedTokens: countTextTokens(originalText) }),
     digest,
     sections: mergeSections(registrySections(effective), registrySections(original)),
     ...(text === originalText ? {} : { originalText, originalJson: originalText }),
@@ -457,6 +476,15 @@ function parseObject(value: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+function originalPayloadOf(event: CaptureEvent): Record<string, unknown> | undefined {
+  return "payload" in event ? parseObject(event.payload) : undefined;
+}
+
+function effectivePayloadOf(event: CaptureEvent): Record<string, unknown> | undefined {
+  if (!("payload" in event)) return undefined;
+  return parseObject(event.effectivePayload ?? event.payload);
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { markersForSearch, setMarkersIfAttached } from "./ContextDiff.tsx";
+import { markersForSearch, setMarkersIfAttached, setSelectionIfAttached } from "./ContextDiff.tsx";
 
 describe("markersForSearch", () => {
   it("returns zero-based ranges for every case-insensitive occurrence", () => {
@@ -23,5 +23,28 @@ describe("setMarkersIfAttached", () => {
     setMarkersIfAttached({ getFile: () => undefined, setMarkers }, []);
 
     expect(setMarkers).not.toHaveBeenCalled();
+  });
+});
+
+describe("setSelectionIfAttached", () => {
+  it("selects and reveals a range in an attached editor", () => {
+    const setSelections = vi.fn();
+    const editor = { setSelections };
+    const range = {
+      start: { line: 4, character: 2 },
+      end: { line: 4, character: 9 },
+    };
+
+    setSelectionIfAttached(editor, range);
+
+    expect(setSelections).toHaveBeenCalledWith([{ ...range, direction: "forward" }]);
+  });
+
+  it("does not update an editor when no range is selected", () => {
+    const setSelections = vi.fn();
+
+    setSelectionIfAttached({ setSelections }, undefined);
+
+    expect(setSelections).not.toHaveBeenCalled();
   });
 });

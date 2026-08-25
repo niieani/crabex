@@ -35,6 +35,24 @@ The prewarm response reported 9,872 input tokens. The final response reported 17
 
 The capture contains structured roles, item types, content blocks, tool envelopes, model, response IDs, request kind metadata, and aggregate usage. It does not contain exact per-part token usage.
 
+## Capture retention
+
+New Probes retain complete client and upstream payloads only until the first
+ordinary user message has been observed. The request containing that message
+is retained in full so the initial Snapshot remains reconstructable. The
+recorder then switches to metadata-only events for the rest of the Probe.
+
+Metadata-only events retain protocol type and correlation fields, payload byte
+count, message paths and roles, stable harness classifications such as
+`segment:environment`, response usage, and Transformation Executions. They do
+not retain the original or Effective Payload. Harness-injected user messages
+recognized by the stable classifier—including `<environment_context>`, project
+instructions, and recommended plugins—do not count as ordinary user input.
+
+Forwarding and transformation behavior is unchanged: the proxy still processes
+the complete in-memory payload before forwarding it. The retention policy only
+controls what is persisted. Existing capture files remain unchanged.
+
 Tools are only manipulated at boundaries represented structurally in the payload. In the observed request, `exec`, `wait`, and `request_user_input` are structured outer tools. Individual tools documented inside the opaque `exec` description are not parsed or independently toggled.
 
 ## Harness identity
@@ -171,7 +189,9 @@ The global catalog supports comparison across captured conditions:
 └──────────────────────────────────────┴──────────┴────────────┴──────────┴───────────────────┘
 ```
 
-Diagnostics expose the original NDJSON event stream and raw JSON, but they are secondary navigation.
+Diagnostics expose the retained NDJSON event stream and raw JSON where the
+capture policy permits it; metadata-only events remain available for protocol
+and transformation auditing, but they are secondary navigation.
 
 The inspector replays the current Transformation Set against the selected immutable historical Probe. The center panel renders a stacked, unified `@pierre/diffs` comparison without changing the capture. Its editor surface is read-only: selection, copy, search, markers, and the **Transform** selection action remain active, while typing, paste, cut, drop, undo/redo, and replacement commands cannot mutate the preview. Selecting text exposes **Transform** and seeds the literal transformation editor. Catalog search scans all message Markdown and function descriptions, filters the composition list, and highlights every occurrence in the editor with Pierre markers.
 

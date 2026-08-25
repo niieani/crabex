@@ -356,6 +356,57 @@ describe("transformResponseCreate", () => {
     expect(JSON.stringify(result.payload)).toContain("# Also keep");
   });
 
+  it("deletes one complete generated exec tool block despite headings in its description", () => {
+    const description = [
+      "### `request_plugin_install`",
+      "# Suggest a recommended plugin installation",
+      "Details.",
+      "",
+      "exec tool declaration:",
+      "```ts",
+      "declare const tools: { request_plugin_install(args: {}): Promise<unknown>; };",
+      "```",
+      "",
+      "### `update_plan`",
+      "Updates the plan.",
+      "",
+      "exec tool declaration:",
+      "```ts",
+      "declare const tools: { update_plan(args: {}): Promise<unknown>; };",
+      "```",
+    ].join("\n");
+    const result = transformResponseCreate(
+      {
+        type: "response.create",
+        input: [
+          {
+            type: "additional_tools",
+            tools: [
+              {
+                type: "namespace",
+                name: "functions",
+                tools: [{ type: "custom", name: "exec", description }],
+              },
+            ],
+          },
+        ],
+      },
+      [
+        rule({
+          target: { field: "tool_description", identifier: "tool:request_plugin_install" },
+          operation: { type: "delete_part" },
+        }),
+      ],
+      { harness: { kind: "desktop" } },
+    );
+
+    const serialized = JSON.stringify(result.payload);
+    expect(serialized).not.toContain("request_plugin_install");
+    expect(serialized).not.toContain("Suggest a recommended plugin installation");
+    expect(serialized).toContain("### `update_plan`");
+    expect(serialized).toContain("declare const tools: { update_plan");
+  });
+
   it("deletes an MCP tool from structured client metadata", () => {
     const mcpName = "mcp__codex_apps__github_get_issue_comment_reactions";
     const metadata = {
@@ -385,6 +436,38 @@ describe("transformResponseCreate", () => {
     expect(JSON.parse(encoded).code_mode_tool_names).toEqual({
       apply_patch: { name: "apply_patch", namespace: null },
     });
+  });
+
+  it("applies a JSON value transformation inside code-mode tool metadata", () => {
+    const mcpName = "mcp__codex_apps__github_get_issue_comment_reactions";
+    const metadata = {
+      code_mode_tool_names: {
+        [mcpName]: { name: "_get_issue_comment_reactions", namespace: "mcp__codex_apps__github" },
+      },
+    };
+    const result = transformResponseCreate(
+      {
+        type: "response.create",
+        client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) },
+        input: [],
+      },
+      [
+        rule({
+          target: { field: "json_value", jsonPath: [mcpName, "name"] },
+          operation: { type: "replace", find: "issue_comment", replacement: "repo" },
+        }),
+      ],
+      { harness: { kind: "desktop" } },
+    );
+
+    const encoded = (result.payload.client_metadata as Record<string, string>)[
+      "x-codex-turn-metadata"
+    ];
+    expect(JSON.parse(encoded).code_mode_tool_names[mcpName]).toEqual({
+      name: "_get_repo_reactions",
+      namespace: "mcp__codex_apps__github",
+    });
+    expect(result.executions[0]).toMatchObject({ status: "hit", matchCount: 1 });
   });
 
   it("deletes a complete code-mode tool group by namespace prefix", () => {

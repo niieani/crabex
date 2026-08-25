@@ -163,8 +163,112 @@ describe("subscription reverse proxy", () => {
       harness: { kind: "tui", version: "0.146.0" },
       transformationExecutions: [{ transformationId: "smoke", status: "hit", matchCount: 1 }],
     });
-    expect(captures.events[0]?.payload).toContain("original-smoke");
-    expect(captures.events[0]?.effectivePayload).toContain("transformed-smoke");
+    expect(captures.events[0]).toMatchObject({
+      payload: expect.stringContaining("original-smoke"),
+      effectivePayload: expect.stringContaining("transformed-smoke"),
+    });
+  });
+
+  it("switches to metadata-only capture after the first real user message", async () => {
+    let requestCount = 0;
+    const upstream = await startWebSocketServer((socket) => {
+      socket.on("message", (message) => {
+        requestCount += 1;
+        const payload = JSON.parse(rawDataText(message)) as Record<string, unknown>;
+        if (requestCount === 3) {
+          expect(JSON.stringify(payload)).toContain("later-effective");
+          expect(JSON.stringify(payload)).not.toContain("later-original");
+        }
+        socket.send(
+          JSON.stringify({
+            type: "response.completed",
+            response: { id: `resp_${requestCount}`, usage: { input_tokens: requestCount } },
+          }),
+        );
+      });
+    });
+    const captures = new MemoryCaptureSink();
+    const transformations: Transformation[] = [
+      {
+        id: "later-rewrite",
+        name: "Later rewrite",
+        enabled: true,
+        scope: {},
+        target: { field: "message_text" },
+        operation: {
+          type: "replace",
+          find: "later-original",
+          replacement: "later-effective",
+        },
+      },
+    ];
+    const proxy = await startProxy(upstream.origin, captures, transformations);
+    const client = new WebSocket(
+      proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+    );
+    closeables.push(async () => client.close());
+    await opened(client);
+
+    client.send(
+      JSON.stringify({
+        type: "response.create",
+        generate: false,
+        input: [message("developer", "prewarm")],
+      }),
+    );
+    await nextMessage(client);
+    client.send(
+      JSON.stringify({
+        type: "response.create",
+        input: [message("developer", "initial context"), message("user", "first-real-user")],
+      }),
+    );
+    await nextMessage(client);
+    client.send(
+      JSON.stringify({
+        type: "response.create",
+        previous_response_id: "resp_2",
+        input: [
+          message("developer", "later developer injection"),
+          message("user", "<environment_context>\nlater harness context"),
+          message("user", "later-original"),
+        ],
+      }),
+    );
+    await nextMessage(client);
+    await eventually(() => expect(captures.events).toHaveLength(6));
+
+    const clientEvents = captures.events.filter(
+      (event) => event.direction === "client_to_upstream",
+    );
+    expect(clientEvents[0]).toMatchObject({ payloadMode: "full" });
+    expect(clientEvents[1]).toMatchObject({ payloadMode: "full" });
+    expect(clientEvents[2]).toMatchObject({
+      payloadMode: "metadata",
+      requestSummary: {
+        type: "response.create",
+        messages: [
+          { role: "developer", characters: 25 },
+          { role: "user", classificationId: "segment:environment" },
+          { role: "user", characters: 14 },
+        ],
+      },
+      transformationChanged: true,
+      transformationExecutions: [
+        { transformationId: "later-rewrite", status: "hit", matchCount: 1 },
+      ],
+    });
+    expect(clientEvents[2]).not.toHaveProperty("payload");
+    expect(JSON.stringify(clientEvents[2])).not.toContain("later-original");
+
+    const responseEvents = captures.events.filter(
+      (event) => event.direction === "upstream_to_client",
+    );
+    expect(responseEvents[2]).toMatchObject({
+      payloadMode: "metadata",
+      responseSummary: { type: "response.completed", id: "resp_3" },
+    });
+    expect(responseEvents[2]).not.toHaveProperty("payload");
   });
 
   it("fails closed before an HTTP request reaches upstream when capture fails", async () => {
@@ -228,6 +332,10 @@ async function startProxy(
   });
   closeables.push(() => proxy.close());
   return proxy;
+}
+
+function message(role: string, text: string) {
+  return { type: "message", role, content: [{ type: "input_text", text }] };
 }
 
 async function startHttpServer(

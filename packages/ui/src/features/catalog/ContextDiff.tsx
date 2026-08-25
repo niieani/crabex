@@ -16,6 +16,7 @@ interface ContextDiffProps {
   effective: string;
   filename: string;
   search: string;
+  highlightRange?: TextRange;
   onTransformSelection: (selection: TransformSelection) => void;
   resolveTransformSelection?: (selection: {
     text: string;
@@ -24,7 +25,7 @@ interface ContextDiffProps {
 }
 
 const contextDiffHighlighterReady = preloadHighlighter({
-  langs: ["markdown", "javascript", "typescript", "jsx", "tsx"],
+  langs: ["json", "markdown", "javascript", "typescript", "jsx", "tsx"],
   themes: ["pierre-dark"],
 });
 
@@ -41,6 +42,7 @@ function ReadyContextDiff({
   effective,
   filename,
   search,
+  highlightRange,
   onTransformSelection,
   resolveTransformSelection,
 }: ContextDiffProps) {
@@ -54,6 +56,7 @@ function ReadyContextDiff({
       onAttach(editor) {
         editorRef.current = editor as Editor<undefined>;
         editorRef.current.setMarkers(markersForSearch(effective, search));
+        setSelectionIfAttached(editorRef.current, highlightRange);
       },
       renderSelectionAction(context) {
         const selected = () => ({
@@ -84,15 +87,16 @@ function ReadyContextDiff({
         return button;
       },
     }),
-    [effective, onTransformSelection, resolveTransformSelection, search],
+    [effective, highlightRange, onTransformSelection, resolveTransformSelection, search],
   );
 
   useEffect(() => {
     const editor = editorRef.current;
     if (editor !== undefined) {
       setMarkersIfAttached(editor, markersForSearch(effective, search));
+      setSelectionIfAttached(editor, highlightRange);
     }
-  }, [effective, search]);
+  }, [effective, highlightRange, search]);
 
   const file = { name: filename, contents: effective, cacheKey: `${filename}:${effective.length}` };
   return (
@@ -155,4 +159,12 @@ export function setMarkersIfAttached(
 ) {
   if (editor.getFile() === undefined) return;
   editor.setMarkers(markers);
+}
+
+export function setSelectionIfAttached(
+  editor: Pick<Editor<undefined>, "setSelections">,
+  range: TextRange | undefined,
+) {
+  if (range === undefined) return;
+  editor.setSelections([{ ...range, direction: "forward" }]);
 }
