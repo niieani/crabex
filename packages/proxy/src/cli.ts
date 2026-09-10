@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
 import { createLocalApi } from "./api/local-api.ts";
+import { createCodexConfigManager } from "./config/codex-config.ts";
 import { openConfigBundleStore } from "./config/config-bundle-store.ts";
 import { openModelRouteStore } from "./config/model-route-store.ts";
 import { openTransformationStore } from "./config/transformation-store.ts";
@@ -25,6 +26,8 @@ Options:
   --model-routes <file> Model route set (default: .agent-context-trimmer/model-routes.json)
   --config-bundle <file>
                         Config bundle override (default: .agent-context-trimmer/config-bundle.json)
+  --codex-config <file> Codex config for UI toggles (default: $CODEX_HOME/config.toml or
+                        ~/.codex/config.toml)
   --project <key>       Optional project scope for captures and transformations
 `;
 
@@ -41,6 +44,9 @@ async function main(): Promise<void> {
   const transformationStore = await openTransformationStore(options.transformationsPath);
   const modelRouteStore = await openModelRouteStore(options.modelRoutesPath);
   const configBundleStore = await openConfigBundleStore(options.configBundlePath);
+  const proxyOrigin = `http://${
+    options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host
+  }:${options.port}`;
   const proxy = await startReverseProxy({
     host: options.host,
     port: options.port,
@@ -55,6 +61,10 @@ async function main(): Promise<void> {
       transformations: transformationStore,
       modelRoutes: modelRouteStore,
       configBundle: configBundleStore,
+      codexConfig: createCodexConfigManager({
+        configPath: options.codexConfigPath,
+        proxyOrigin,
+      }),
     }),
   });
 

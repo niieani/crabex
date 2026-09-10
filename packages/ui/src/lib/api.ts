@@ -1,4 +1,5 @@
 import type {
+  CodexConfigState,
   ConfigBundleOverride,
   ContextSnapshot,
   ModelRouteSet,
@@ -82,6 +83,20 @@ export async function putConfigBundle(
 export async function deleteConfigBundle(): Promise<ConfigBundleOverride> {
   const response = await request(`${API}/config-bundle`, { method: "DELETE" });
   return (await response.json()) as ConfigBundleOverride;
+}
+
+export async function getCodexConfig(): Promise<CodexConfigState> {
+  const response = await request(`${API}/codex-config`);
+  return (await response.json()) as CodexConfigState;
+}
+
+export async function putCodexConfig(key: string, enabled: boolean): Promise<CodexConfigState> {
+  const response = await request(`${API}/codex-config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key, enabled }),
+  });
+  return (await response.json()) as CodexConfigState;
 }
 
 async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {

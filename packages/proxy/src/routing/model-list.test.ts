@@ -78,10 +78,9 @@ describe("prependRoutedModels", () => {
   });
 
   it("keeps the advertised model when the upstream list contains the same slug", () => {
-    const result = prependRoutedModels(
-      { models: [template, { ...template, slug: "kimi-k3" }] },
-      [route],
-    );
+    const result = prependRoutedModels({ models: [template, { ...template, slug: "kimi-k3" }] }, [
+      route,
+    ]);
 
     expect(result.models.map((model) => model.slug)).toEqual(["kimi-k3", "gpt-5.6-terra"]);
     expect(result.models[0]).toMatchObject({ display_name: "Kimi K3" });

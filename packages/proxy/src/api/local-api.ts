@@ -1,5 +1,6 @@
 import type { TransformationStore } from "../config/transformation-store.ts";
 import { parseTransformationSet } from "../config/transformation-store.ts";
+import type { CodexConfigManager } from "../config/codex-config.ts";
 import type { ConfigBundleStore } from "../config/config-bundle-store.ts";
 import {
   EMPTY_CONFIG_BUNDLE_OVERRIDE,
@@ -20,6 +21,7 @@ export function createLocalApi(options: {
   transformations: TransformationStore;
   modelRoutes: ModelRouteStore;
   configBundle: ConfigBundleStore;
+  codexConfig: CodexConfigManager;
 }): LocalApi {
   return {
     async handle(request) {
@@ -80,6 +82,16 @@ export function createLocalApi(options: {
         if (url.pathname === `${API_PREFIX}/config-bundle` && request.method === "DELETE") {
           await options.configBundle.replace(EMPTY_CONFIG_BUNDLE_OVERRIDE);
           return json(options.configBundle.get());
+        }
+        if (url.pathname === `${API_PREFIX}/codex-config` && request.method === "GET") {
+          return json(await options.codexConfig.state());
+        }
+        if (url.pathname === `${API_PREFIX}/codex-config` && request.method === "PUT") {
+          const body = (await request.json()) as Record<string, unknown>;
+          if (typeof body.key !== "string" || typeof body.enabled !== "boolean") {
+            throw new Error("invalid codex config request");
+          }
+          return json(await options.codexConfig.setEnabled(body.key, body.enabled));
         }
         return json({ error: "not found" }, 404);
       } catch (error) {

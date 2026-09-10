@@ -4,6 +4,7 @@ import { AppShell } from "./app/AppShell.tsx";
 import { CatalogPage } from "./pages/CatalogPage.tsx";
 import { ConfigBundlePage } from "./pages/ConfigBundlePage.tsx";
 import { ModelRoutesPage } from "./pages/ModelRoutesPage.tsx";
+import { SetupPage } from "./pages/SetupPage.tsx";
 import { TransformationsPage } from "./pages/TransformationsPage.tsx";
 
 const rootRoute = createRootRoute({ component: AppShell });
@@ -27,12 +28,18 @@ const configBundleRoute = createRoute({
   path: "/config-bundle",
   component: ConfigBundlePage,
 });
+const setupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/setup",
+  component: SetupPage,
+});
 
 const routeTree = rootRoute.addChildren([
   catalogRoute,
   transformationsRoute,
   modelRoutesRoute,
   configBundleRoute,
+  setupRoute,
 ]);
 
 export const router = createRouter({ routeTree });

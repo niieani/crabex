@@ -79,6 +79,9 @@ agent-context-trimmer proxy \
   --upstream https://chatgpt.com \
   --captures .agent-context-trimmer/captures \
   --transformations .agent-context-trimmer/transformations.json \
+  --model-routes .agent-context-trimmer/model-routes.json \
+  --config-bundle .agent-context-trimmer/config-bundle.json \
+  --codex-config ~/.codex/config.toml \
   --project agent-context-trimmer
 ```
 

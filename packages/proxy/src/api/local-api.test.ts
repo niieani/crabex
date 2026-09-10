@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
+import type { CodexConfigState } from "../config/codex-config.ts";
 import type { ContextSnapshot } from "../context/snapshot.ts";
 import type { TransformationSet } from "../context/transformation.ts";
 import type { ModelRouteConfig } from "../routing/model-routes.ts";
@@ -45,6 +46,24 @@ function stubSources(overrides: {
     },
     currentRoutes: () => routes,
     currentBundle: () => bundle,
+    codexConfig: stubCodexConfig(),
+  };
+}
+
+function stubCodexConfig(state?: Partial<CodexConfigState>) {
+  return {
+    state: async (): Promise<CodexConfigState> => ({
+      path: "/tmp/act-test/config.toml",
+      exists: true,
+      toggles: [],
+      ...state,
+    }),
+    setEnabled: async (_key: string, _enabled: boolean): Promise<CodexConfigState> => ({
+      path: "/tmp/act-test/config.toml",
+      exists: true,
+      toggles: [],
+      ...state,
+    }),
   };
 }
 
@@ -312,5 +331,65 @@ describe("local context API", () => {
     expect(await update?.json()).toEqual({
       error: "enabled config bundle override requires a JSON object bundle",
     });
+  });
+
+  it("exposes codex config toggle state and applies toggles", async () => {
+    const calls: Array<{ key: string; enabled: boolean }> = [];
+    const toggle = {
+      key: "openai_base_url",
+      label: "Responses & models",
+      description: "Route Responses traffic through the proxy.",
+      managedValue: "http://127.0.0.1:8765/backend-api/codex",
+      enabled: true,
+    };
+    const api = createLocalApi({
+      snapshots: {
+        list: async () => [],
+        preview: async () => undefined,
+        transformationTelemetry: async () => [],
+      },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...stubSources({}),
+      codexConfig: {
+        state: async () => ({ path: "/tmp/act-test/config.toml", exists: true, toggles: [] }),
+        setEnabled: async (key: string, enabled: boolean) => {
+          calls.push({ key, enabled });
+          return { path: "/tmp/act-test/config.toml", exists: true, toggles: [toggle] };
+        },
+      },
+    });
+
+    const state = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/codex-config"),
+    );
+    expect(state?.status).toBe(200);
+    expect(await state?.json()).toEqual({
+      path: "/tmp/act-test/config.toml",
+      exists: true,
+      toggles: [],
+    });
+
+    const update = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/codex-config", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: "openai_base_url", enabled: true }),
+      }),
+    );
+    expect(update?.status).toBe(200);
+    expect(calls).toEqual([{ key: "openai_base_url", enabled: true }]);
+    expect(await update?.json()).toMatchObject({ toggles: [toggle] });
+
+    const invalid = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/codex-config", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: "openai_base_url" }),
+      }),
+    );
+    expect(invalid?.status).toBe(400);
   });
 });

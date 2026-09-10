@@ -38,6 +38,12 @@ export function AppShell() {
           >
             Config bundle
           </Link>
+          <Link
+            to="/setup"
+            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
+          >
+            Codex setup
+          </Link>
         </nav>
       </header>
       <main className="min-h-0 flex-1 overflow-hidden">

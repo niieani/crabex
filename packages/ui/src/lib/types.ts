@@ -129,3 +129,20 @@ export interface ConfigBundleOverride {
   enabled: boolean;
   bundle: unknown;
 }
+
+export interface CodexConfigToggle {
+  key: string;
+  label: string;
+  description: string;
+  managedValue: string;
+  enabled: boolean;
+  effectiveValue?: string;
+  preservedValue?: string;
+}
+
+export interface CodexConfigState {
+  path: string;
+  exists: boolean;
+  parseError?: string;
+  toggles: CodexConfigToggle[];
+}

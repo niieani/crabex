@@ -1,3 +1,5 @@
+import { defaultCodexConfigPath } from "../config/codex-config.ts";
+
 export interface ProxyCliOptions {
   command: "proxy";
   host: string;
@@ -7,6 +9,7 @@ export interface ProxyCliOptions {
   transformationsPath: string;
   modelRoutesPath: string;
   configBundlePath: string;
+  codexConfigPath: string;
   project?: string;
 }
 
@@ -24,6 +27,7 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     transformationsPath: ".agent-context-trimmer/transformations.json",
     modelRoutesPath: ".agent-context-trimmer/model-routes.json",
     configBundlePath: ".agent-context-trimmer/config-bundle.json",
+    codexConfigPath: defaultCodexConfigPath(),
   };
 
   for (let index = 1; index < args.length; index += 1) {
@@ -55,6 +59,10 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     } else if (argument === "--config-bundle") {
       if (value === undefined) throw new Error("missing value for --config-bundle");
       options.configBundlePath = value;
+      index += 1;
+    } else if (argument === "--codex-config") {
+      if (value === undefined) throw new Error("missing value for --codex-config");
+      options.codexConfigPath = value;
       index += 1;
     } else if (argument === "--project") {
       if (value === undefined) throw new Error("missing value for --project");

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { defaultCodexConfigPath } from "../config/codex-config.ts";
 import { parseCliOptions } from "./options.ts";
 
 describe("parseCliOptions", () => {
@@ -13,6 +14,7 @@ describe("parseCliOptions", () => {
       transformationsPath: ".agent-context-trimmer/transformations.json",
       modelRoutesPath: ".agent-context-trimmer/model-routes.json",
       configBundlePath: ".agent-context-trimmer/config-bundle.json",
+      codexConfigPath: defaultCodexConfigPath(),
     });
   });
 
@@ -32,6 +34,8 @@ describe("parseCliOptions", () => {
         "routes.local.json",
         "--config-bundle",
         "bundle.local.json",
+        "--codex-config",
+        "codex.local.toml",
         "--project",
         "fixture-project",
       ]),
@@ -44,6 +48,7 @@ describe("parseCliOptions", () => {
       transformationsPath: "rules.local.json",
       modelRoutesPath: "routes.local.json",
       configBundlePath: "bundle.local.json",
+      codexConfigPath: "codex.local.toml",
       project: "fixture-project",
     });
   });
