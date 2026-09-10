@@ -8,7 +8,7 @@ export interface HarnessIdentity {
 
 export interface ContextPart {
   id: string;
-  phase: "prewarm" | "inference";
+  phase: "prewarm" | "inference" | "model";
   kind: "message" | "tool";
   role?: string;
   name: string;

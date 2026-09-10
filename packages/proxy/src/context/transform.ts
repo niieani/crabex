@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 
+import type { ModelDefinition } from "../routing/model-list.ts";
 import { classifyMessage, markdownSections, type ContentSection } from "./classification.ts";
 import type { HarnessIdentity } from "./harness.ts";
 import { transformJsonValue } from "./json-value-transform.ts";
+import { modelStringFields, setModelField } from "./model-parts.ts";
 import { transformText } from "./text-operation.ts";
 import type { Transformation, TransformationExecution } from "./transformation.ts";
 
@@ -53,6 +55,108 @@ export function transformResponseCreate<T extends ResponseCreatePayload>(
   }
 
   return { payload: transformed, executions };
+}
+
+export interface ModelDefinitionsResult {
+  models: ModelDefinition[];
+  executions: TransformationExecution[];
+}
+
+/**
+ * Applies message-text transformations to the instruction strings inside model
+ * definitions (`model_messages.*`). Model strings share identifiers with their
+ * request-rendered counterparts, so one transformation can rewrite the template
+ * at the models layer and still catch rendered messages at the request layer.
+ *
+ * Copy-on-write: when nothing matches, the returned `models` is the same array
+ * reference that was passed in, letting callers pass the raw response through.
+ */
+export function transformModelDefinitions(
+  models: ModelDefinition[],
+  transformations: Transformation[],
+  context: TransformationContext,
+): ModelDefinitionsResult {
+  const relevant = transformations.filter(
+    (transformation) =>
+      transformation.enabled &&
+      transformation.scope.tools === undefined &&
+      (transformation.target.field === "message_text" ||
+        transformation.target.field === "all_text"),
+  );
+  if (relevant.length === 0) return { models, executions: [] };
+
+  const executions: TransformationExecution[] = [];
+  let output = models;
+  for (const transformation of relevant) {
+    if (!isInModelScope(transformation, context)) {
+      executions.push({ transformationId: transformation.id, status: "miss", matchCount: 0 });
+      continue;
+    }
+    let matchCount = 0;
+    try {
+      for (let index = 0; index < output.length; index += 1) {
+        const model = output[index];
+        if (
+          transformation.scope.models !== undefined &&
+          !transformation.scope.models.includes(model.slug)
+        )
+          continue;
+        let draft: ModelDefinition | undefined;
+        for (const field of modelStringFields(model)) {
+          if (!isInSegmentScope(transformation, field.classificationId)) continue;
+          const identified = transformIdentifiedText(
+            field.text,
+            transformation,
+            field.identifier,
+            markdownSections(field.text, field.identifier),
+          );
+          const applied =
+            identified ??
+            (matchesTarget(
+              transformation,
+              "message_text",
+              field.dotPath,
+              field.text,
+              undefined,
+              field.identifier,
+            )
+              ? transformation.operation.type === "delete_part"
+                ? { value: "", matchCount: 1, deleted: true }
+                : { ...transformText(field.text, transformation.operation), deleted: false }
+              : undefined);
+          if (applied === undefined || applied.matchCount === 0) continue;
+          draft ??= structuredClone(model);
+          setModelField(draft, field.path, applied.value);
+          matchCount += applied.matchCount;
+        }
+        if (draft !== undefined) {
+          if (output === models) output = [...models];
+          output[index] = draft;
+        }
+      }
+      executions.push({
+        transformationId: transformation.id,
+        status: matchCount > 0 ? "hit" : "miss",
+        matchCount,
+      });
+    } catch (error) {
+      executions.push({
+        transformationId: transformation.id,
+        status: "error",
+        matchCount,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return { models: output, executions };
+}
+
+function isInModelScope(transformation: Transformation, context: TransformationContext): boolean {
+  const { scope } = transformation;
+  if (scope.harnesses !== undefined && !scope.harnesses.includes(context.harness.kind))
+    return false;
+  if (scope.projects !== undefined && !scope.projects.includes(context.project ?? "")) return false;
+  return true;
 }
 
 function applyTransformation<T extends ResponseCreatePayload>(

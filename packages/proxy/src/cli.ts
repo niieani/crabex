@@ -68,7 +68,11 @@ async function main(): Promise<void> {
     upstreamCache: upstreamCacheStore,
     project: options.project,
     localApi: createLocalApi({
-      snapshots: new FileCaptureRepository(options.capturesDirectory),
+      snapshots: new FileCaptureRepository(options.capturesDirectory, {
+        upstreamCache: upstreamCacheStore,
+        modelRoutes: modelRouteStore,
+        transformations: transformationStore,
+      }),
       transformations: transformationStore,
       modelRoutes: modelRouteStore,
       configBundle: configBundleStore,

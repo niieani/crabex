@@ -13,7 +13,7 @@ import type {
 } from "../config/upstream-cache.ts";
 import type { Transformation } from "../context/transformation.ts";
 import type { ModelAdjustment, ModelRoute } from "../routing/model-routes.ts";
-import { startReverseProxy, type RunningProxy } from "./server.ts";
+import { sanitizeCloseCode, startReverseProxy, type RunningProxy } from "./server.ts";
 
 class MemoryCaptureSink implements CaptureSink {
   readonly events: CaptureEvent[] = [];
@@ -533,6 +533,74 @@ describe("model routing and config bundle override", () => {
     });
   });
 
+  it("applies message transformations to upstream model instruction strings", async () => {
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          models: [
+            {
+              slug: "gpt-5.6-terra",
+              model_messages: {
+                instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+                token_budget: { guidance_message: "Use notes to checkpoint." },
+              },
+            },
+          ],
+        }),
+      );
+    });
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      transformations: [
+        {
+          id: "trim-base",
+          name: "Trim base",
+          enabled: true,
+          scope: {},
+          target: { field: "message_text", identifier: "segment:codex_base" },
+          operation: { type: "replace_all", find: "Be helpful.", replacement: "Be terse." },
+        },
+      ],
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/codex/models`);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      models: Array<{ model_messages: Record<string, unknown> }>;
+    };
+    expect(body.models[0]?.model_messages).toMatchObject({
+      instructions_template: "You are Codex, an agent based on GPT-5. Be terse.",
+      token_budget: { guidance_message: "Use notes to checkpoint." },
+    });
+  });
+
+  it("passes the models response through untouched when no transformation matches", async () => {
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.setHeader("etag", '"upstream-etag"');
+      response.end(JSON.stringify({ models: [{ slug: "gpt-5.6-terra" }] }));
+    });
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      transformations: [
+        {
+          id: "trim-base",
+          name: "Trim base",
+          enabled: true,
+          scope: {},
+          target: { field: "message_text", identifier: "segment:codex_base" },
+          operation: { type: "delete_part" },
+        },
+      ],
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/codex/models`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("etag")).toBe('"upstream-etag"');
+    expect(await response.json()).toEqual({ models: [{ slug: "gpt-5.6-terra" }] });
+  });
+
   it("observes the upstream config bundle on passthrough", async () => {
     const chatgpt = await startHttpServer((_request, response) => {
       response.setHeader("content-type", "application/json");
@@ -645,6 +713,19 @@ describe("model routing and config bundle override", () => {
   });
 });
 
+describe("sanitizeCloseCode", () => {
+  it("keeps valid codes and drops reserved ones", () => {
+    expect(sanitizeCloseCode(1000)).toBe(1000);
+    expect(sanitizeCloseCode(1011)).toBe(1011);
+    expect(sanitizeCloseCode(3000)).toBe(3000);
+    expect(sanitizeCloseCode(1004)).toBeUndefined();
+    expect(sanitizeCloseCode(1005)).toBeUndefined();
+    expect(sanitizeCloseCode(1006)).toBeUndefined();
+    expect(sanitizeCloseCode(1015)).toBeUndefined();
+    expect(sanitizeCloseCode(2999)).toBeUndefined();
+  });
+});
+
 async function startProxy(
   upstreamOrigin: string,
   captureSink: CaptureSink,
@@ -669,6 +750,7 @@ async function startRoutingProxy(
     adjustments?: ModelAdjustment[];
     bundleOverride?: ConfigBundleOverride;
     upstreamCache?: MemoryUpstreamCache;
+    transformations?: Transformation[];
   } = {},
 ): Promise<RunningProxy> {
   const proxy = await startReverseProxy({
@@ -676,6 +758,7 @@ async function startRoutingProxy(
     port: 0,
     upstreamOrigin,
     captureSink,
+    transformationSource: { get: () => options.transformations ?? [] },
     modelRouteSource: {
       get: () => ({ routes: options.routes ?? [], adjustments: options.adjustments ?? [] }),
     },

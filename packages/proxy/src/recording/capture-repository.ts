@@ -1,9 +1,22 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { buildSnapshots, type ContextSnapshot } from "../context/snapshot.ts";
-import { transformResponseCreate, type ResponseCreatePayload } from "../context/transform.ts";
+import type { ModelRouteStore } from "../config/model-route-store.ts";
+import type { TransformationStore } from "../config/transformation-store.ts";
+import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
+import {
+  buildSnapshots,
+  type ContextSnapshot,
+  type SnapshotModelContext,
+} from "../context/snapshot.ts";
+import {
+  transformModelDefinitions,
+  transformResponseCreate,
+  type ResponseCreatePayload,
+} from "../context/transform.ts";
 import type { Transformation, TransformationTelemetry } from "../context/transformation.ts";
+import { modelRouteFromConfig } from "../routing/model-routes.ts";
+import { transformModels, type ModelDefinition } from "../routing/model-list.ts";
 import type { CaptureEvent, FullCaptureEvent } from "./capture.ts";
 
 export interface RoutingTelemetry {
@@ -23,15 +36,33 @@ export interface SnapshotSource {
   routingTelemetry(): Promise<RoutingTelemetry[]>;
 }
 
+/**
+ * Optional collaborators used to derive model-level catalog parts from the
+ * last observed upstream /models response, viewed through the current route
+ * set and transformations.
+ */
+export interface CaptureRepositoryCollaborators {
+  upstreamCache?: UpstreamCacheStore;
+  modelRoutes?: ModelRouteStore;
+  transformations?: TransformationStore;
+}
+
 export class FileCaptureRepository implements SnapshotSource {
   readonly #directory: string;
+  readonly #collaborators: CaptureRepositoryCollaborators;
 
-  constructor(directory: string) {
+  constructor(directory: string, collaborators: CaptureRepositoryCollaborators = {}) {
     this.#directory = directory;
+    this.#collaborators = collaborators;
   }
 
   async list(): Promise<ContextSnapshot[]> {
-    const snapshots = (await this.#eventGroups()).flatMap(buildSnapshots);
+    const models = await this.#modelContext(
+      this.#collaborators.transformations?.get().transformations ?? [],
+    );
+    const snapshots = (await this.#eventGroups()).flatMap((events) =>
+      buildSnapshots(events, models),
+    );
     return snapshots.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
   }
 
@@ -88,12 +119,42 @@ export class FileCaptureRepository implements SnapshotSource {
     snapshotId: string,
     transformations: Transformation[],
   ): Promise<ContextSnapshot | undefined> {
+    const models = await this.#modelContext(transformations);
     for (const events of await this.#eventGroups()) {
       const previewEvents = events.map((event) => previewEvent(event, transformations));
-      const snapshot = buildSnapshots(previewEvents).find((item) => item.id === snapshotId);
+      const snapshot = buildSnapshots(previewEvents, models).find((item) => item.id === snapshotId);
       if (snapshot !== undefined) return snapshot;
     }
     return undefined;
+  }
+
+  /**
+   * Resolves the observed upstream model definitions and the effective
+   * definitions after routes, adjustments, and the given transformations.
+   * Returns undefined when no upstream models response has been observed.
+   */
+  async #modelContext(
+    transformations: Transformation[],
+  ): Promise<SnapshotModelContext | undefined> {
+    const observed = this.#collaborators.upstreamCache?.get().models?.body;
+    const original = observedModels(observed);
+    if (original === undefined) return undefined;
+    const set = this.#collaborators.modelRoutes?.get() ?? { routes: [], adjustments: [] };
+    let effective: ModelDefinition[];
+    try {
+      effective = transformModels(
+        { models: original },
+        set.routes.map(modelRouteFromConfig),
+        set.adjustments,
+      ).models;
+    } catch {
+      // A broken route set must not break the catalog; show unadjusted models.
+      effective = original;
+    }
+    effective = transformModelDefinitions(effective, transformations, {
+      harness: { kind: "unknown" },
+    }).models;
+    return { original, effective };
   }
 
   async #eventGroups(): Promise<CaptureEvent[][]> {
@@ -148,4 +209,15 @@ function parseEvents(content: string): CaptureEvent[] {
 
 function isMissingDirectory(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function observedModels(body: unknown): ModelDefinition[] | undefined {
+  if (typeof body !== "object" || body === null) return undefined;
+  const models = (body as { models?: unknown }).models;
+  if (!Array.isArray(models)) return undefined;
+  const valid = models.filter(
+    (model): model is ModelDefinition =>
+      typeof model === "object" && model !== null && typeof model.slug === "string",
+  );
+  return valid.length === 0 ? undefined : valid;
 }

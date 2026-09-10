@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { transformResponseCreate } from "./transform.ts";
+import { transformModelDefinitions, transformResponseCreate } from "./transform.ts";
 import type { Transformation } from "./transformation.ts";
 
 const payload = {
@@ -502,6 +502,153 @@ describe("transformResponseCreate", () => {
       "apply_patch",
     ]);
     expect(result.executions[0]).toMatchObject({ status: "hit", matchCount: 2 });
+  });
+});
+
+describe("transformModelDefinitions", () => {
+  const models = () => [
+    {
+      slug: "gpt-5.6-luna",
+      context_window: 272_000,
+      model_messages: {
+        instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+        token_budget: {
+          reminder_message_template: "<context_window_reminder> {n_remaining} tokens left",
+          guidance_message: "Use notes to checkpoint. REMOVE ME.",
+        },
+      },
+    },
+    {
+      slug: "gpt-5.6-terra",
+      model_messages: {
+        instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+      },
+    },
+  ];
+
+  it("returns the same array reference when no transformations apply", () => {
+    const input = models();
+    const result = transformModelDefinitions(input, [], { harness: { kind: "unknown" } });
+    expect(result.models).toBe(input);
+    expect(result.executions).toEqual([]);
+
+    const disabled = transformModelDefinitions(
+      input,
+      [
+        rule({
+          enabled: false,
+          target: { field: "message_text", identifier: "segment:codex_base" },
+          operation: { type: "delete_part" },
+        }),
+      ],
+      { harness: { kind: "unknown" } },
+    );
+    expect(disabled.models).toBe(input);
+  });
+
+  it("rewrites instruction templates via shared segment identifiers", () => {
+    const result = transformModelDefinitions(
+      models(),
+      [
+        rule({
+          id: "trim-base",
+          target: { field: "message_text", identifier: "segment:codex_base" },
+          operation: { type: "replace_all", find: "Be helpful.", replacement: "Be terse." },
+        }),
+      ],
+      { harness: { kind: "unknown" } },
+    );
+    expect(result.executions).toEqual([
+      { transformationId: "trim-base", status: "hit", matchCount: 2 },
+    ]);
+    for (const model of result.models) {
+      expect(model.model_messages).toMatchObject({
+        instructions_template: "You are Codex, an agent based on GPT-5. Be terse.",
+      });
+    }
+  });
+
+  it("empties fields on delete_part and targets path-based identifiers", () => {
+    const result = transformModelDefinitions(
+      models(),
+      [
+        rule({
+          id: "drop-reminder",
+          target: {
+            field: "message_text",
+            identifier: "model:model_messages.token_budget.reminder_message_template",
+          },
+          operation: { type: "delete_part" },
+        }),
+      ],
+      { harness: { kind: "unknown" } },
+    );
+    expect(result.executions[0]?.status).toBe("hit");
+    const luna = result.models[0]!;
+    expect(
+      (luna.model_messages as { token_budget: { reminder_message_template: string } }).token_budget
+        .reminder_message_template,
+    ).toBe("");
+  });
+
+  it("honors model scope and leaves the input unmodified", () => {
+    const input = models();
+    const result = transformModelDefinitions(
+      input,
+      [
+        rule({
+          id: "scoped",
+          scope: { models: ["gpt-5.6-terra"] },
+          target: { field: "message_text", identifier: "segment:codex_base" },
+          operation: { type: "replace_all", find: "Be helpful.", replacement: "Be terse." },
+        }),
+      ],
+      { harness: { kind: "unknown" } },
+    );
+    expect(result.executions).toEqual([
+      { transformationId: "scoped", status: "hit", matchCount: 1 },
+    ]);
+    expect(result.models[1]?.model_messages).toMatchObject({
+      instructions_template: "You are Codex, an agent based on GPT-5. Be terse.",
+    });
+    expect(result.models[0]?.model_messages).toMatchObject({
+      instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+    });
+    expect(input[0]?.model_messages).toMatchObject({
+      instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+    });
+  });
+
+  it("skips transformations scoped to other harnesses", () => {
+    const result = transformModelDefinitions(
+      models(),
+      [
+        rule({
+          id: "tui-only",
+          scope: { harnesses: ["tui"] },
+          target: { field: "message_text", identifier: "segment:codex_base" },
+          operation: { type: "delete_part" },
+        }),
+      ],
+      { harness: { kind: "desktop" } },
+    );
+    expect(result.executions).toEqual([
+      { transformationId: "tui-only", status: "miss", matchCount: 0 },
+    ]);
+    expect(result.models[0]?.model_messages).toMatchObject({
+      instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+    });
+  });
+
+  it("ignores tool-targeted transformations", () => {
+    const input = models();
+    const result = transformModelDefinitions(
+      input,
+      [rule({ target: { field: "tool", identifier: "tool:exec" } })],
+      { harness: { kind: "unknown" } },
+    );
+    expect(result.models).toBe(input);
+    expect(result.executions).toEqual([]);
   });
 });
 

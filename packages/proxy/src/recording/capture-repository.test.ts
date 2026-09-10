@@ -151,6 +151,73 @@ describe("file capture repository", () => {
     });
   });
 
+  it("derives model parts from the upstream cache through routes and transformations", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
+    await writeFile(
+      join(directory, "capture.ndjson"),
+      `${JSON.stringify(
+        event(1, "client_to_upstream", {
+          type: "response.create",
+          model: "gpt-5.6-luna",
+          input: [message("user", "hi")],
+        }),
+      )}\n`,
+    );
+    const repository = new FileCaptureRepository(directory, {
+      upstreamCache: {
+        get: () => ({
+          models: {
+            fetchedAt: new Date(0).toISOString(),
+            body: {
+              models: [
+                {
+                  slug: "gpt-5.6-luna",
+                  context_window: 272_000,
+                  model_messages: {
+                    instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+                  },
+                },
+              ],
+            },
+          },
+        }),
+        observe: async () => {},
+      },
+      modelRoutes: {
+        get: () => ({
+          routes: [],
+          adjustments: [{ slug: "gpt-5.6-luna", overrides: { context_window: 200_000 } }],
+        }),
+        replace: async () => {},
+      },
+      transformations: {
+        get: () => ({
+          version: 1,
+          transformations: [
+            {
+              id: "trim-base",
+              name: "Trim base",
+              enabled: true,
+              scope: {},
+              target: { field: "message_text", identifier: "segment:codex_base" },
+              operation: { type: "replace_all", find: "Be helpful.", replacement: "Be terse." },
+            },
+          ],
+        }),
+        replace: async () => {},
+      },
+    });
+
+    const snapshots = await repository.list();
+
+    const modelPart = snapshots[0]?.parts.find((part) => part.phase === "model");
+    expect(modelPart).toMatchObject({
+      identifier: "segment:codex_base",
+      text: "You are Codex, an agent based on GPT-5. Be terse.",
+      originalText: "You are Codex, an agent based on GPT-5. Be helpful.",
+    });
+  });
+
   it("keeps later messages aligned when a classified segment is deleted", async () => {
     const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
     const captured = event(1, "client_to_upstream", {

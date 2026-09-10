@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 
 import type { CaptureEvent, CaptureRouting } from "../recording/capture.ts";
+import type { ModelDefinition } from "../routing/model-list.ts";
 import { classifyMessage, markdownSections, type ContentSection } from "./classification.ts";
 import type { HarnessIdentity } from "./harness.ts";
+import { modelStringFields, type ModelStringField } from "./model-parts.ts";
 import { countTextTokens, tokenizationForModel } from "./token-counter.ts";
 
 export interface ContextSection {
@@ -20,7 +22,7 @@ export interface ContextSection {
 
 export interface ContextPart {
   id: string;
-  phase: "prewarm" | "inference";
+  phase: "prewarm" | "inference" | "model";
   kind: "message" | "tool";
   role?: string;
   name: string;
@@ -62,7 +64,21 @@ interface RequestRecord {
   usage?: { inputTokens: number; cachedTokens: number };
 }
 
-export function buildSnapshots(events: CaptureEvent[]): ContextSnapshot[] {
+/**
+ * Model definitions used to derive catalog parts for model-level instruction
+ * strings (`model_messages.*`). `original` is the last observed upstream
+ * /models response; `effective` is what the proxy serves after routes,
+ * adjustments, and transformations.
+ */
+export interface SnapshotModelContext {
+  original: ModelDefinition[];
+  effective: ModelDefinition[];
+}
+
+export function buildSnapshots(
+  events: CaptureEvent[],
+  models?: SnapshotModelContext,
+): ContextSnapshot[] {
   const requests: RequestRecord[] = [];
   const byResponseId = new Map<string, RequestRecord>();
   let pending: RequestRecord | undefined;
@@ -88,12 +104,13 @@ export function buildSnapshots(events: CaptureEvent[]): ContextSnapshot[] {
 
   return requests
     .filter((request) => request.payload.generate !== false)
-    .map((request) => snapshotFrom(request, byResponseId));
+    .map((request) => snapshotFrom(request, byResponseId, models));
 }
 
 function snapshotFrom(
   inference: RequestRecord,
   byResponseId: Map<string, RequestRecord>,
+  models?: SnapshotModelContext,
 ): ContextSnapshot {
   const chain: RequestRecord[] = [];
   let request: RequestRecord | undefined = inference;
@@ -106,7 +123,10 @@ function snapshotFrom(
   }
   const model = stringValue(inference.payload.model) ?? "unknown";
   const tokenization = tokenizationForModel(model);
-  const parts = aggregateRegistries(chain.flatMap((item) => partsFrom(item)));
+  const parts = [
+    ...aggregateRegistries(chain.flatMap((item) => partsFrom(item))),
+    ...modelPartsFor(model, models),
+  ];
   return {
     id: `${inference.event.sessionId}:${inference.event.sequence}`,
     sessionId: inference.event.sessionId,
@@ -134,6 +154,100 @@ function partsFrom(request: RequestRecord): ContextPart[] {
   });
   for (const effective of effectiveParts) if (unmatched.has(effective)) merged.push(effective);
   return merged;
+}
+
+/**
+ * Builds catalog parts for the instruction strings of the snapshot's model.
+ * Effective fields come from the served model definition; original fields from
+ * the observed upstream definition, so edits show as original vs effective.
+ */
+function modelPartsFor(model: string, context?: SnapshotModelContext): ContextPart[] {
+  if (context === undefined) return [];
+  const effective = context.effective.find((definition) => definition.slug === model);
+  const original = context.original.find((definition) => definition.slug === model);
+  if (effective === undefined && original === undefined) return [];
+  const originals = new Map(
+    (original === undefined ? [] : modelStringFields(original)).map((field) => [
+      field.dotPath,
+      field,
+    ]),
+  );
+  const parts: ContextPart[] = [];
+  if (effective !== undefined) {
+    for (const field of modelStringFields(effective)) {
+      const originalField = originals.get(field.dotPath);
+      originals.delete(field.dotPath);
+      parts.push(modelPart(model, field, originalField));
+    }
+  }
+  for (const removed of originals.values()) parts.push(deletedModelPart(model, removed));
+  return parts;
+}
+
+function modelPart(
+  model: string,
+  field: ModelStringField,
+  originalField?: ModelStringField,
+): ContextPart {
+  const originalText =
+    originalField !== undefined && originalField.text !== field.text
+      ? originalField.text
+      : undefined;
+  // Identity comes from the original field when available: a transformation
+  // that rewrites a classified prefix must not orphan the part's identifier.
+  const identifier = originalField?.identifier ?? field.identifier;
+  const label = originalField?.label ?? field.label;
+  const sections = sectionsValue(markdownSections(field.text, identifier));
+  const originalSections =
+    originalText === undefined
+      ? undefined
+      : sectionsValue(markdownSections(originalText, identifier));
+  const digest = sha256(field.text);
+  return {
+    id: `model:${model}:${field.dotPath}:${digest.slice(0, 12)}`,
+    phase: "model",
+    kind: "message",
+    role: "developer",
+    name: label,
+    identifier,
+    path: field.dotPath,
+    text: field.text,
+    characters: field.text.length,
+    estimatedTokens: countTextTokens(field.text),
+    digest,
+    ...(originalText === undefined
+      ? {}
+      : {
+          originalText,
+          originalEstimatedTokens: countTextTokens(originalText),
+        }),
+    ...(originalSections === undefined
+      ? sections.length === 0
+        ? {}
+        : { sections }
+      : { sections: mergeSections(sections, originalSections) }),
+  };
+}
+
+function deletedModelPart(model: string, field: ModelStringField): ContextPart {
+  const sections = sectionsValue(markdownSections(field.text, field.identifier));
+  return {
+    id: `model:${model}:${field.dotPath}:${sha256(field.text).slice(0, 12)}`,
+    phase: "model",
+    kind: "message",
+    role: "developer",
+    name: field.label,
+    identifier: field.identifier,
+    path: field.dotPath,
+    text: "",
+    characters: 0,
+    estimatedTokens: 0,
+    digest: sha256(""),
+    originalText: field.text,
+    originalEstimatedTokens: countTextTokens(field.text),
+    deleted: true,
+    ...(sections.length === 0 ? {} : { sections: sections.map(deletedSection) }),
+  };
 }
 
 function takeMatchingPart(

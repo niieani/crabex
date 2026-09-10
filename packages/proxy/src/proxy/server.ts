@@ -5,6 +5,7 @@ import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
 import type { Transformation } from "../context/transformation.ts";
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
 import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
+import { transformModelDefinitions } from "../context/transform.ts";
 import { decodeBody, transformModelsResponse } from "../routing/model-list.ts";
 import {
   authorizationFor,
@@ -333,6 +334,11 @@ async function proxyHttpRequest(
         routes,
         routeSet.adjustments,
         upstreamCache === undefined ? undefined : (body) => upstreamCache.observe("models", body),
+        (models) =>
+          transformModelDefinitions(models, transformationSource.get(), {
+            harness,
+            project,
+          }).models,
       );
     }
     if (isConfigBundleRequest(requestUrl.pathname)) {
@@ -585,11 +591,28 @@ function closePair(data: SocketData, code: number, reason: string): void {
 }
 
 function closeClient(socket: Bun.ServerWebSocket<SocketData>, code: number, reason: string): void {
-  if (socket.readyState === WebSocket.OPEN) socket.close(code, reason);
+  if (socket.readyState !== WebSocket.OPEN) return;
+  const valid = sanitizeCloseCode(code);
+  if (valid === undefined) socket.close();
+  else socket.close(valid, reason);
 }
 
 function closeUpstream(socket: WebSocket, code: number, reason: string): void {
-  if (socket.readyState === WebSocket.OPEN) socket.close(code, reason);
+  if (socket.readyState !== WebSocket.OPEN) return;
+  const valid = sanitizeCloseCode(code);
+  if (valid === undefined) socket.close();
+  else socket.close(valid, reason);
+}
+
+/**
+ * Reserved close codes (1004-1006, 1015+) cannot be sent in a close frame;
+ * echoing an upstream's abnormal 1006 would throw. Omit the code instead.
+ */
+export function sanitizeCloseCode(code: number): number | undefined {
+  return (code >= 1000 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006) ||
+    (code >= 3000 && code <= 4999)
+    ? code
+    : undefined;
 }
 
 function mergeCookies(existing: string | null, cloudflare: string): string {

@@ -65,6 +65,7 @@ export async function transformModelsResponse(
   routes: readonly ModelRoute[],
   adjustments: readonly ModelAdjustment[] = [],
   observe?: (body: unknown) => Promise<void> | void,
+  applyTransformations?: (models: ModelDefinition[]) => ModelDefinition[],
 ): Promise<Response> {
   if (!response.ok) {
     return response;
@@ -76,14 +77,14 @@ export async function transformModelsResponse(
       statusText: response.statusText,
       headers: response.headers,
     });
-  const hasTransforms = routes.length > 0 || adjustments.length > 0;
+  const hasListTransforms = routes.length > 0 || adjustments.length > 0;
   let body: unknown;
   try {
     const contentEncoding = response.headers.get("content-encoding")?.toLowerCase() ?? "identity";
     body = JSON.parse(new TextDecoder().decode(await decodeBody(bytes, contentEncoding)));
   } catch {
-    // Not decodable JSON; only fail when transforms were requested.
-    return hasTransforms
+    // Not decodable JSON; only fail when list transforms were requested.
+    return hasListTransforms
       ? new Response("Could not advertise routed models: upstream response is not decodable JSON", {
           status: 502,
         })
@@ -94,24 +95,47 @@ export async function transformModelsResponse(
   } catch {
     // observation is best-effort
   }
-  if (!hasTransforms) {
+  let transformed: unknown = body;
+  if (hasListTransforms) {
+    try {
+      transformed = transformModels(body, routes, adjustments);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "unknown error";
+      return new Response(`Could not advertise routed models: ${detail}`, { status: 502 });
+    }
+  }
+  if (applyTransformations !== undefined) {
+    const models = modelsArrayOf(transformed);
+    if (models === undefined) {
+      if (!hasListTransforms) return passthrough();
+    } else {
+      const next = applyTransformations(models);
+      if (next !== models) {
+        transformed = { ...(transformed as Record<string, unknown>), models: next };
+      } else if (!hasListTransforms) {
+        // String transformations matched nothing; preserve the raw response.
+        return passthrough();
+      }
+    }
+  } else if (!hasListTransforms) {
     return passthrough();
   }
-  try {
-    const transformed = transformModels(body, routes, adjustments);
-    const headers = new Headers(response.headers);
-    headers.delete("content-encoding");
-    headers.delete("content-length");
-    headers.delete("etag");
-    return Response.json(transformed, {
-      headers,
-      status: response.status,
-      statusText: response.statusText,
-    });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "unknown error";
-    return new Response(`Could not advertise routed models: ${detail}`, { status: 502 });
-  }
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  headers.delete("etag");
+  return Response.json(transformed, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+function modelsArrayOf(body: unknown): ModelDefinition[] | undefined {
+  if (!isRecord(body) || !Array.isArray(body.models)) return undefined;
+  return body.models.every((model) => isRecord(model) && typeof model.slug === "string")
+    ? (body.models as ModelDefinition[])
+    : undefined;
 }
 
 export function deepMerge(base: unknown, overrides: unknown): unknown {

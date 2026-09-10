@@ -44,7 +44,9 @@ export function ContextInspector({
   );
   const selected =
     snapshot.parts.find((part) => partKey(part) === selectedKey) ?? snapshot.parts[0];
-  const totalCharacters = snapshot.parts.reduce((total, part) => total + part.characters, 0);
+  const totalCharacters = snapshot.parts
+    .filter((part) => part.phase !== "model")
+    .reduce((total, part) => total + part.characters, 0);
   const hasTransformations = snapshot.parts.some((part) => part.originalText !== undefined);
 
   if (selected === undefined) {
@@ -262,7 +264,8 @@ function PartButton({
   onToggleIdentifier?: (identifier: string, disabled: boolean) => void;
   onSelectSection: (section: ContextSection) => void;
 }) {
-  const percent = totalCharacters === 0 ? 0 : (part.characters / totalCharacters) * 100;
+  const percent =
+    totalCharacters === 0 ? 0 : Math.min(100, (part.characters / totalCharacters) * 100);
   return (
     <div
       className={`mb-1 rounded-lg border transition ${
@@ -492,9 +495,9 @@ function offsetToTextPosition(text: string, offset: number): { line: number; cha
 }
 
 function phaseBadge(phase: ContextPart["phase"]): string {
-  return phase === "prewarm"
-    ? "rounded bg-violet-dim px-1.5 py-0.5 text-violet"
-    : "rounded bg-accent-dim px-1.5 py-0.5 text-accent";
+  if (phase === "prewarm") return "rounded bg-violet-dim px-1.5 py-0.5 text-violet";
+  if (phase === "model") return "rounded bg-warning/10 px-1.5 py-0.5 text-warning";
+  return "rounded bg-accent-dim px-1.5 py-0.5 text-accent";
 }
 
 function formatNumber(value: number): string {

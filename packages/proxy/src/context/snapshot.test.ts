@@ -49,6 +49,109 @@ describe("buildSnapshots", () => {
     expect(snapshots[0]?.parts.every((part) => part.digest.length === 64)).toBe(true);
   });
 
+  it("adds model parts from the observed and effective model definitions", () => {
+    const events: CaptureEvent[] = [
+      event(1, "client_to_upstream", {
+        type: "response.create",
+        model: "gpt-5.6-luna",
+        input: [message("user", "hi")],
+      }),
+    ];
+    const original = [
+      {
+        slug: "gpt-5.6-luna",
+        model_messages: {
+          instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+          token_budget: { guidance_message: "Use notes to checkpoint." },
+        },
+      },
+    ];
+    const effective = [
+      {
+        slug: "gpt-5.6-luna",
+        model_messages: {
+          instructions_template: "You are Codex, an agent based on GPT-5. Be terse.",
+          token_budget: { guidance_message: "" },
+        },
+      },
+    ];
+
+    const snapshots = buildSnapshots(events, { original, effective });
+
+    const modelParts = snapshots[0]?.parts.filter((part) => part.phase === "model");
+    expect(modelParts?.map((part) => part.path)).toEqual([
+      "model_messages.instructions_template",
+      "model_messages.token_budget.guidance_message",
+    ]);
+    const instructions = modelParts?.[0];
+    expect(instructions).toMatchObject({
+      kind: "message",
+      role: "developer",
+      name: "Codex base instructions",
+      identifier: "segment:codex_base",
+      text: "You are Codex, an agent based on GPT-5. Be terse.",
+      originalText: "You are Codex, an agent based on GPT-5. Be helpful.",
+    });
+    const guidance = modelParts?.[1];
+    expect(guidance).toMatchObject({
+      identifier: "model:model_messages.token_budget.guidance_message",
+      text: "",
+      originalText: "Use notes to checkpoint.",
+      deleted: true,
+    });
+  });
+
+  it("keeps the classified identifier when a transformation breaks the prefix", () => {
+    const events: CaptureEvent[] = [
+      event(1, "client_to_upstream", {
+        type: "response.create",
+        model: "gpt-5.6-luna",
+        input: [message("user", "hi")],
+      }),
+    ];
+    const original = [
+      {
+        slug: "gpt-5.6-luna",
+        model_messages: {
+          instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+        },
+      },
+    ];
+    const effective = [
+      {
+        slug: "gpt-5.6-luna",
+        model_messages: {
+          instructions_template: "You are Codex (edited), an agent based on GPT-5. Be helpful.",
+        },
+      },
+    ];
+
+    const snapshots = buildSnapshots(events, { original, effective });
+
+    const part = snapshots[0]?.parts.find((item) => item.phase === "model");
+    expect(part).toMatchObject({
+      identifier: "segment:codex_base",
+      name: "Codex base instructions",
+      text: "You are Codex (edited), an agent based on GPT-5. Be helpful.",
+      originalText: "You are Codex, an agent based on GPT-5. Be helpful.",
+    });
+  });
+
+  it("omits model parts when the snapshot model is not in the model context", () => {
+    const events: CaptureEvent[] = [
+      event(1, "client_to_upstream", {
+        type: "response.create",
+        model: "gpt-5.6-luna",
+        input: [message("user", "hi")],
+      }),
+    ];
+    const definitions = [{ slug: "other-model", model_messages: { notes: "Some notes." } }];
+
+    const snapshots = buildSnapshots(events, { original: definitions, effective: definitions });
+
+    expect(snapshots[0]?.parts.every((part) => part.phase !== "model")).toBe(true);
+  });
+
   it("carries the routing decision onto the snapshot", () => {
     const request = event(1, "client_to_upstream", {
       type: "response.create",
