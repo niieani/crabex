@@ -9,6 +9,7 @@ import { createCodexConfigManager } from "./config/codex-config.ts";
 import { openConfigBundleStore } from "./config/config-bundle-store.ts";
 import { openModelRouteStore } from "./config/model-route-store.ts";
 import { openTransformationStore } from "./config/transformation-store.ts";
+import { openUpstreamCacheStore } from "./config/upstream-cache.ts";
 import { startReverseProxy } from "./proxy/server.ts";
 import { modelRouteFromConfig } from "./routing/model-routes.ts";
 import { FileCaptureRepository } from "./recording/capture-repository.ts";
@@ -28,6 +29,9 @@ Options:
                         Config bundle override (default: .agent-context-trimmer/config-bundle.json)
   --codex-config <file> Codex config for UI toggles (default: $CODEX_HOME/config.toml or
                         ~/.codex/config.toml)
+  --upstream-cache <file>
+                        Last observed upstream models/bundle responses
+                        (default: .agent-context-trimmer/upstream-cache.json)
   --project <key>       Optional project scope for captures and transformations
 `;
 
@@ -44,6 +48,7 @@ async function main(): Promise<void> {
   const transformationStore = await openTransformationStore(options.transformationsPath);
   const modelRouteStore = await openModelRouteStore(options.modelRoutesPath);
   const configBundleStore = await openConfigBundleStore(options.configBundlePath);
+  const upstreamCacheStore = await openUpstreamCacheStore(options.upstreamCachePath);
   const proxyOrigin = `http://${
     options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host
   }:${options.port}`;
@@ -53,14 +58,21 @@ async function main(): Promise<void> {
     upstreamOrigin: options.upstreamOrigin,
     captureSink,
     transformationSource: { get: () => transformationStore.get().transformations },
-    modelRouteSource: { get: () => modelRouteStore.get().map(modelRouteFromConfig) },
+    modelRouteSource: {
+      get: () => {
+        const set = modelRouteStore.get();
+        return { routes: set.routes.map(modelRouteFromConfig), adjustments: set.adjustments };
+      },
+    },
     configBundleSource: { get: () => configBundleStore.get() },
+    upstreamCache: upstreamCacheStore,
     project: options.project,
     localApi: createLocalApi({
       snapshots: new FileCaptureRepository(options.capturesDirectory),
       transformations: transformationStore,
       modelRoutes: modelRouteStore,
       configBundle: configBundleStore,
+      upstreamCache: upstreamCacheStore,
       codexConfig: createCodexConfigManager({
         configPath: options.codexConfigPath,
         proxyOrigin,

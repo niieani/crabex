@@ -6,9 +6,15 @@ import {
   getModelRouteEnvStatus,
   getModelRoutes,
   getRoutingTelemetry,
+  getUpstreamCache,
   putModelRoutes,
 } from "../lib/api.ts";
-import type { ModelRouteConfig, ModelRouteSet, RoutingTelemetry } from "../lib/types.ts";
+import type {
+  ModelAdjustment,
+  ModelRouteConfig,
+  ModelRouteSet,
+  RoutingTelemetry,
+} from "../lib/types.ts";
 
 export function ModelRoutesPage() {
   const queryClient = useQueryClient();
@@ -20,6 +26,13 @@ export function ModelRoutesPage() {
     refetchInterval: 5000,
   });
   const telemetry = telemetryQuery.data ?? [];
+  const upstreamQuery = useQuery({
+    queryKey: ["upstream-cache"],
+    queryFn: getUpstreamCache,
+    refetchInterval: 5000,
+  });
+  const upstreamModels = modelDefinitions(upstreamQuery.data?.models?.body);
+  const upstreamFetchedAt = upstreamQuery.data?.models?.fetchedAt;
   const mutation = useMutation({
     mutationFn: putModelRoutes,
     onSuccess: (set) => {
@@ -36,7 +49,20 @@ export function ModelRoutesPage() {
   if (set === undefined) return null;
 
   const replace = (next: ModelRouteSet) => mutation.mutate(next);
-  const add = (route: ModelRouteConfig) => replace({ version: 1, routes: [...set.routes, route] });
+  const add = (route: ModelRouteConfig) => replace({ ...set, routes: [...set.routes, route] });
+  const saveAdjustment = (adjustment: ModelAdjustment) =>
+    replace({
+      ...set,
+      adjustments: [
+        ...(set.adjustments ?? []).filter((item) => item.slug !== adjustment.slug),
+        adjustment,
+      ],
+    });
+  const removeAdjustment = (slug: string) =>
+    replace({
+      ...set,
+      adjustments: (set.adjustments ?? []).filter((item) => item.slug !== slug),
+    });
 
   return (
     <div className="grid h-full min-h-0 grid-cols-1 overflow-y-auto lg:grid-cols-[1fr_24rem] lg:overflow-hidden">
@@ -77,11 +103,65 @@ export function ModelRoutesPage() {
                   replace(updateRoute(set, index, { ...route, enabled: !(route.enabled ?? true) }))
                 }
                 onDelete={() =>
-                  replace({ version: 1, routes: set.routes.filter((_, i) => i !== index) })
+                  replace({ ...set, routes: set.routes.filter((_, i) => i !== index) })
                 }
               />
             ))
           )}
+        </div>
+        <div className="mt-8">
+          <div className="mb-4 flex items-end justify-between">
+            <div>
+              <p className="section-label">Observed upstream</p>
+              <h2 className="mt-2 text-lg font-semibold tracking-tight">Upstream models</h2>
+              <p className="mt-2 max-w-xl text-sm leading-6 text-muted">
+                The last model list returned by the real upstream. Adjustments deep-merge into the
+                advertised fields — for example context_window or
+                model_messages.instructions_template — before the list reaches Codex.
+              </p>
+            </div>
+            {upstreamFetchedAt === undefined ? null : (
+              <span className="rounded-full border border-line px-3 py-1 text-xs text-muted">
+                fetched {new Date(upstreamFetchedAt).toLocaleString()}
+              </span>
+            )}
+          </div>
+          {upstreamModels.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-line p-10 text-center text-sm text-muted">
+              No upstream model list observed yet. It is recorded the next time Codex fetches
+              /models through the proxy.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {upstreamModels.map((model) => (
+                <UpstreamModelCard
+                  key={model.slug}
+                  model={model}
+                  adjustment={(set.adjustments ?? []).find((item) => item.slug === model.slug)}
+                  onSave={saveAdjustment}
+                  onRemove={removeAdjustment}
+                  pending={mutation.isPending}
+                />
+              ))}
+            </div>
+          )}
+          {(set.adjustments ?? [])
+            .filter((item) => !upstreamModels.some((model) => model.slug === item.slug))
+            .map((item) => (
+              <p
+                key={item.slug}
+                className="mt-2 rounded-lg bg-danger-dim px-3 py-2 text-xs text-danger"
+              >
+                Adjustment for {item.slug} matches no observed upstream model.
+                <button
+                  type="button"
+                  onClick={() => removeAdjustment(item.slug)}
+                  className="ml-2 underline"
+                >
+                  Remove
+                </button>
+              </p>
+            ))}
         </div>
       </section>
       <aside className="bg-panel p-5 lg:min-h-0 lg:overflow-y-auto">
@@ -168,6 +248,161 @@ function RouteCard({
       </div>
     </article>
   );
+}
+
+type UpstreamModel = Record<string, unknown> & { slug: string };
+
+function UpstreamModelCard({
+  model,
+  adjustment,
+  onSave,
+  onRemove,
+  pending,
+}: {
+  model: UpstreamModel;
+  adjustment?: ModelAdjustment;
+  onSave: (adjustment: ModelAdjustment) => void;
+  onRemove: (slug: string) => void;
+  pending: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const effective =
+    adjustment === undefined ? model : (deepMerge(model, adjustment.overrides) as UpstreamModel);
+  const displayName = typeof model.display_name === "string" ? model.display_name : model.slug;
+
+  function openEditor() {
+    setText(adjustment === undefined ? "{}" : JSON.stringify(adjustment.overrides, null, 2));
+    setError("");
+    setEditing(true);
+  }
+
+  function save() {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("Overrides must be a JSON object.");
+      }
+      if (Object.hasOwn(parsed, "slug")) throw new Error("overrides.slug is not allowed");
+      onSave({ slug: model.slug, overrides: parsed as Record<string, unknown> });
+      setEditing(false);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  return (
+    <article className="rounded-xl border border-line bg-panel p-4">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-semibold">{displayName}</h3>
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-muted">
+            <Tag>{model.slug}</Tag>
+            {fieldTag(effective, "context_window")}
+            {fieldTag(effective, "visibility")}
+            {fieldTag(effective, "priority")}
+            {fieldTag(effective, "default_reasoning_level")}
+            {adjustment === undefined ? null : <Tag>adjusted</Tag>}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {adjustment === undefined ? null : (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => onRemove(model.slug)}
+              className="rounded px-2 py-1 text-[10px] text-muted hover:bg-danger-dim hover:text-danger"
+            >
+              Remove adjustment
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => (editing ? setEditing(false) : openEditor())}
+            className="rounded-full bg-canvas px-2.5 py-1 text-[10px] font-semibold text-muted hover:text-ink"
+          >
+            {editing ? "Close" : adjustment === undefined ? "Adjust" : "Edit adjustment"}
+          </button>
+        </div>
+      </div>
+      {editing ? (
+        <div className="mt-3">
+          <textarea
+            value={text}
+            onChange={(event) => {
+              setText(event.target.value);
+              setError("");
+            }}
+            spellCheck={false}
+            className="input min-h-24 resize-y font-mono text-[10px] leading-4"
+            placeholder='{"context_window": 1048576}'
+          />
+          {error === "" ? null : <p className="mt-1 text-[10px] text-red-400">{error}</p>}
+          <button
+            type="button"
+            onClick={save}
+            disabled={pending}
+            className="mt-2 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-canvas disabled:opacity-50"
+          >
+            Save adjustment
+          </button>
+        </div>
+      ) : null}
+      <details className="mt-3">
+        <summary className="cursor-pointer text-[10px] uppercase tracking-[0.12em] text-muted">
+          Original
+        </summary>
+        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-canvas px-3 py-2 font-mono text-[10px] text-content">
+          {JSON.stringify(model, null, 2)}
+        </pre>
+      </details>
+      {adjustment === undefined ? null : (
+        <details className="mt-2" open>
+          <summary className="cursor-pointer text-[10px] uppercase tracking-[0.12em] text-accent">
+            Effective (after adjustment)
+          </summary>
+          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-canvas px-3 py-2 font-mono text-[10px] text-content">
+            {JSON.stringify(effective, null, 2)}
+          </pre>
+        </details>
+      )}
+    </article>
+  );
+}
+
+function fieldTag(model: UpstreamModel, field: string) {
+  const value = model[field];
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  return (
+    <Tag key={field}>
+      {field}:{String(value)}
+    </Tag>
+  );
+}
+
+function modelDefinitions(body: unknown): UpstreamModel[] {
+  if (typeof body !== "object" || body === null) return [];
+  const models = (body as Record<string, unknown>).models;
+  if (!Array.isArray(models)) return [];
+  return models.filter(
+    (model): model is UpstreamModel =>
+      typeof model === "object" &&
+      model !== null &&
+      typeof (model as { slug?: unknown }).slug === "string",
+  );
+}
+
+function deepMerge(base: unknown, overrides: unknown): unknown {
+  if (typeof base !== "object" || base === null || Array.isArray(base)) return overrides;
+  if (typeof overrides !== "object" || overrides === null || Array.isArray(overrides)) {
+    return overrides;
+  }
+  const merged: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(overrides)) {
+    merged[key] = key in merged ? deepMerge(merged[key], value) : value;
+  }
+  return merged;
 }
 
 function RouteEditor({ onCreate }: { onCreate: (route: ModelRouteConfig) => void }) {

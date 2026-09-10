@@ -28,12 +28,27 @@ describe("model route store", () => {
     const path = join(directory, "routes.json");
     const store = await openModelRouteStore(path);
 
-    expect(store.get()).toEqual([]);
-    await store.replace(routes);
+    expect(store.get()).toEqual({ routes: [], adjustments: [] });
+    await store.replace({ routes, adjustments: [] });
 
-    expect(store.get()).toEqual(routes);
-    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ version: 1, routes });
-    expect((await openModelRouteStore(path)).get()).toEqual(routes);
+    expect(store.get()).toEqual({ routes, adjustments: [] });
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      version: 1,
+      routes,
+      adjustments: [],
+    });
+    expect((await openModelRouteStore(path)).get()).toEqual({ routes, adjustments: [] });
+  });
+
+  it("round-trips model adjustments", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-routes-"));
+    const path = join(directory, "routes.json");
+    const store = await openModelRouteStore(path);
+    const adjustments = [{ slug: "gpt-5.6-terra", overrides: { context_window: 1_000_000 } }];
+
+    await store.replace({ routes, adjustments });
+
+    expect((await openModelRouteStore(path)).get()).toEqual({ routes, adjustments });
   });
 
   it("loads a bare codex-enterprise route array", async () => {
@@ -41,7 +56,7 @@ describe("model route store", () => {
     const path = join(directory, "routes.json");
     await Bun.write(path, JSON.stringify(routes));
 
-    expect((await openModelRouteStore(path)).get()).toEqual(routes);
+    expect((await openModelRouteStore(path)).get()).toEqual({ routes, adjustments: [] });
   });
 
   it("rejects malformed persisted configuration", async () => {

@@ -26,6 +26,16 @@ export interface ModelRouteConfig {
   upstream_model?: string;
 }
 
+export interface ModelAdjustment {
+  slug: string;
+  overrides: Record<string, unknown>;
+}
+
+export interface ModelRouteSetData {
+  routes: ModelRouteConfig[];
+  adjustments: ModelAdjustment[];
+}
+
 export interface AdvertisedModel {
   description: string;
   displayName: string;
@@ -45,8 +55,14 @@ export interface ModelRoute {
 
 export class RouteUnavailable extends Error {}
 
-export function parseModelRouteSet(value: unknown): ModelRouteConfig[] {
-  return routeArray(value).map((route, index) => routeConfig(route, `route[${index}]`));
+export function parseModelRouteSet(value: unknown): ModelRouteSetData {
+  const set = routeSetValue(value);
+  return {
+    routes: set.routes.map((route, index) => routeConfig(route, `route[${index}]`)),
+    adjustments: set.adjustments.map((adjustment, index) =>
+      adjustmentConfig(adjustment, `adjustment[${index}]`),
+    ),
+  };
 }
 
 export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
@@ -120,11 +136,30 @@ export function inspectResponseModel(
   return undefined;
 }
 
-function routeArray(value: unknown): unknown[] {
-  if (Array.isArray(value)) return value;
+function routeSetValue(value: unknown): { routes: unknown[]; adjustments: unknown[] } {
+  if (Array.isArray(value)) return { routes: value, adjustments: [] };
   const set = objectValue(value);
-  if (set?.version === 1 && Array.isArray(set.routes)) return set.routes;
+  if (set?.version === 1 && Array.isArray(set.routes)) {
+    if (set.adjustments !== undefined && !Array.isArray(set.adjustments)) {
+      throw new Error("model route set adjustments must be an array");
+    }
+    return { routes: set.routes, adjustments: set.adjustments ?? [] };
+  }
   throw new Error("unsupported model route set");
+}
+
+function adjustmentConfig(value: unknown, source: string): ModelAdjustment {
+  if (!isRecord(value)) {
+    throw new Error(`${source} must be an object`);
+  }
+  const overrides = value.overrides === undefined ? {} : value.overrides;
+  if (!isRecord(overrides)) {
+    throw new Error(`${source}.overrides must be an object`);
+  }
+  if (Object.hasOwn(overrides, "slug")) {
+    throw new Error(`${source}.overrides.slug is not allowed`);
+  }
+  return { slug: nonEmptyString(value.slug, `${source}.slug`), overrides };
 }
 
 function routeConfig(value: unknown, source: string): ModelRouteConfig {

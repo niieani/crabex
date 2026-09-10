@@ -7,6 +7,7 @@ import {
   parseConfigBundleOverride,
 } from "../config/config-bundle-store.ts";
 import type { ModelRouteStore } from "../config/model-route-store.ts";
+import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
 import { parseModelRouteSet } from "../routing/model-routes.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
 
@@ -22,6 +23,7 @@ export function createLocalApi(options: {
   modelRoutes: ModelRouteStore;
   configBundle: ConfigBundleStore;
   codexConfig: CodexConfigManager;
+  upstreamCache: UpstreamCacheStore;
 }): LocalApi {
   return {
     async handle(request) {
@@ -40,6 +42,9 @@ export function createLocalApi(options: {
         if (url.pathname === `${API_PREFIX}/routing-telemetry` && request.method === "GET") {
           return json({ telemetry: await options.snapshots.routingTelemetry() });
         }
+        if (url.pathname === `${API_PREFIX}/upstream-cache` && request.method === "GET") {
+          return json(options.upstreamCache.get());
+        }
         if (url.pathname === `${API_PREFIX}/preview` && request.method === "POST") {
           const body = (await request.json()) as Record<string, unknown>;
           if (typeof body.snapshotId !== "string" || !Array.isArray(body.transformations)) {
@@ -57,16 +62,16 @@ export function createLocalApi(options: {
           return json(set);
         }
         if (url.pathname === `${API_PREFIX}/model-routes` && request.method === "GET") {
-          return json({ version: 1, routes: options.modelRoutes.get() });
+          return json({ version: 1, ...options.modelRoutes.get() });
         }
         if (url.pathname === `${API_PREFIX}/model-routes` && request.method === "PUT") {
-          const routes = parseModelRouteSet(await request.json());
-          await options.modelRoutes.replace(routes);
-          return json({ version: 1, routes });
+          const set = parseModelRouteSet(await request.json());
+          await options.modelRoutes.replace(set);
+          return json({ version: 1, ...set });
         }
         if (url.pathname === `${API_PREFIX}/model-routes/env-status` && request.method === "GET") {
           const names = [
-            ...new Set(options.modelRoutes.get().map((route) => route.authorization_env)),
+            ...new Set(options.modelRoutes.get().routes.map((route) => route.authorization_env)),
           ];
           return json({
             env: Object.fromEntries(

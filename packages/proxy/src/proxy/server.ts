@@ -4,7 +4,8 @@ import type { CaptureRouting, CaptureSink } from "../recording/capture.ts";
 import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
 import type { Transformation } from "../context/transformation.ts";
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
-import { prependRoutedModelsToResponse } from "../routing/model-list.ts";
+import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
+import { decodeBody, transformModelsResponse } from "../routing/model-list.ts";
 import {
   authorizationFor,
   inspectResponseModel,
@@ -12,6 +13,7 @@ import {
   responseTargetUrl,
   routedHeaders,
   RouteUnavailable,
+  type ModelAdjustment,
   type ModelRoute,
 } from "../routing/model-routes.ts";
 import {
@@ -55,6 +57,7 @@ export interface ReverseProxyOptions {
   transformationSource?: TransformationSource;
   modelRouteSource?: ModelRouteSource;
   configBundleSource?: ConfigBundleSource;
+  upstreamCache?: UpstreamCacheStore;
   project?: string;
   localApi?: LocalApi;
 }
@@ -64,7 +67,7 @@ export interface TransformationSource {
 }
 
 export interface ModelRouteSource {
-  get(): ModelRoute[];
+  get(): { routes: ModelRoute[]; adjustments: ModelAdjustment[] };
 }
 
 export interface ConfigBundleSource {
@@ -102,8 +105,36 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
   );
   const cookies = new CloudflareCookieJar();
   const transformationSource = options.transformationSource ?? { get: () => [] };
-  const modelRouteSource = options.modelRouteSource ?? { get: () => [] };
+  const modelRouteSource = options.modelRouteSource ?? {
+    get: () => ({ routes: [], adjustments: [] }),
+  };
   const configBundleSource = options.configBundleSource;
+  const upstreamCache = options.upstreamCache;
+  let lastBundleObservation = 0;
+
+  // While the bundle override answers locally, refresh the observed upstream
+  // bundle in the background (throttled) so the original stays inspectable.
+  const observeBundleUpstream = (request: Request): void => {
+    if (upstreamCache === undefined) return;
+    const nowMs = Date.now();
+    if (nowMs - lastBundleObservation < 60_000) return;
+    lastBundleObservation = nowMs;
+    void fetch(targetUrl(upstreamOrigin, request.url), {
+      headers: forwardedHeaders(request.headers, cookies.header()),
+    })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const encoding = response.headers.get("content-encoding")?.toLowerCase() ?? "identity";
+        const body: unknown = JSON.parse(
+          new TextDecoder().decode(await decodeBody(bytes, encoding)),
+        );
+        await upstreamCache.observe("configBundle", body);
+      })
+      .catch(() => {
+        // observation is best-effort
+      });
+  };
 
   const server = Bun.serve<SocketData>({
     hostname: host,
@@ -126,6 +157,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             headers: { "content-type": "text/plain; charset=utf-8" },
           });
         }
+        observeBundleUpstream(request);
         return Response.json(bundleOverride.bundle);
       }
       if (isWebSocketUpgrade(request)) {
@@ -148,6 +180,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         options.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES,
         transformationSource,
         modelRouteSource,
+        upstreamCache,
         options.project,
       );
     },
@@ -221,6 +254,7 @@ async function proxyHttpRequest(
   maxRequestBytes: number,
   transformationSource: TransformationSource,
   modelRouteSource: ModelRouteSource,
+  upstreamCache: UpstreamCacheStore | undefined,
   project: string | undefined,
 ): Promise<Response> {
   try {
@@ -238,7 +272,8 @@ async function proxyHttpRequest(
     );
 
     const requestUrl = new URL(request.url);
-    const routes = modelRouteSource.get();
+    const routeSet = modelRouteSource.get();
+    const routes = routeSet.routes;
     let target = targetUrl(upstreamOrigin, request.url);
     let headers = forwardedHeaders(request.headers, cookies.header());
     let outbound = processed.value;
@@ -292,8 +327,16 @@ async function proxyHttpRequest(
       statusText: response.statusText,
       headers: downstreamHeaders(response.headers),
     });
-    if (routes.length > 0 && isModelsRequest(request.method, requestUrl.pathname)) {
-      return await prependRoutedModelsToResponse(downstream, routes);
+    if (isModelsRequest(request.method, requestUrl.pathname)) {
+      return await transformModelsResponse(
+        downstream,
+        routes,
+        routeSet.adjustments,
+        upstreamCache === undefined ? undefined : (body) => upstreamCache.observe("models", body),
+      );
+    }
+    if (isConfigBundleRequest(requestUrl.pathname)) {
+      return await observePassthrough(downstream, upstreamCache);
     }
     return downstream;
   } catch (error) {
@@ -317,7 +360,7 @@ async function upgradeWebSocket(
 ): Promise<Response | undefined> {
   try {
     const requestUrl = new URL(request.url);
-    const routes = modelRouteSource.get().filter((route) => route.enabled);
+    const routes = modelRouteSource.get().routes.filter((route) => route.enabled);
     const lazyRouting = routes.length > 0 && isResponsesPath(requestUrl.pathname);
     const baseHeaders = forwardedWebSocketHeaders(request.headers, cookies.header());
     const protocols = requestedProtocols(request.headers.get("sec-websocket-protocol"));
@@ -479,6 +522,26 @@ function downstreamHeaders(incoming: Headers): Headers {
   const headers = new Headers(incoming);
   for (const name of [...HOP_BY_HOP_HEADERS, "set-cookie"]) headers.delete(name);
   return headers;
+}
+
+async function observePassthrough(
+  response: Response,
+  upstreamCache: UpstreamCacheStore | undefined,
+): Promise<Response> {
+  if (!response.ok || upstreamCache === undefined) return response;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  try {
+    const encoding = response.headers.get("content-encoding")?.toLowerCase() ?? "identity";
+    const body: unknown = JSON.parse(new TextDecoder().decode(await decodeBody(bytes, encoding)));
+    await upstreamCache.observe("configBundle", body);
+  } catch {
+    // observation is best-effort; pass the response through untouched
+  }
+  return new Response(bytes, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 function targetUrl(upstreamOrigin: URL, requestUrl: string): URL {

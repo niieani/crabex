@@ -4,7 +4,7 @@ import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
 import type { CodexConfigState } from "../config/codex-config.ts";
 import type { ContextSnapshot } from "../context/snapshot.ts";
 import type { TransformationSet } from "../context/transformation.ts";
-import type { ModelRouteConfig } from "../routing/model-routes.ts";
+import type { ModelRouteConfig, ModelRouteSetData } from "../routing/model-routes.ts";
 import { createLocalApi } from "./local-api.ts";
 
 const routeConfigs: ModelRouteConfig[] = [
@@ -31,10 +31,10 @@ function stubSources(overrides: {
   let bundle = overrides.bundle ?? { version: 1 as const, enabled: false, bundle: null };
   return {
     modelRoutes: {
-      get: () => routes,
-      replace: async (next: ModelRouteConfig[]) => {
-        routes = next;
-        overrides.onReplaceRoutes?.(next);
+      get: () => ({ routes, adjustments: [] }),
+      replace: async (next: ModelRouteSetData) => {
+        routes = next.routes;
+        overrides.onReplaceRoutes?.(next.routes);
       },
     },
     configBundle: {
@@ -47,6 +47,14 @@ function stubSources(overrides: {
     currentRoutes: () => routes,
     currentBundle: () => bundle,
     codexConfig: stubCodexConfig(),
+    upstreamCache: stubUpstreamCache(),
+  };
+}
+
+function stubUpstreamCache() {
+  return {
+    get: () => ({}),
+    observe: async () => {},
   };
 }
 
@@ -237,7 +245,7 @@ describe("local context API", () => {
     const listed = await api.handle(
       new Request("http://localhost/__agent-context-trimmer/api/model-routes"),
     );
-    expect(await listed?.json()).toEqual({ version: 1, routes: routeConfigs });
+    expect(await listed?.json()).toEqual({ version: 1, routes: routeConfigs, adjustments: [] });
 
     delete process.env.ACT_TEST_ROUTE_KEY;
     const missing = await api.handle(
@@ -254,6 +262,34 @@ describe("local context API", () => {
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
     }
+  });
+
+  it("serves the observed upstream responses cache", async () => {
+    const cacheState = {
+      models: { fetchedAt: "2026-09-10T00:00:00.000Z", body: { models: [{ slug: "gpt-5.6" }] } },
+      configBundle: { fetchedAt: "2026-09-10T00:00:01.000Z", body: { requirements_toml: null } },
+    };
+    const api = createLocalApi({
+      snapshots: {
+        list: async () => [],
+        preview: async () => undefined,
+        transformationTelemetry: async () => [],
+        routingTelemetry: async () => [],
+      },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...stubSources({}),
+      upstreamCache: { get: () => cacheState, observe: async () => {} },
+    });
+
+    const response = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/upstream-cache"),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toEqual(cacheState);
   });
 
   it("rejects invalid model routes with a validation error", async () => {

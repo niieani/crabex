@@ -32,11 +32,44 @@ const routeConfig = [
 
 describe("parseModelRouteSet", () => {
   it("parses a versioned route set", () => {
-    expect(parseModelRouteSet({ version: 1, routes: routeConfig })).toEqual(routeConfig);
+    expect(parseModelRouteSet({ version: 1, routes: routeConfig })).toEqual({
+      routes: routeConfig,
+      adjustments: [],
+    });
+  });
+
+  it("parses model adjustments from a versioned set", () => {
+    const parsed = parseModelRouteSet({
+      version: 1,
+      routes: routeConfig,
+      adjustments: [
+        {
+          slug: "gpt-5.6-terra",
+          overrides: { context_window: 1_000_000, model_messages: { token_budget: null } },
+        },
+      ],
+    });
+
+    expect(parsed.adjustments).toEqual([
+      {
+        slug: "gpt-5.6-terra",
+        overrides: { context_window: 1_000_000, model_messages: { token_budget: null } },
+      },
+    ]);
+  });
+
+  it("rejects adjustments that rename the slug", () => {
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [],
+        adjustments: [{ slug: "gpt-5.6-terra", overrides: { slug: "other" } }],
+      }),
+    ).toThrow("adjustment[0].overrides.slug is not allowed");
   });
 
   it("accepts a bare route array in the codex-enterprise file format", () => {
-    expect(parseModelRouteSet(routeConfig)).toEqual(routeConfig);
+    expect(parseModelRouteSet(routeConfig)).toEqual({ routes: routeConfig, adjustments: [] });
   });
 
   it("rejects lifecycle metadata overrides", () => {
@@ -64,7 +97,7 @@ describe("parseModelRouteSet", () => {
 
 describe("modelRouteFromConfig", () => {
   it("maps config to a runtime route, enabled by default", () => {
-    const route = modelRouteFromConfig(parseModelRouteSet(routeConfig)[0]!);
+    const route = modelRouteFromConfig(parseModelRouteSet(routeConfig).routes[0]!);
     expect(route).toEqual({
       authorizationEnv: "CLIPROXYAPI_KEY",
       enabled: true,
@@ -86,7 +119,7 @@ describe("modelRouteFromConfig", () => {
 });
 
 describe("authorizationFor", () => {
-  const route = modelRouteFromConfig(parseModelRouteSet(routeConfig)[0]!);
+  const route = modelRouteFromConfig(parseModelRouteSet(routeConfig).routes[0]!);
 
   it("resolves the bearer token lazily from the environment", () => {
     expect(authorizationFor(route, { CLIPROXYAPI_KEY: "local-api-key" })).toBe(
@@ -104,7 +137,7 @@ describe("authorizationFor", () => {
 
 describe("modelRouteFor", () => {
   it("matches enabled routes by slug and skips disabled ones", () => {
-    const route = modelRouteFromConfig(parseModelRouteSet(routeConfig)[0]!);
+    const route = modelRouteFromConfig(parseModelRouteSet(routeConfig).routes[0]!);
     expect(modelRouteFor([route], "kimi-k3")).toBe(route);
     expect(modelRouteFor([{ ...route, enabled: false }], "kimi-k3")).toBeUndefined();
     expect(modelRouteFor([route], "gpt-5.6")).toBeUndefined();
@@ -113,7 +146,7 @@ describe("modelRouteFor", () => {
 
 describe("responseTargetUrl", () => {
   it("appends /responses to the upstream base path and preserves the query", () => {
-    const route = modelRouteFromConfig(parseModelRouteSet(routeConfig)[0]!);
+    const route = modelRouteFromConfig(parseModelRouteSet(routeConfig).routes[0]!);
     expect(responseTargetUrl(route, "?trace=1").toString()).toBe(
       "http://127.0.0.1:8317/v1/responses?trace=1",
     );

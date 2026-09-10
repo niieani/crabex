@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { prependRoutedModels, prependRoutedModelsToResponse } from "./model-list.ts";
+import { transformModels, transformModelsResponse } from "./model-list.ts";
 import type { ModelRoute } from "./model-routes.ts";
 
 const route: ModelRoute = {
@@ -33,9 +33,9 @@ const template = {
   },
 };
 
-describe("prependRoutedModels", () => {
+describe("transformModels", () => {
   it("applies local capability overrides and removes inherited lifecycle metadata", () => {
-    const result = prependRoutedModels({ models: [template] }, [route]);
+    const result = transformModels({ models: [template] }, [route]);
 
     expect(result.models).toEqual([
       {
@@ -60,34 +60,83 @@ describe("prependRoutedModels", () => {
       },
     };
 
-    expect(() =>
-      prependRoutedModels({ models: [{ slug: "gpt-5.6-terra" }] }, [invalidRoute]),
-    ).toThrow("routed model kimi-k3 overrides missing template field unsupported");
+    expect(() => transformModels({ models: [{ slug: "gpt-5.6-terra" }] }, [invalidRoute])).toThrow(
+      "routed model kimi-k3 overrides missing template field unsupported",
+    );
   });
 
   it("rejects a route whose template is not advertised upstream", () => {
-    expect(() => prependRoutedModels({ models: [{ slug: "gpt-5.6-luna" }] }, [route])).toThrow(
+    expect(() => transformModels({ models: [{ slug: "gpt-5.6-luna" }] }, [route])).toThrow(
       "routed model kimi-k3 requires missing template gpt-5.6-terra",
     );
   });
 
   it("rejects duplicate routed slugs", () => {
-    expect(() => prependRoutedModels({ models: [template] }, [route, route])).toThrow(
+    expect(() => transformModels({ models: [template] }, [route, route])).toThrow(
       "duplicate routed model slug: kimi-k3",
     );
   });
 
   it("keeps the advertised model when the upstream list contains the same slug", () => {
-    const result = prependRoutedModels({ models: [template, { ...template, slug: "kimi-k3" }] }, [
+    const result = transformModels({ models: [template, { ...template, slug: "kimi-k3" }] }, [
       route,
     ]);
 
     expect(result.models.map((model) => model.slug)).toEqual(["kimi-k3", "gpt-5.6-terra"]);
     expect(result.models[0]).toMatchObject({ display_name: "Kimi K3" });
   });
+
+  it("deep-merges adjustments into matching upstream models", () => {
+    const upstream = {
+      models: [
+        {
+          ...template,
+          model_messages: {
+            instructions_template: "base instructions",
+            token_budget: { enabled: false, reminder_threshold_tokens: 6144 },
+          },
+        },
+      ],
+    };
+
+    const result = transformModels(
+      upstream,
+      [],
+      [
+        {
+          slug: "gpt-5.6-terra",
+          overrides: {
+            context_window: 1_000_000,
+            model_messages: { token_budget: { reminder_threshold_tokens: 8192 } },
+          },
+        },
+        { slug: "not-advertised", overrides: { priority: 99 } },
+      ],
+    );
+
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0]).toEqual({
+      ...template,
+      context_window: 1_000_000,
+      model_messages: {
+        instructions_template: "base instructions",
+        token_budget: { enabled: false, reminder_threshold_tokens: 8192 },
+      },
+    });
+  });
+
+  it("applies adjustments after prepending routed models", () => {
+    const result = transformModels(
+      { models: [template] },
+      [route],
+      [{ slug: "kimi-k3", overrides: { context_window: 777 } }],
+    );
+
+    expect(result.models[0]).toMatchObject({ slug: "kimi-k3", context_window: 777 });
+  });
 });
 
-describe("prependRoutedModelsToResponse", () => {
+describe("transformModelsResponse", () => {
   it("prepends routed models and strips stale entity headers", async () => {
     const upstream = new Response(JSON.stringify({ models: [template] }), {
       status: 200,
@@ -98,7 +147,7 @@ describe("prependRoutedModelsToResponse", () => {
       },
     });
 
-    const response = await prependRoutedModelsToResponse(upstream, [route]);
+    const response = await transformModelsResponse(upstream, [route]);
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-length")).toBeNull();
@@ -110,7 +159,7 @@ describe("prependRoutedModelsToResponse", () => {
   it("passes through non-OK upstream responses unchanged", async () => {
     const upstream = new Response("rate limited", { status: 429 });
 
-    const response = await prependRoutedModelsToResponse(upstream, [route]);
+    const response = await transformModelsResponse(upstream, [route]);
 
     expect(response.status).toBe(429);
     expect(await response.text()).toBe("rate limited");
@@ -119,9 +168,51 @@ describe("prependRoutedModelsToResponse", () => {
   it("fails with 502 when the upstream model list cannot be decorated", async () => {
     const upstream = new Response("not json", { status: 200 });
 
-    const response = await prependRoutedModelsToResponse(upstream, [route]);
+    const response = await transformModelsResponse(upstream, [route]);
 
     expect(response.status).toBe(502);
     expect(await response.text()).toContain("Could not advertise routed models");
+  });
+
+  it("observes the upstream body and passes through untouched when nothing is configured", async () => {
+    const upstream = new Response(JSON.stringify({ models: [template] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const observed: unknown[] = [];
+
+    const response = await transformModelsResponse(upstream, [], [], async (body) => {
+      observed.push(body);
+    });
+
+    expect(observed).toEqual([{ models: [template] }]);
+    expect(await response.json()).toEqual({ models: [template] });
+  });
+
+  it("observes the pre-transformation body when transforms apply", async () => {
+    const upstream = new Response(JSON.stringify({ models: [template] }), { status: 200 });
+    const observed: unknown[] = [];
+
+    const response = await transformModelsResponse(
+      upstream,
+      [],
+      [{ slug: "gpt-5.6-terra", overrides: { context_window: 1 } }],
+      async (body) => {
+        observed.push(body);
+      },
+    );
+
+    expect(observed).toEqual([{ models: [template] }]);
+    const body = (await response.json()) as { models: Array<{ context_window: number }> };
+    expect(body.models[0]?.context_window).toBe(1);
+  });
+
+  it("passes non-JSON bodies through when nothing is configured", async () => {
+    const upstream = new Response("not json", { status: 200 });
+
+    const response = await transformModelsResponse(upstream, []);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("not json");
   });
 });

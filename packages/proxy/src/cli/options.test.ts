@@ -15,6 +15,7 @@ describe("parseCliOptions", () => {
       modelRoutesPath: ".agent-context-trimmer/model-routes.json",
       configBundlePath: ".agent-context-trimmer/config-bundle.json",
       codexConfigPath: defaultCodexConfigPath(),
+      upstreamCachePath: ".agent-context-trimmer/upstream-cache.json",
     });
   });
 
@@ -36,6 +37,8 @@ describe("parseCliOptions", () => {
         "bundle.local.json",
         "--codex-config",
         "codex.local.toml",
+        "--upstream-cache",
+        "upstream.local.json",
         "--project",
         "fixture-project",
       ]),
@@ -49,6 +52,7 @@ describe("parseCliOptions", () => {
       modelRoutesPath: "routes.local.json",
       configBundlePath: "bundle.local.json",
       codexConfigPath: "codex.local.toml",
+      upstreamCachePath: "upstream.local.json",
       project: "fixture-project",
     });
   });

@@ -2,15 +2,15 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { parseModelRouteSet, type ModelRouteConfig } from "../routing/model-routes.ts";
+import { parseModelRouteSet, type ModelRouteSetData } from "../routing/model-routes.ts";
 
 export interface ModelRouteStore {
-  get(): ModelRouteConfig[];
-  replace(routes: ModelRouteConfig[]): Promise<void>;
+  get(): ModelRouteSetData;
+  replace(set: ModelRouteSetData): Promise<void>;
 }
 
 export async function openModelRouteStore(filePath: string): Promise<ModelRouteStore> {
-  let initial: ModelRouteConfig[] = [];
+  let initial: ModelRouteSetData = { routes: [], adjustments: [] };
   try {
     initial = parseModelRouteSet(JSON.parse(await readFile(filePath, "utf8")));
   } catch (error) {
@@ -20,27 +20,27 @@ export async function openModelRouteStore(filePath: string): Promise<ModelRouteS
 }
 
 class FileModelRouteStore implements ModelRouteStore {
-  #routes: ModelRouteConfig[];
+  #set: ModelRouteSetData;
   readonly #filePath: string;
 
-  constructor(filePath: string, initial: ModelRouteConfig[]) {
+  constructor(filePath: string, initial: ModelRouteSetData) {
     this.#filePath = filePath;
-    this.#routes = initial;
+    this.#set = initial;
   }
 
-  get(): ModelRouteConfig[] {
-    return structuredClone(this.#routes);
+  get(): ModelRouteSetData {
+    return structuredClone(this.#set);
   }
 
-  async replace(value: ModelRouteConfig[]): Promise<void> {
-    const routes = parseModelRouteSet(value);
+  async replace(value: ModelRouteSetData): Promise<void> {
+    const set = parseModelRouteSet({ version: 1, ...value });
     await mkdir(dirname(this.#filePath), { recursive: true });
     const temporaryPath = `${this.#filePath}.${randomUUID()}.tmp`;
-    await writeFile(temporaryPath, `${JSON.stringify({ version: 1, routes }, null, 2)}\n`, {
+    await writeFile(temporaryPath, `${JSON.stringify({ version: 1, ...set }, null, 2)}\n`, {
       mode: 0o600,
     });
     await rename(temporaryPath, this.#filePath);
-    this.#routes = routes;
+    this.#set = set;
   }
 }
 

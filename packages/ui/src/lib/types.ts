@@ -135,9 +135,25 @@ export interface ModelRouteConfig {
   upstream_model?: string;
 }
 
+export interface ModelAdjustment {
+  slug: string;
+  overrides: Record<string, unknown>;
+}
+
 export interface ModelRouteSet {
   version: 1;
   routes: ModelRouteConfig[];
+  adjustments?: ModelAdjustment[];
+}
+
+export interface UpstreamObservation {
+  fetchedAt: string;
+  body: unknown;
+}
+
+export interface UpstreamCacheState {
+  models?: UpstreamObservation;
+  configBundle?: UpstreamObservation;
 }
 
 export interface ConfigBundleOverride {

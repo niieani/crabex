@@ -10,6 +10,7 @@ export interface ProxyCliOptions {
   modelRoutesPath: string;
   configBundlePath: string;
   codexConfigPath: string;
+  upstreamCachePath: string;
   project?: string;
 }
 
@@ -28,6 +29,7 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     modelRoutesPath: ".agent-context-trimmer/model-routes.json",
     configBundlePath: ".agent-context-trimmer/config-bundle.json",
     codexConfigPath: defaultCodexConfigPath(),
+    upstreamCachePath: ".agent-context-trimmer/upstream-cache.json",
   };
 
   for (let index = 1; index < args.length; index += 1) {
@@ -63,6 +65,10 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     } else if (argument === "--codex-config") {
       if (value === undefined) throw new Error("missing value for --codex-config");
       options.codexConfigPath = value;
+      index += 1;
+    } else if (argument === "--upstream-cache") {
+      if (value === undefined) throw new Error("missing value for --upstream-cache");
+      options.upstreamCachePath = value;
       index += 1;
     } else if (argument === "--project") {
       if (value === undefined) throw new Error("missing value for --project");

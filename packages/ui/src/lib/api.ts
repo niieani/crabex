@@ -6,6 +6,7 @@ import type {
   RoutingTelemetry,
   TransformationSet,
   TransformationTelemetry,
+  UpstreamCacheState,
 } from "./types.ts";
 
 const API = "/__agent-context-trimmer/api";
@@ -37,6 +38,11 @@ export async function getTransformationTelemetry(): Promise<TransformationTeleme
 export async function getRoutingTelemetry(): Promise<RoutingTelemetry[]> {
   const response = await request(`${API}/routing-telemetry`);
   return ((await response.json()) as { telemetry: RoutingTelemetry[] }).telemetry;
+}
+
+export async function getUpstreamCache(): Promise<UpstreamCacheState> {
+  const response = await request(`${API}/upstream-cache`);
+  return (await response.json()) as UpstreamCacheState;
 }
 
 export async function previewSnapshot(

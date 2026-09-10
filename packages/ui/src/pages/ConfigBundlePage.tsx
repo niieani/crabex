@@ -6,6 +6,7 @@ import {
   deleteConfigBundle,
   getConfigBundle,
   getRoutingTelemetry,
+  getUpstreamCache,
   putConfigBundle,
 } from "../lib/api.ts";
 
@@ -18,6 +19,12 @@ export function ConfigBundlePage() {
     refetchInterval: 5000,
   });
   const served = (telemetryQuery.data ?? []).find((entry) => entry.action === "bundle-override");
+  const upstreamQuery = useQuery({
+    queryKey: ["upstream-cache"],
+    queryFn: getUpstreamCache,
+    refetchInterval: 5000,
+  });
+  const upstreamBundle = upstreamQuery.data?.configBundle;
   const [enabled, setEnabled] = useState(false);
   const [text, setText] = useState("");
   const [parseError, setParseError] = useState("");
@@ -129,6 +136,26 @@ export function ConfigBundlePage() {
             Served locally {served.count}× · last {new Date(served.lastSeenAt).toLocaleString()}
           </p>
         )}
+        <div className="mt-8">
+          <p className="section-label">Observed upstream</p>
+          <h2 className="mt-2 text-lg font-semibold tracking-tight">Last upstream bundle</h2>
+          {upstreamBundle === undefined ? (
+            <p className="mt-2 text-sm leading-6 text-muted">
+              No upstream bundle observed yet. It is recorded whenever the bundle request passes
+              through — and, while the override is enabled, refreshed in the background (at most
+              once a minute) using the incoming request's own credentials.
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-[10px] text-muted">
+                fetched {new Date(upstreamBundle.fetchedAt).toLocaleString()}
+              </p>
+              <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-canvas px-3 py-2 font-mono text-[10px] leading-5 text-content">
+                {JSON.stringify(upstreamBundle.body, null, 2)}
+              </pre>
+            </>
+          )}
+        </div>
       </section>
     </div>
   );

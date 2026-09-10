@@ -6,8 +6,13 @@ import WebSocket, { type RawData, WebSocketServer } from "ws";
 
 import type { CaptureEvent, CaptureSink } from "../recording/capture.ts";
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
+import type {
+  UpstreamCacheKind,
+  UpstreamCacheState,
+  UpstreamCacheStore,
+} from "../config/upstream-cache.ts";
 import type { Transformation } from "../context/transformation.ts";
-import type { ModelRoute } from "../routing/model-routes.ts";
+import type { ModelAdjustment, ModelRoute } from "../routing/model-routes.ts";
 import { startReverseProxy, type RunningProxy } from "./server.ts";
 
 class MemoryCaptureSink implements CaptureSink {
@@ -476,6 +481,99 @@ describe("model routing and config bundle override", () => {
     });
   });
 
+  it("observes the upstream models response and applies adjustments", async () => {
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          models: [
+            {
+              slug: "gpt-5.6-terra",
+              display_name: "GPT-5.6 Terra",
+              priority: 1,
+              context_window: 272000,
+              model_messages: {
+                instructions_template: "base instructions",
+                token_budget: { enabled: false, reminder_threshold_tokens: 6144 },
+              },
+            },
+          ],
+        }),
+      );
+    });
+    const cache = new MemoryUpstreamCache();
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      adjustments: [
+        {
+          slug: "gpt-5.6-terra",
+          overrides: {
+            context_window: 1_000_000,
+            model_messages: { token_budget: { reminder_threshold_tokens: 8192 } },
+          },
+        },
+      ],
+      upstreamCache: cache,
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/codex/models`);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { models: Array<Record<string, unknown>> };
+    expect(body.models[0]).toMatchObject({
+      slug: "gpt-5.6-terra",
+      context_window: 1_000_000,
+      model_messages: {
+        instructions_template: "base instructions",
+        token_budget: { enabled: false, reminder_threshold_tokens: 8192 },
+      },
+    });
+    // The cache holds the original, unadjusted upstream body.
+    expect(cache.state.models).toMatchObject({
+      body: { models: [{ slug: "gpt-5.6-terra", context_window: 272000 }] },
+    });
+  });
+
+  it("observes the upstream config bundle on passthrough", async () => {
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ requirements_toml: "managed = true" }));
+    });
+    const cache = new MemoryUpstreamCache();
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      upstreamCache: cache,
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/wham/config/bundle`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ requirements_toml: "managed = true" });
+    expect(cache.state.configBundle).toMatchObject({
+      body: { requirements_toml: "managed = true" },
+    });
+  });
+
+  it("observes the upstream bundle while answering with the override", async () => {
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ requirements_toml: "managed = true" }));
+    });
+    const cache = new MemoryUpstreamCache();
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      bundleOverride: { version: 1, enabled: true, bundle: { requirements_toml: null } },
+      upstreamCache: cache,
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/wham/config/bundle`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ requirements_toml: null });
+    await eventually(() =>
+      expect(cache.state.configBundle).toMatchObject({
+        body: { requirements_toml: "managed = true" },
+      }),
+    );
+  });
+
   it("routes a WebSocket response.create by the first message model", async () => {
     process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
     try {
@@ -566,20 +664,40 @@ async function startProxy(
 async function startRoutingProxy(
   upstreamOrigin: string,
   captureSink: CaptureSink,
-  options: { routes?: ModelRoute[]; bundleOverride?: ConfigBundleOverride } = {},
+  options: {
+    routes?: ModelRoute[];
+    adjustments?: ModelAdjustment[];
+    bundleOverride?: ConfigBundleOverride;
+    upstreamCache?: MemoryUpstreamCache;
+  } = {},
 ): Promise<RunningProxy> {
   const proxy = await startReverseProxy({
     host: "127.0.0.1",
     port: 0,
     upstreamOrigin,
     captureSink,
-    modelRouteSource: { get: () => options.routes ?? [] },
+    modelRouteSource: {
+      get: () => ({ routes: options.routes ?? [], adjustments: options.adjustments ?? [] }),
+    },
     configBundleSource: {
       get: () => options.bundleOverride ?? { version: 1, enabled: false, bundle: null },
     },
+    ...(options.upstreamCache === undefined ? {} : { upstreamCache: options.upstreamCache }),
   });
   closeables.push(() => proxy.close());
   return proxy;
+}
+
+class MemoryUpstreamCache implements UpstreamCacheStore {
+  state: UpstreamCacheState = {};
+
+  get(): UpstreamCacheState {
+    return this.state;
+  }
+
+  async observe(kind: UpstreamCacheKind, body: unknown) {
+    this.state = { ...this.state, [kind]: { fetchedAt: new Date().toISOString(), body } };
+  }
 }
 
 function testRoute(upstreamOrigin: string): ModelRoute {
