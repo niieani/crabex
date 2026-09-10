@@ -11,6 +11,8 @@ describe("parseCliOptions", () => {
       upstreamOrigin: "https://chatgpt.com",
       capturesDirectory: ".agent-context-trimmer/captures",
       transformationsPath: ".agent-context-trimmer/transformations.json",
+      modelRoutesPath: ".agent-context-trimmer/model-routes.json",
+      configBundlePath: ".agent-context-trimmer/config-bundle.json",
     });
   });
 
@@ -26,6 +28,10 @@ describe("parseCliOptions", () => {
         "captures.local",
         "--transformations",
         "rules.local.json",
+        "--model-routes",
+        "routes.local.json",
+        "--config-bundle",
+        "bundle.local.json",
         "--project",
         "fixture-project",
       ]),
@@ -36,6 +42,8 @@ describe("parseCliOptions", () => {
       upstreamOrigin: "http://127.0.0.1:8317",
       capturesDirectory: "captures.local",
       transformationsPath: "rules.local.json",
+      modelRoutesPath: "routes.local.json",
+      configBundlePath: "bundle.local.json",
       project: "fixture-project",
     });
   });

@@ -26,6 +26,18 @@ export function AppShell() {
           >
             Transformations
           </Link>
+          <Link
+            to="/routes"
+            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
+          >
+            Model routes
+          </Link>
+          <Link
+            to="/config-bundle"
+            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
+          >
+            Config bundle
+          </Link>
         </nav>
       </header>
       <main className="min-h-0 flex-1 overflow-hidden">

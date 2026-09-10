@@ -101,3 +101,31 @@ export interface TransformationTelemetry {
   matchCount: number;
   lastRunAt: string;
 }
+
+export interface AdvertisedModelConfig {
+  description: string;
+  display_name: string;
+  overrides?: Record<string, unknown>;
+  priority: number;
+  slug: string;
+  template_slug: string;
+}
+
+export interface ModelRouteConfig {
+  authorization_env: string;
+  enabled?: boolean;
+  model: AdvertisedModelConfig;
+  upstream: string;
+  upstream_model?: string;
+}
+
+export interface ModelRouteSet {
+  version: 1;
+  routes: ModelRouteConfig[];
+}
+
+export interface ConfigBundleOverride {
+  version: 1;
+  enabled: boolean;
+  bundle: unknown;
+}

@@ -1,8 +1,52 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
 import type { ContextSnapshot } from "../context/snapshot.ts";
 import type { TransformationSet } from "../context/transformation.ts";
+import type { ModelRouteConfig } from "../routing/model-routes.ts";
 import { createLocalApi } from "./local-api.ts";
+
+const routeConfigs: ModelRouteConfig[] = [
+  {
+    authorization_env: "ACT_TEST_ROUTE_KEY",
+    model: {
+      description: "Kimi K3 via CLIProxyAPI",
+      display_name: "Kimi K3",
+      priority: 1,
+      slug: "kimi-k3",
+      template_slug: "gpt-5.6-terra",
+    },
+    upstream: "http://127.0.0.1:8317/v1",
+  },
+];
+
+function stubSources(overrides: {
+  routes?: ModelRouteConfig[];
+  onReplaceRoutes?: (routes: ModelRouteConfig[]) => void;
+  bundle?: ConfigBundleOverride;
+  onReplaceBundle?: (override: ConfigBundleOverride) => void;
+}) {
+  let routes = overrides.routes ?? [];
+  let bundle = overrides.bundle ?? { version: 1 as const, enabled: false, bundle: null };
+  return {
+    modelRoutes: {
+      get: () => routes,
+      replace: async (next: ModelRouteConfig[]) => {
+        routes = next;
+        overrides.onReplaceRoutes?.(next);
+      },
+    },
+    configBundle: {
+      get: () => bundle,
+      replace: async (next: ConfigBundleOverride) => {
+        bundle = next;
+        overrides.onReplaceBundle?.(next);
+      },
+    },
+    currentRoutes: () => routes,
+    currentBundle: () => bundle,
+  };
+}
 
 describe("local context API", () => {
   it("serves snapshots and updates transformations", async () => {
@@ -44,6 +88,7 @@ describe("local context API", () => {
           set = next;
         },
       },
+      ...stubSources({}),
     });
 
     const response = await api.handle(
@@ -113,10 +158,159 @@ describe("local context API", () => {
         get: () => ({ version: 1, transformations: [] }),
         replace: async () => {},
       },
+      ...stubSources({}),
     });
 
     expect(await api.handle(new Request("http://localhost/backend-api/codex/responses"))).toBe(
       undefined,
     );
+  });
+
+  it("manages model routes and reports authorization env status", async () => {
+    const sources = stubSources({});
+    const api = createLocalApi({
+      snapshots: {
+        list: async () => [],
+        preview: async () => undefined,
+        transformationTelemetry: async () => [],
+      },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+    });
+
+    const update = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/model-routes", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: 1, routes: routeConfigs }),
+      }),
+    );
+    expect(update?.status).toBe(200);
+    expect(sources.currentRoutes()).toEqual(routeConfigs);
+
+    const listed = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/model-routes"),
+    );
+    expect(await listed?.json()).toEqual({ version: 1, routes: routeConfigs });
+
+    delete process.env.ACT_TEST_ROUTE_KEY;
+    const missing = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/model-routes/env-status"),
+    );
+    expect(await missing?.json()).toEqual({ env: { ACT_TEST_ROUTE_KEY: false } });
+
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const present = await api.handle(
+        new Request("http://localhost/__agent-context-trimmer/api/model-routes/env-status"),
+      );
+      expect(await present?.json()).toEqual({ env: { ACT_TEST_ROUTE_KEY: true } });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("rejects invalid model routes with a validation error", async () => {
+    const sources = stubSources({});
+    const api = createLocalApi({
+      snapshots: {
+        list: async () => [],
+        preview: async () => undefined,
+        transformationTelemetry: async () => [],
+      },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+    });
+
+    const update = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/model-routes", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: 1, routes: [{ model: {} }] }),
+      }),
+    );
+    expect(update?.status).toBe(400);
+    expect(await update?.json()).toEqual({
+      error: "route[0].authorization_env must be a non-empty string",
+    });
+    expect(sources.currentRoutes()).toEqual([]);
+  });
+
+  it("manages the config bundle override", async () => {
+    const sources = stubSources({});
+    const api = createLocalApi({
+      snapshots: {
+        list: async () => [],
+        preview: async () => undefined,
+        transformationTelemetry: async () => [],
+      },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+    });
+
+    const initial = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/config-bundle"),
+    );
+    expect(await initial?.json()).toEqual({ version: 1, enabled: false, bundle: null });
+
+    const override: ConfigBundleOverride = {
+      version: 1,
+      enabled: true,
+      bundle: { requirements_toml: null },
+    };
+    const update = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/config-bundle", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(override),
+      }),
+    );
+    expect(update?.status).toBe(200);
+    expect(sources.currentBundle()).toEqual(override);
+
+    const removed = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/config-bundle", {
+        method: "DELETE",
+      }),
+    );
+    expect(removed?.status).toBe(200);
+    expect(sources.currentBundle()).toEqual({ version: 1, enabled: false, bundle: null });
+  });
+
+  it("rejects an enabled config bundle override without an object bundle", async () => {
+    const sources = stubSources({});
+    const api = createLocalApi({
+      snapshots: {
+        list: async () => [],
+        preview: async () => undefined,
+        transformationTelemetry: async () => [],
+      },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+    });
+
+    const update = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/config-bundle", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: 1, enabled: true, bundle: "not-an-object" }),
+      }),
+    );
+    expect(update?.status).toBe(400);
+    expect(await update?.json()).toEqual({
+      error: "enabled config bundle override requires a JSON object bundle",
+    });
   });
 });

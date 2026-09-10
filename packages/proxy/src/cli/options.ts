@@ -5,6 +5,8 @@ export interface ProxyCliOptions {
   upstreamOrigin: string;
   capturesDirectory: string;
   transformationsPath: string;
+  modelRoutesPath: string;
+  configBundlePath: string;
   project?: string;
 }
 
@@ -20,6 +22,8 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     upstreamOrigin: "https://chatgpt.com",
     capturesDirectory: ".agent-context-trimmer/captures",
     transformationsPath: ".agent-context-trimmer/transformations.json",
+    modelRoutesPath: ".agent-context-trimmer/model-routes.json",
+    configBundlePath: ".agent-context-trimmer/config-bundle.json",
   };
 
   for (let index = 1; index < args.length; index += 1) {
@@ -43,6 +47,14 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     } else if (argument === "--transformations") {
       if (value === undefined) throw new Error("missing value for --transformations");
       options.transformationsPath = value;
+      index += 1;
+    } else if (argument === "--model-routes") {
+      if (value === undefined) throw new Error("missing value for --model-routes");
+      options.modelRoutesPath = value;
+      index += 1;
+    } else if (argument === "--config-bundle") {
+      if (value === undefined) throw new Error("missing value for --config-bundle");
+      options.configBundlePath = value;
       index += 1;
     } else if (argument === "--project") {
       if (value === undefined) throw new Error("missing value for --project");

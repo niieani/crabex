@@ -1,4 +1,10 @@
-import type { ContextSnapshot, TransformationSet, TransformationTelemetry } from "./types.ts";
+import type {
+  ConfigBundleOverride,
+  ContextSnapshot,
+  ModelRouteSet,
+  TransformationSet,
+  TransformationTelemetry,
+} from "./types.ts";
 
 const API = "/__agent-context-trimmer/api";
 
@@ -36,6 +42,46 @@ export async function previewSnapshot(
     body: JSON.stringify({ snapshotId, transformations }),
   });
   return ((await response.json()) as { snapshot: ContextSnapshot }).snapshot;
+}
+
+export async function getModelRoutes(): Promise<ModelRouteSet> {
+  const response = await request(`${API}/model-routes`);
+  return (await response.json()) as ModelRouteSet;
+}
+
+export async function putModelRoutes(set: ModelRouteSet): Promise<ModelRouteSet> {
+  const response = await request(`${API}/model-routes`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(set),
+  });
+  return (await response.json()) as ModelRouteSet;
+}
+
+export async function getModelRouteEnvStatus(): Promise<Record<string, boolean>> {
+  const response = await request(`${API}/model-routes/env-status`);
+  return ((await response.json()) as { env: Record<string, boolean> }).env;
+}
+
+export async function getConfigBundle(): Promise<ConfigBundleOverride> {
+  const response = await request(`${API}/config-bundle`);
+  return (await response.json()) as ConfigBundleOverride;
+}
+
+export async function putConfigBundle(
+  override: ConfigBundleOverride,
+): Promise<ConfigBundleOverride> {
+  const response = await request(`${API}/config-bundle`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(override),
+  });
+  return (await response.json()) as ConfigBundleOverride;
+}
+
+export async function deleteConfigBundle(): Promise<ConfigBundleOverride> {
+  const response = await request(`${API}/config-bundle`, { method: "DELETE" });
+  return (await response.json()) as ConfigBundleOverride;
 }
 
 async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {

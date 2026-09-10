@@ -1,0 +1,156 @@
+import { describe, expect, it } from "vite-plus/test";
+
+import {
+  authorizationFor,
+  inspectResponseModel,
+  modelRouteFor,
+  modelRouteFromConfig,
+  parseModelRouteSet,
+  responseTargetUrl,
+  routedHeaders,
+  RouteUnavailable,
+} from "./model-routes.ts";
+
+const routeConfig = [
+  {
+    authorization_env: "CLIPROXYAPI_KEY",
+    model: {
+      description: "Kimi K3 via CLIProxyAPI",
+      display_name: "Kimi K3 via Fireworks",
+      priority: 1,
+      slug: "kimi-k3",
+      template_slug: "gpt-5.4",
+      overrides: {
+        context_window: 1048576,
+        multi_agent_version: null,
+      } as Record<string, unknown>,
+    },
+    upstream: "http://127.0.0.1:8317/v1",
+    upstream_model: "kimi-k3",
+  },
+];
+
+describe("parseModelRouteSet", () => {
+  it("parses a versioned route set", () => {
+    expect(parseModelRouteSet({ version: 1, routes: routeConfig })).toEqual(routeConfig);
+  });
+
+  it("accepts a bare route array in the codex-enterprise file format", () => {
+    expect(parseModelRouteSet(routeConfig)).toEqual(routeConfig);
+  });
+
+  it("rejects lifecycle metadata overrides", () => {
+    const config = structuredClone(routeConfig);
+    config[0].model.overrides = { upgrade: null };
+
+    expect(() => parseModelRouteSet(config)).toThrow(
+      "route[0].model.overrides.upgrade is not allowed",
+    );
+  });
+
+  it("rejects a non-http upstream", () => {
+    const config = structuredClone(routeConfig);
+    config[0].upstream = "ftp://example.test/v1";
+
+    expect(() => parseModelRouteSet(config)).toThrow("route[0].upstream must use http or https");
+  });
+
+  it("rejects a malformed set", () => {
+    expect(() => parseModelRouteSet({ version: 2, routes: [] })).toThrow(
+      "unsupported model route set",
+    );
+  });
+});
+
+describe("modelRouteFromConfig", () => {
+  it("maps config to a runtime route, enabled by default", () => {
+    const route = modelRouteFromConfig(parseModelRouteSet(routeConfig)[0]!);
+    expect(route).toEqual({
+      authorizationEnv: "CLIPROXYAPI_KEY",
+      enabled: true,
+      model: {
+        description: "Kimi K3 via CLIProxyAPI",
+        displayName: "Kimi K3 via Fireworks",
+        overrides: {
+          context_window: 1048576,
+          multi_agent_version: null,
+        },
+        priority: 1,
+        slug: "kimi-k3",
+        templateSlug: "gpt-5.4",
+      },
+      upstream: new URL("http://127.0.0.1:8317/v1"),
+      upstreamModel: "kimi-k3",
+    });
+  });
+});
+
+describe("authorizationFor", () => {
+  const route = modelRouteFromConfig(parseModelRouteSet(routeConfig)[0]!);
+
+  it("resolves the bearer token lazily from the environment", () => {
+    expect(authorizationFor(route, { CLIPROXYAPI_KEY: "local-api-key" })).toBe(
+      "Bearer local-api-key",
+    );
+  });
+
+  it("fails when the declared credential is unavailable", () => {
+    expect(() => authorizationFor(route, {})).toThrow(RouteUnavailable);
+    expect(() => authorizationFor(route, {})).toThrow(
+      "model route kimi-k3 requires unset authorization env: CLIPROXYAPI_KEY",
+    );
+  });
+});
+
+describe("modelRouteFor", () => {
+  it("matches enabled routes by slug and skips disabled ones", () => {
+    const route = modelRouteFromConfig(parseModelRouteSet(routeConfig)[0]!);
+    expect(modelRouteFor([route], "kimi-k3")).toBe(route);
+    expect(modelRouteFor([{ ...route, enabled: false }], "kimi-k3")).toBeUndefined();
+    expect(modelRouteFor([route], "gpt-5.6")).toBeUndefined();
+  });
+});
+
+describe("responseTargetUrl", () => {
+  it("appends /responses to the upstream base path and preserves the query", () => {
+    const route = modelRouteFromConfig(parseModelRouteSet(routeConfig)[0]!);
+    expect(responseTargetUrl(route, "?trace=1").toString()).toBe(
+      "http://127.0.0.1:8317/v1/responses?trace=1",
+    );
+  });
+});
+
+describe("routedHeaders", () => {
+  it("swaps ChatGPT credentials for the route credential", () => {
+    expect(
+      routedHeaders(
+        {
+          authorization: "Bearer oauth-secret",
+          "chatgpt-account-id": "workspace-123",
+          cookie: "__cf_bm=affinity",
+          "content-encoding": "gzip",
+          "content-length": "42",
+          "content-type": "application/json",
+        },
+        "Bearer local-api-key",
+      ),
+    ).toEqual({
+      "content-type": "application/json",
+      authorization: "Bearer local-api-key",
+    });
+  });
+});
+
+describe("inspectResponseModel", () => {
+  it("extracts the model from a JSON payload", () => {
+    expect(inspectResponseModel('{"model":"kimi-k3","input":[]}')).toEqual({
+      payload: { model: "kimi-k3", input: [] },
+      model: "kimi-k3",
+    });
+  });
+
+  it("ignores non-JSON and model-less payloads", () => {
+    expect(inspectResponseModel("not json")).toBeUndefined();
+    expect(inspectResponseModel('{"type":"response.create"}')).toBeUndefined();
+  });
+});

@@ -1,5 +1,12 @@
 import type { TransformationStore } from "../config/transformation-store.ts";
 import { parseTransformationSet } from "../config/transformation-store.ts";
+import type { ConfigBundleStore } from "../config/config-bundle-store.ts";
+import {
+  EMPTY_CONFIG_BUNDLE_OVERRIDE,
+  parseConfigBundleOverride,
+} from "../config/config-bundle-store.ts";
+import type { ModelRouteStore } from "../config/model-route-store.ts";
+import { parseModelRouteSet } from "../routing/model-routes.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
 
 const API_PREFIX = "/__agent-context-trimmer/api";
@@ -11,6 +18,8 @@ export interface LocalApi {
 export function createLocalApi(options: {
   snapshots: SnapshotSource;
   transformations: TransformationStore;
+  modelRoutes: ModelRouteStore;
+  configBundle: ConfigBundleStore;
 }): LocalApi {
   return {
     async handle(request) {
@@ -41,6 +50,36 @@ export function createLocalApi(options: {
           const set = parseTransformationSet(await request.json());
           await options.transformations.replace(set);
           return json(set);
+        }
+        if (url.pathname === `${API_PREFIX}/model-routes` && request.method === "GET") {
+          return json({ version: 1, routes: options.modelRoutes.get() });
+        }
+        if (url.pathname === `${API_PREFIX}/model-routes` && request.method === "PUT") {
+          const routes = parseModelRouteSet(await request.json());
+          await options.modelRoutes.replace(routes);
+          return json({ version: 1, routes });
+        }
+        if (url.pathname === `${API_PREFIX}/model-routes/env-status` && request.method === "GET") {
+          const names = [
+            ...new Set(options.modelRoutes.get().map((route) => route.authorization_env)),
+          ];
+          return json({
+            env: Object.fromEntries(
+              names.map((name) => [name, (process.env[name]?.length ?? 0) > 0]),
+            ),
+          });
+        }
+        if (url.pathname === `${API_PREFIX}/config-bundle` && request.method === "GET") {
+          return json(options.configBundle.get());
+        }
+        if (url.pathname === `${API_PREFIX}/config-bundle` && request.method === "PUT") {
+          const override = parseConfigBundleOverride(await request.json());
+          await options.configBundle.replace(override);
+          return json(override);
+        }
+        if (url.pathname === `${API_PREFIX}/config-bundle` && request.method === "DELETE") {
+          await options.configBundle.replace(EMPTY_CONFIG_BUNDLE_OVERRIDE);
+          return json(options.configBundle.get());
         }
         return json({ error: "not found" }, 404);
       } catch (error) {

@@ -3,6 +3,23 @@ import { randomUUID } from "node:crypto";
 import type { CaptureSink } from "../recording/capture.ts";
 import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
 import type { Transformation } from "../context/transformation.ts";
+import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
+import { prependRoutedModelsToResponse } from "../routing/model-list.ts";
+import {
+  authorizationFor,
+  inspectResponseModel,
+  modelRouteFor,
+  responseTargetUrl,
+  routedHeaders,
+  RouteUnavailable,
+  type ModelRoute,
+} from "../routing/model-routes.ts";
+import {
+  isConfigBundleRequest,
+  isModelsRequest,
+  isResponsesPath,
+  isResponsesRequest,
+} from "../routing/paths.ts";
 import { CloudflareCookieJar } from "./cloudflare-cookie-jar.ts";
 import { CaptureFailure, EventRecorder, processClientPayload } from "./event-recorder.ts";
 import type { LocalApi } from "../api/local-api.ts";
@@ -36,6 +53,8 @@ export interface ReverseProxyOptions {
   now?: () => Date;
   createSessionId?: () => string;
   transformationSource?: TransformationSource;
+  modelRouteSource?: ModelRouteSource;
+  configBundleSource?: ConfigBundleSource;
   project?: string;
   localApi?: LocalApi;
 }
@@ -44,13 +63,21 @@ export interface TransformationSource {
   get(): Transformation[];
 }
 
+export interface ModelRouteSource {
+  get(): ModelRoute[];
+}
+
+export interface ConfigBundleSource {
+  get(): ConfigBundleOverride;
+}
+
 export interface RunningProxy {
   origin: string;
   close(): Promise<void>;
 }
 
 interface SocketData {
-  upstream: WebSocket;
+  upstream?: WebSocket;
   recorder: EventRecorder;
   client?: Bun.ServerWebSocket<SocketData>;
   clientToUpstream: Promise<void>;
@@ -59,6 +86,9 @@ interface SocketData {
   harness: HarnessIdentity;
   project?: string;
   transformationSource: TransformationSource;
+  connectUpstream?: (
+    firstValue: string | ArrayBuffer | Uint8Array,
+  ) => Promise<string | ArrayBuffer | Uint8Array>;
 }
 
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
@@ -71,6 +101,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
   );
   const cookies = new CloudflareCookieJar();
   const transformationSource = options.transformationSource ?? { get: () => [] };
+  const modelRouteSource = options.modelRouteSource ?? { get: () => [] };
+  const configBundleSource = options.configBundleSource;
 
   const server = Bun.serve<SocketData>({
     hostname: host,
@@ -78,6 +110,11 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     async fetch(request, bunServer) {
       const localResponse = await options.localApi?.handle(request);
       if (localResponse !== undefined) return localResponse;
+      const requestPath = new URL(request.url).pathname;
+      const bundleOverride = configBundleSource?.get();
+      if (bundleOverride?.enabled === true && isConfigBundleRequest(requestPath)) {
+        return Response.json(bundleOverride.bundle);
+      }
       if (isWebSocketUpgrade(request)) {
         return upgradeWebSocket(
           request,
@@ -86,6 +123,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           recorder,
           cookies,
           transformationSource,
+          modelRouteSource,
           options.project,
         );
       }
@@ -96,6 +134,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         cookies,
         options.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES,
         transformationSource,
+        modelRouteSource,
         options.project,
       );
     },
@@ -130,15 +169,23 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
               harness: data.harness,
               project: data.project,
             });
-            if (data.upstream.readyState !== WebSocket.OPEN) {
+            let outbound = processed.value;
+            if (data.upstream === undefined) {
+              if (data.connectUpstream === undefined) {
+                throw new Error("upstream websocket is not open");
+              }
+              outbound = await data.connectUpstream(processed.value);
+            }
+            const upstream = data.upstream;
+            if (upstream === undefined || upstream.readyState !== WebSocket.OPEN) {
               throw new Error("upstream websocket is not open");
             }
-            data.upstream.send(processed.value);
+            upstream.send(outbound);
           })
           .catch(() => closePair(data, 1011, "capture failed"));
       },
       close(client, code, reason) {
-        closeUpstream(client.data.upstream, code, reason);
+        if (client.data.upstream !== undefined) closeUpstream(client.data.upstream, code, reason);
       },
     },
   });
@@ -156,6 +203,7 @@ async function proxyHttpRequest(
   cookies: CloudflareCookieJar,
   maxRequestBytes: number,
   transformationSource: TransformationSource,
+  modelRouteSource: ModelRouteSource,
   project: string | undefined,
 ): Promise<Response> {
   try {
@@ -180,24 +228,46 @@ async function proxyHttpRequest(
       project,
     });
 
-    const headers = forwardedHeaders(request.headers, cookies.header());
-    const response = await fetch(targetUrl(upstreamOrigin, request.url), {
+    const requestUrl = new URL(request.url);
+    const routes = modelRouteSource.get();
+    let target = targetUrl(upstreamOrigin, request.url);
+    let headers = forwardedHeaders(request.headers, cookies.header());
+    let outbound = processed.value;
+    if (routes.length > 0 && isResponsesRequest(request.method, requestUrl.pathname)) {
+      const inspected = inspectResponseModel(processed.value);
+      const route = inspected === undefined ? undefined : modelRouteFor(routes, inspected.model);
+      if (inspected !== undefined && route !== undefined) {
+        target = responseTargetUrl(route, requestUrl.search);
+        headers = routedHeaders(headers, authorizationFor(route, process.env));
+        outbound = JSON.stringify({
+          ...inspected.payload,
+          model: route.upstreamModel ?? route.model.slug,
+        });
+      }
+    }
+
+    const response = await fetch(target, {
       method: request.method,
       headers,
-      body: request.method === "GET" || request.method === "HEAD" ? undefined : processed.value,
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : outbound,
       redirect: "manual",
       decompress: false,
     });
     cookies.capture(response.headers);
 
-    return new Response(response.body, {
+    const downstream = new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
       headers: downstreamHeaders(response.headers),
     });
+    if (routes.length > 0 && isModelsRequest(request.method, requestUrl.pathname)) {
+      return await prependRoutedModelsToResponse(downstream, routes);
+    }
+    return downstream;
   } catch (error) {
     return new Response(error instanceof CaptureFailure ? "capture failed" : errorMessage(error), {
-      status: error instanceof RequestTooLarge ? 413 : 500,
+      status:
+        error instanceof RequestTooLarge ? 413 : error instanceof RouteUnavailable ? 502 : 500,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
@@ -210,18 +280,16 @@ async function upgradeWebSocket(
   recorder: EventRecorder,
   cookies: CloudflareCookieJar,
   transformationSource: TransformationSource,
+  modelRouteSource: ModelRouteSource,
   project: string | undefined,
 ): Promise<Response | undefined> {
   try {
-    const target = targetUrl(upstreamOrigin, request.url);
-    target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
-    const upstream = await connectWebSocket(
-      target,
-      forwardedWebSocketHeaders(request.headers, cookies.header()),
-      requestedProtocols(request.headers.get("sec-websocket-protocol")),
-    );
+    const requestUrl = new URL(request.url);
+    const routes = modelRouteSource.get().filter((route) => route.enabled);
+    const lazyRouting = routes.length > 0 && isResponsesPath(requestUrl.pathname);
+    const baseHeaders = forwardedWebSocketHeaders(request.headers, cookies.header());
+    const protocols = requestedProtocols(request.headers.get("sec-websocket-protocol"));
     const data: SocketData = {
-      upstream,
       recorder,
       clientToUpstream: Promise.resolve(),
       upstreamToClient: Promise.resolve(),
@@ -230,15 +298,40 @@ async function upgradeWebSocket(
       ...(project === undefined ? {} : { project }),
       transformationSource,
     };
-    upstream.binaryType = "nodebuffer";
-    upstream.addEventListener("message", (event) => {
-      if (data.client === undefined) data.pendingUpstream.push(event);
-      else queueUpstreamMessage(data, event);
-    });
-    upstream.addEventListener("close", (event) => {
-      if (data.client !== undefined) closeClient(data.client, event.code, event.reason);
-    });
-    upstream.addEventListener("error", () => closePair(data, 1011, "upstream error"));
+
+    if (lazyRouting) {
+      const defaultTarget = webSocketTarget(targetUrl(upstreamOrigin, request.url));
+      data.connectUpstream = async (firstValue) => {
+        const inspected = inspectResponseModel(firstValue);
+        const route = inspected === undefined ? undefined : modelRouteFor(routes, inspected.model);
+        const target =
+          route === undefined
+            ? defaultTarget
+            : webSocketTarget(responseTargetUrl(route, requestUrl.search));
+        const headers =
+          route === undefined
+            ? baseHeaders
+            : routedHeaders(baseHeaders, authorizationFor(route, process.env));
+        const upstream = await connectWebSocket(target, headers, protocols);
+        attachUpstream(data, upstream);
+        data.upstream = upstream;
+        if (route === undefined || inspected === undefined) return firstValue;
+        return JSON.stringify({
+          ...inspected.payload,
+          model: route.upstreamModel ?? route.model.slug,
+        });
+      };
+      if (server.upgrade(request, { data })) return undefined;
+      return new Response("WebSocket upgrade failed", { status: 500 });
+    }
+
+    const upstream = await connectWebSocket(
+      webSocketTarget(targetUrl(upstreamOrigin, request.url)),
+      baseHeaders,
+      protocols,
+    );
+    data.upstream = upstream;
+    attachUpstream(data, upstream);
 
     if (server.upgrade(request, { data })) return undefined;
     upstream.close(1011, "client upgrade failed");
@@ -249,6 +342,23 @@ async function upgradeWebSocket(
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
+}
+
+function attachUpstream(data: SocketData, upstream: WebSocket): void {
+  upstream.binaryType = "nodebuffer";
+  upstream.addEventListener("message", (event) => {
+    if (data.client === undefined) data.pendingUpstream.push(event);
+    else queueUpstreamMessage(data, event);
+  });
+  upstream.addEventListener("close", (event) => {
+    if (data.client !== undefined) closeClient(data.client, event.code, event.reason);
+  });
+  upstream.addEventListener("error", () => closePair(data, 1011, "upstream error"));
+}
+
+function webSocketTarget(target: URL): URL {
+  target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+  return target;
 }
 
 function queueUpstreamMessage(data: SocketData, event: MessageEvent): void {
@@ -367,7 +477,7 @@ async function websocketMessage(value: unknown): Promise<string | Uint8Array> {
 
 function closePair(data: SocketData, code: number, reason: string): void {
   if (data.client !== undefined) closeClient(data.client, code, reason);
-  closeUpstream(data.upstream, code, reason);
+  if (data.upstream !== undefined) closeUpstream(data.upstream, code, reason);
 }
 
 function closeClient(socket: Bun.ServerWebSocket<SocketData>, code: number, reason: string): void {

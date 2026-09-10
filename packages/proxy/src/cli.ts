@@ -5,8 +5,11 @@ import { join } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
 import { createLocalApi } from "./api/local-api.ts";
+import { openConfigBundleStore } from "./config/config-bundle-store.ts";
+import { openModelRouteStore } from "./config/model-route-store.ts";
 import { openTransformationStore } from "./config/transformation-store.ts";
 import { startReverseProxy } from "./proxy/server.ts";
+import { modelRouteFromConfig } from "./routing/model-routes.ts";
 import { FileCaptureRepository } from "./recording/capture-repository.ts";
 import { openNdjsonCaptureSink } from "./recording/ndjson-capture-sink.ts";
 
@@ -19,6 +22,9 @@ Options:
   --captures <dir>      Capture directory (default: .agent-context-trimmer/captures)
   --transformations <file>
                         Transformation set (default: .agent-context-trimmer/transformations.json)
+  --model-routes <file> Model route set (default: .agent-context-trimmer/model-routes.json)
+  --config-bundle <file>
+                        Config bundle override (default: .agent-context-trimmer/config-bundle.json)
   --project <key>       Optional project scope for captures and transformations
 `;
 
@@ -33,16 +39,22 @@ async function main(): Promise<void> {
   const capturePath = join(options.capturesDirectory, captureFileName());
   const captureSink = await openNdjsonCaptureSink(capturePath);
   const transformationStore = await openTransformationStore(options.transformationsPath);
+  const modelRouteStore = await openModelRouteStore(options.modelRoutesPath);
+  const configBundleStore = await openConfigBundleStore(options.configBundlePath);
   const proxy = await startReverseProxy({
     host: options.host,
     port: options.port,
     upstreamOrigin: options.upstreamOrigin,
     captureSink,
     transformationSource: { get: () => transformationStore.get().transformations },
+    modelRouteSource: { get: () => modelRouteStore.get().map(modelRouteFromConfig) },
+    configBundleSource: { get: () => configBundleStore.get() },
     project: options.project,
     localApi: createLocalApi({
       snapshots: new FileCaptureRepository(options.capturesDirectory),
       transformations: transformationStore,
+      modelRoutes: modelRouteStore,
+      configBundle: configBundleStore,
     }),
   });
 

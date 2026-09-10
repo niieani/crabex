@@ -2,6 +2,8 @@ import { createRootRoute, createRoute, createRouter } from "@tanstack/react-rout
 
 import { AppShell } from "./app/AppShell.tsx";
 import { CatalogPage } from "./pages/CatalogPage.tsx";
+import { ConfigBundlePage } from "./pages/ConfigBundlePage.tsx";
+import { ModelRoutesPage } from "./pages/ModelRoutesPage.tsx";
 import { TransformationsPage } from "./pages/TransformationsPage.tsx";
 
 const rootRoute = createRootRoute({ component: AppShell });
@@ -15,8 +17,23 @@ const transformationsRoute = createRoute({
   path: "/transformations",
   component: TransformationsPage,
 });
+const modelRoutesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/routes",
+  component: ModelRoutesPage,
+});
+const configBundleRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/config-bundle",
+  component: ConfigBundlePage,
+});
 
-const routeTree = rootRoute.addChildren([catalogRoute, transformationsRoute]);
+const routeTree = rootRoute.addChildren([
+  catalogRoute,
+  transformationsRoute,
+  modelRoutesRoute,
+  configBundleRoute,
+]);
 
 export const router = createRouter({ routeTree });
 

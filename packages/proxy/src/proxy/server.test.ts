@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import WebSocket, { type RawData, WebSocketServer } from "ws";
 
 import type { CaptureEvent, CaptureSink } from "../recording/capture.ts";
+import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
 import type { Transformation } from "../context/transformation.ts";
+import type { ModelRoute } from "../routing/model-routes.ts";
 import { startReverseProxy, type RunningProxy } from "./server.ts";
 
 class MemoryCaptureSink implements CaptureSink {
@@ -318,6 +320,203 @@ describe("subscription reverse proxy", () => {
   });
 });
 
+describe("model routing and config bundle override", () => {
+  it("serves an enabled config bundle override without hitting upstream", async () => {
+    let upstreamRequests = 0;
+    const upstream = await startHttpServer((_request, response) => {
+      upstreamRequests += 1;
+      response.end("upstream");
+    });
+    const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
+      bundleOverride: { version: 1, enabled: true, bundle: { requirements_toml: null } },
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/wham/config/bundle`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ requirements_toml: null });
+    expect(upstreamRequests).toBe(0);
+  });
+
+  it("forwards config bundle requests when the override is disabled", async () => {
+    const upstream = await startHttpServer((_request, response) => {
+      response.end("upstream-bundle");
+    });
+    const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
+      bundleOverride: { version: 1, enabled: false, bundle: null },
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/wham/config/bundle`);
+
+    expect(await response.text()).toBe("upstream-bundle");
+  });
+
+  it("routes a Responses request to the route upstream with swapped credentials", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const chatgpt = await startHttpServer((_request, response) => {
+        response.end("chatgpt");
+      });
+      const routed = await startHttpServer(async (request, response) => {
+        expect(request.url).toBe("/v1/responses?trace=1");
+        expect(request.headers.authorization).toBe("Bearer local-api-key");
+        expect(request.headers["chatgpt-account-id"]).toBeUndefined();
+        expect(request.headers.cookie).toBeUndefined();
+        const body = await readBody(request);
+        expect(JSON.parse(body.toString())).toMatchObject({ model: "moonshot-kimi-k3" });
+        response.end("routed");
+      });
+      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+        routes: [testRoute(routed.origin)],
+      });
+
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses?trace=1`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer oauth-secret",
+          "chatgpt-account-id": "workspace-123",
+          "content-type": "application/json",
+          cookie: "session=secret",
+        },
+        body: JSON.stringify({ model: "kimi-k3", input: "hello" }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("routed");
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("keeps unmatched models on the default upstream", async () => {
+    const chatgpt = await startHttpServer((request, response) => {
+      expect(request.headers.authorization).toBe("Bearer oauth-secret");
+      response.end("chatgpt");
+    });
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      routes: [testRoute("http://127.0.0.1:1")],
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+      method: "POST",
+      headers: { authorization: "Bearer oauth-secret", "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6", input: "hello" }),
+    });
+
+    expect(await response.text()).toBe("chatgpt");
+  });
+
+  it("fails a routed request with 502 when the route credential env is unset", async () => {
+    delete process.env.ACT_TEST_ROUTE_KEY;
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.end("chatgpt");
+    });
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      routes: [testRoute("http://127.0.0.1:1")],
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "kimi-k3", input: "hello" }),
+    });
+
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("ACT_TEST_ROUTE_KEY");
+  });
+
+  it("prepends routed models to the upstream model list", async () => {
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          models: [
+            {
+              slug: "gpt-5.6-terra",
+              context_window: 272000,
+              display_name: "GPT-5.6 Terra",
+              upgrade: { model: "gpt-5.7" },
+            },
+          ],
+        }),
+      );
+    });
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      routes: [testRoute("http://127.0.0.1:1")],
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/codex/models`);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { models: Array<Record<string, unknown>> };
+    expect(body.models.map((model) => model.slug)).toEqual(["kimi-k3", "gpt-5.6-terra"]);
+    expect(body.models[0]).toMatchObject({
+      slug: "kimi-k3",
+      display_name: "Kimi K3",
+      context_window: 272000,
+    });
+    expect(body.models[0]).not.toHaveProperty("upgrade");
+  });
+
+  it("routes a WebSocket response.create by the first message model", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const chatgpt = await startWebSocketServer((socket) => {
+        socket.on("message", () => socket.send("chatgpt"));
+      });
+      const routed = await startWebSocketServer((socket, request) => {
+        expect(request.url).toBe("/v1/responses");
+        expect(request.headers.authorization).toBe("Bearer local-api-key");
+        expect(request.headers["chatgpt-account-id"]).toBeUndefined();
+        socket.on("message", (message) => {
+          expect(JSON.parse(rawDataText(message))).toMatchObject({ model: "moonshot-kimi-k3" });
+          socket.send("routed");
+        });
+      });
+      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+        routes: [testRoute(routed.origin)],
+      });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        {
+          headers: {
+            authorization: "Bearer oauth-secret",
+            "chatgpt-account-id": "workspace-123",
+          },
+        },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+
+      client.send(JSON.stringify({ type: "response.create", model: "kimi-k3", input: [] }));
+
+      expect(await nextMessage(client)).toBe("routed");
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("keeps unmatched WebSocket models on the default upstream", async () => {
+    const chatgpt = await startWebSocketServer((socket, request) => {
+      expect(request.headers.authorization).toBe("Bearer oauth-secret");
+      socket.on("message", () => socket.send("chatgpt"));
+    });
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      routes: [testRoute("http://127.0.0.1:1")],
+    });
+    const client = new WebSocket(
+      proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+      { headers: { authorization: "Bearer oauth-secret" } },
+    );
+    closeables.push(async () => client.close());
+    await opened(client);
+
+    client.send(JSON.stringify({ type: "response.create", model: "gpt-5.6", input: [] }));
+
+    expect(await nextMessage(client)).toBe("chatgpt");
+  });
+});
+
 async function startProxy(
   upstreamOrigin: string,
   captureSink: CaptureSink,
@@ -332,6 +531,42 @@ async function startProxy(
   });
   closeables.push(() => proxy.close());
   return proxy;
+}
+
+async function startRoutingProxy(
+  upstreamOrigin: string,
+  captureSink: CaptureSink,
+  options: { routes?: ModelRoute[]; bundleOverride?: ConfigBundleOverride } = {},
+): Promise<RunningProxy> {
+  const proxy = await startReverseProxy({
+    host: "127.0.0.1",
+    port: 0,
+    upstreamOrigin,
+    captureSink,
+    modelRouteSource: { get: () => options.routes ?? [] },
+    configBundleSource: {
+      get: () => options.bundleOverride ?? { version: 1, enabled: false, bundle: null },
+    },
+  });
+  closeables.push(() => proxy.close());
+  return proxy;
+}
+
+function testRoute(upstreamOrigin: string): ModelRoute {
+  return {
+    authorizationEnv: "ACT_TEST_ROUTE_KEY",
+    enabled: true,
+    model: {
+      description: "Kimi K3 via CLIProxyAPI",
+      displayName: "Kimi K3",
+      overrides: {},
+      priority: 1,
+      slug: "kimi-k3",
+      templateSlug: "gpt-5.6-terra",
+    },
+    upstream: new URL(`${upstreamOrigin}/v1`),
+    upstreamModel: "moonshot-kimi-k3",
+  };
 }
 
 function message(role: string, text: string) {
