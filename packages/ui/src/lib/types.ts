@@ -41,6 +41,21 @@ export interface ContextSection {
   deleted?: boolean;
 }
 
+export interface CaptureRouting {
+  action: "routed" | "bundle-override" | "models-advertised";
+  routeSlugs?: string[];
+  upstream?: string;
+  requestedModel?: string;
+  upstreamModel?: string;
+}
+
+export interface RoutingTelemetry {
+  action: string;
+  routeSlug?: string;
+  count: number;
+  lastSeenAt: string;
+}
+
 export interface ContextSnapshot {
   id: string;
   sessionId: string;
@@ -49,6 +64,7 @@ export interface ContextSnapshot {
   tokenization: { encoding: "o200k_base"; fallback: boolean };
   harness: HarnessIdentity;
   project?: string;
+  routing?: CaptureRouting;
   requestSequences: number[];
   parts: ContextPart[];
   usage?: { inputTokens: number; cachedTokens: number };

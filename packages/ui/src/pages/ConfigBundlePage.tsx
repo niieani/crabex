@@ -2,11 +2,22 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
-import { deleteConfigBundle, getConfigBundle, putConfigBundle } from "../lib/api.ts";
+import {
+  deleteConfigBundle,
+  getConfigBundle,
+  getRoutingTelemetry,
+  putConfigBundle,
+} from "../lib/api.ts";
 
 export function ConfigBundlePage() {
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["config-bundle"], queryFn: getConfigBundle });
+  const telemetryQuery = useQuery({
+    queryKey: ["routing-telemetry"],
+    queryFn: getRoutingTelemetry,
+    refetchInterval: 5000,
+  });
+  const served = (telemetryQuery.data ?? []).find((entry) => entry.action === "bundle-override");
   const [enabled, setEnabled] = useState(false);
   const [text, setText] = useState("");
   const [parseError, setParseError] = useState("");
@@ -113,6 +124,11 @@ export function ConfigBundlePage() {
             Reset to passthrough
           </button>
         </div>
+        {served === undefined ? null : (
+          <p className="mt-4 text-[10px] text-muted">
+            Served locally {served.count}× · last {new Date(served.lastSeenAt).toLocaleString()}
+          </p>
+        )}
       </section>
     </div>
   );

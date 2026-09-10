@@ -3,6 +3,7 @@ import type {
   CaptureEncoding,
   CaptureEvent,
   CaptureRequestSummary,
+  CaptureRouting,
   CaptureSink,
   CaptureTransport,
 } from "../recording/capture.ts";
@@ -37,6 +38,7 @@ export class EventRecorder {
       transformationExecutions?: TransformationExecution[];
       harness?: HarnessIdentity;
       project?: string;
+      routing?: CaptureRouting;
     } = {},
   ): Promise<void> {
     const payload =
@@ -61,6 +63,7 @@ export class EventRecorder {
         : { transformationExecutions: metadata.transformationExecutions }),
       ...(metadata.harness === undefined ? {} : { harness: metadata.harness }),
       ...(metadata.project === undefined ? {} : { project: metadata.project }),
+      ...(metadata.routing === undefined ? {} : { routing: metadata.routing }),
     };
     const event: CaptureEvent =
       mode === "full"

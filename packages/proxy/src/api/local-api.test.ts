@@ -100,6 +100,14 @@ describe("local context API", () => {
             lastRunAt: "2026-08-15T00:00:00.000Z",
           },
         ],
+        routingTelemetry: async () => [
+          {
+            action: "routed",
+            routeSlug: "kimi-k3",
+            count: 3,
+            lastSeenAt: "2026-08-15T00:00:00.000Z",
+          },
+        ],
       },
       transformations: {
         get: () => set,
@@ -128,6 +136,20 @@ describe("local context API", () => {
           errors: 0,
           matchCount: 4,
           lastRunAt: "2026-08-15T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const routing = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/routing-telemetry"),
+    );
+    expect(await routing?.json()).toEqual({
+      telemetry: [
+        {
+          action: "routed",
+          routeSlug: "kimi-k3",
+          count: 3,
+          lastSeenAt: "2026-08-15T00:00:00.000Z",
         },
       ],
     });
@@ -172,6 +194,7 @@ describe("local context API", () => {
         list: async () => [],
         preview: async () => undefined,
         transformationTelemetry: async () => [],
+        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -192,6 +215,7 @@ describe("local context API", () => {
         list: async () => [],
         preview: async () => undefined,
         transformationTelemetry: async () => [],
+        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -239,6 +263,7 @@ describe("local context API", () => {
         list: async () => [],
         preview: async () => undefined,
         transformationTelemetry: async () => [],
+        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -268,6 +293,7 @@ describe("local context API", () => {
         list: async () => [],
         preview: async () => undefined,
         transformationTelemetry: async () => [],
+        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -312,6 +338,7 @@ describe("local context API", () => {
         list: async () => [],
         preview: async () => undefined,
         transformationTelemetry: async () => [],
+        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -347,6 +374,7 @@ describe("local context API", () => {
         list: async () => [],
         preview: async () => undefined,
         transformationTelemetry: async () => [],
+        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),

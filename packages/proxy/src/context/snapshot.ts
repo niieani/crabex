@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { CaptureEvent } from "../recording/capture.ts";
+import type { CaptureEvent, CaptureRouting } from "../recording/capture.ts";
 import { classifyMessage, markdownSections, type ContentSection } from "./classification.ts";
 import type { HarnessIdentity } from "./harness.ts";
 import { countTextTokens, tokenizationForModel } from "./token-counter.ts";
@@ -48,6 +48,7 @@ export interface ContextSnapshot {
   tokenization: { encoding: "o200k_base"; fallback: boolean };
   harness: HarnessIdentity;
   project?: string;
+  routing?: CaptureRouting;
   requestSequences: number[];
   parts: ContextPart[];
   usage?: { inputTokens: number; cachedTokens: number };
@@ -114,6 +115,7 @@ function snapshotFrom(
     tokenization,
     harness: inference.event.harness ?? { kind: "unknown" },
     ...(inference.event.project === undefined ? {} : { project: inference.event.project }),
+    ...(inference.event.routing === undefined ? {} : { routing: inference.event.routing }),
     requestSequences: chain.map((item) => item.event.sequence),
     parts,
     ...(inference.usage === undefined ? {} : { usage: inference.usage }),

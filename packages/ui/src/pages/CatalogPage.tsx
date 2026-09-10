@@ -112,6 +112,12 @@ export function CatalogPage() {
                 value={harnessLabel(snapshot.harness.kind, snapshot.harness.version)}
               />
               <HeaderMetric label="Project" value={snapshot.project ?? "unscoped"} />
+              {snapshot.routing?.action === "routed" ? (
+                <HeaderMetric
+                  label="Route"
+                  value={`${snapshot.routing.routeSlugs?.[0] ?? "routed"} → ${snapshot.routing.upstreamModel ?? "?"}`}
+                />
+              ) : null}
               <HeaderMetric
                 label="Input"
                 value={

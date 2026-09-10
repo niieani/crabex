@@ -34,6 +34,14 @@ export interface CaptureResponseSummary {
   usage?: CaptureUsage;
 }
 
+export interface CaptureRouting {
+  action: "routed" | "bundle-override" | "models-advertised";
+  routeSlugs?: string[];
+  upstream?: string;
+  requestedModel?: string;
+  upstreamModel?: string;
+}
+
 interface CaptureEventBase {
   sessionId: string;
   sequence: number;
@@ -45,6 +53,7 @@ interface CaptureEventBase {
   transformationChanged?: boolean;
   harness?: HarnessIdentity;
   project?: string;
+  routing?: CaptureRouting;
 }
 
 export interface FullCaptureEvent extends CaptureEventBase {

@@ -49,6 +49,33 @@ describe("buildSnapshots", () => {
     expect(snapshots[0]?.parts.every((part) => part.digest.length === 64)).toBe(true);
   });
 
+  it("carries the routing decision onto the snapshot", () => {
+    const request = event(1, "client_to_upstream", {
+      type: "response.create",
+      model: "kimi-k3",
+      input: [message("user", "hi")],
+    });
+    request.routing = {
+      action: "routed",
+      routeSlugs: ["kimi-k3"],
+      upstream: "http://127.0.0.1:8317",
+      requestedModel: "kimi-k3",
+      upstreamModel: "moonshot-kimi-k3",
+    };
+
+    const snapshots = buildSnapshots([request]);
+
+    expect(snapshots[0]).toMatchObject({
+      model: "kimi-k3",
+      routing: {
+        action: "routed",
+        routeSlugs: ["kimi-k3"],
+        upstream: "http://127.0.0.1:8317",
+        upstreamModel: "moonshot-kimi-k3",
+      },
+    });
+  });
+
   it("uses metadata-only response completion events for usage correlation", () => {
     const request = event(1, "client_to_upstream", {
       type: "response.create",

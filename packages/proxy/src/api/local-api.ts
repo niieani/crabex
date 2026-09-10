@@ -37,6 +37,9 @@ export function createLocalApi(options: {
         if (url.pathname === `${API_PREFIX}/transformation-telemetry` && request.method === "GET") {
           return json({ telemetry: await options.snapshots.transformationTelemetry() });
         }
+        if (url.pathname === `${API_PREFIX}/routing-telemetry` && request.method === "GET") {
+          return json({ telemetry: await options.snapshots.routingTelemetry() });
+        }
         if (url.pathname === `${API_PREFIX}/preview` && request.method === "POST") {
           const body = (await request.json()) as Record<string, unknown>;
           if (typeof body.snapshotId !== "string" || !Array.isArray(body.transformations)) {

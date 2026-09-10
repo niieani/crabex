@@ -327,7 +327,8 @@ describe("model routing and config bundle override", () => {
       upstreamRequests += 1;
       response.end("upstream");
     });
-    const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
+    const captures = new MemoryCaptureSink();
+    const proxy = await startRoutingProxy(upstream.origin, captures, {
       bundleOverride: { version: 1, enabled: true, bundle: { requirements_toml: null } },
     });
 
@@ -336,6 +337,9 @@ describe("model routing and config bundle override", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ requirements_toml: null });
     expect(upstreamRequests).toBe(0);
+    expect(captures.events).toMatchObject([
+      { transport: "http", routing: { action: "bundle-override" } },
+    ]);
   });
 
   it("forwards config bundle requests when the override is disabled", async () => {
@@ -366,7 +370,8 @@ describe("model routing and config bundle override", () => {
         expect(JSON.parse(body.toString())).toMatchObject({ model: "moonshot-kimi-k3" });
         response.end("routed");
       });
-      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      const captures = new MemoryCaptureSink();
+      const proxy = await startRoutingProxy(chatgpt.origin, captures, {
         routes: [testRoute(routed.origin)],
       });
 
@@ -383,6 +388,15 @@ describe("model routing and config bundle override", () => {
 
       expect(response.status).toBe(200);
       expect(await response.text()).toBe("routed");
+      expect(captures.events[0]).toMatchObject({
+        routing: {
+          action: "routed",
+          routeSlugs: ["kimi-k3"],
+          upstream: routed.origin,
+          requestedModel: "kimi-k3",
+          upstreamModel: "moonshot-kimi-k3",
+        },
+      });
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
     }
@@ -441,7 +455,8 @@ describe("model routing and config bundle override", () => {
         }),
       );
     });
-    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+    const captures = new MemoryCaptureSink();
+    const proxy = await startRoutingProxy(chatgpt.origin, captures, {
       routes: [testRoute("http://127.0.0.1:1")],
     });
 
@@ -456,6 +471,9 @@ describe("model routing and config bundle override", () => {
       context_window: 272000,
     });
     expect(body.models[0]).not.toHaveProperty("upgrade");
+    expect(captures.events[0]).toMatchObject({
+      routing: { action: "models-advertised", routeSlugs: ["kimi-k3"] },
+    });
   });
 
   it("routes a WebSocket response.create by the first message model", async () => {
@@ -473,7 +491,8 @@ describe("model routing and config bundle override", () => {
           socket.send("routed");
         });
       });
-      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      const captures = new MemoryCaptureSink();
+      const proxy = await startRoutingProxy(chatgpt.origin, captures, {
         routes: [testRoute(routed.origin)],
       });
       const client = new WebSocket(
@@ -491,6 +510,17 @@ describe("model routing and config bundle override", () => {
       client.send(JSON.stringify({ type: "response.create", model: "kimi-k3", input: [] }));
 
       expect(await nextMessage(client)).toBe("routed");
+      await eventually(() => expect(captures.events.length).toBeGreaterThanOrEqual(1));
+      expect(captures.events[0]).toMatchObject({
+        direction: "client_to_upstream",
+        routing: {
+          action: "routed",
+          routeSlugs: ["kimi-k3"],
+          upstream: routed.origin,
+          requestedModel: "kimi-k3",
+          upstreamModel: "moonshot-kimi-k3",
+        },
+      });
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
     }

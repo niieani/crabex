@@ -83,6 +83,36 @@ describe("file capture repository", () => {
     ]);
   });
 
+  it("aggregates routing decisions by action and route", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
+    const routed = event(1, "client_to_upstream", { type: "response.create" });
+    routed.routing = {
+      action: "routed",
+      routeSlugs: ["kimi-k3"],
+      upstream: "http://127.0.0.1:8317",
+      requestedModel: "kimi-k3",
+      upstreamModel: "moonshot-kimi-k3",
+    };
+    const routedAgain = event(2, "client_to_upstream", { type: "response.create" });
+    routedAgain.routing = routed.routing;
+    const bundle = event(3, "client_to_upstream", "");
+    bundle.routing = { action: "bundle-override" };
+    const advertised = event(4, "client_to_upstream", "");
+    advertised.routing = { action: "models-advertised", routeSlugs: ["kimi-k3"] };
+    await writeFile(
+      join(directory, "capture.ndjson"),
+      `${[routed, routedAgain, bundle, advertised].map((value) => JSON.stringify(value)).join("\n")}\n`,
+    );
+
+    const telemetry = await new FileCaptureRepository(directory).routingTelemetry();
+
+    expect(telemetry).toEqual([
+      { action: "bundle-override", count: 1, lastSeenAt: bundle.timestamp },
+      { action: "models-advertised", count: 1, lastSeenAt: advertised.timestamp },
+      { action: "routed", routeSlug: "kimi-k3", count: 2, lastSeenAt: routedAgain.timestamp },
+    ]);
+  });
+
   it("previews current transformations against an immutable historical snapshot", async () => {
     const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
     const events = [

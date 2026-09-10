@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { CaptureSink } from "../recording/capture.ts";
+import type { CaptureRouting, CaptureSink } from "../recording/capture.ts";
 import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
 import type { Transformation } from "../context/transformation.ts";
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
@@ -86,9 +86,10 @@ interface SocketData {
   harness: HarnessIdentity;
   project?: string;
   transformationSource: TransformationSource;
-  connectUpstream?: (
-    firstValue: string | ArrayBuffer | Uint8Array,
-  ) => Promise<string | ArrayBuffer | Uint8Array>;
+  connectUpstream?: (firstValue: string | ArrayBuffer | Uint8Array) => Promise<{
+    value: string | ArrayBuffer | Uint8Array;
+    routing?: CaptureRouting;
+  }>;
 }
 
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
@@ -113,6 +114,18 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
       const requestPath = new URL(request.url).pathname;
       const bundleOverride = configBundleSource?.get();
       if (bundleOverride?.enabled === true && isConfigBundleRequest(requestPath)) {
+        try {
+          await recorder.record("http", "client_to_upstream", "", "utf8", {
+            harness: classifyHarness(request.headers),
+            project: options.project,
+            routing: { action: "bundle-override" },
+          });
+        } catch {
+          return new Response("capture failed", {
+            status: 500,
+            headers: { "content-type": "text/plain; charset=utf-8" },
+          });
+        }
         return Response.json(bundleOverride.bundle);
       }
       if (isWebSocketUpgrade(request)) {
@@ -161,6 +174,16 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
               data.harness,
               data.project,
             );
+            let outbound = processed.value;
+            let routing: CaptureRouting | undefined;
+            if (data.upstream === undefined) {
+              if (data.connectUpstream === undefined) {
+                throw new Error("upstream websocket is not open");
+              }
+              const connected = await data.connectUpstream(processed.value);
+              outbound = connected.value;
+              routing = connected.routing;
+            }
             await data.recorder.record("websocket", "client_to_upstream", message, encoding, {
               effectivePayload: processed.effectivePayload,
               requestSummary: processed.requestSummary,
@@ -168,14 +191,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
               transformationExecutions: processed.transformationExecutions,
               harness: data.harness,
               project: data.project,
+              routing,
             });
-            let outbound = processed.value;
-            if (data.upstream === undefined) {
-              if (data.connectUpstream === undefined) {
-                throw new Error("upstream websocket is not open");
-              }
-              outbound = await data.connectUpstream(processed.value);
-            }
             const upstream = data.upstream;
             if (upstream === undefined || upstream.readyState !== WebSocket.OPEN) {
               throw new Error("upstream websocket is not open");
@@ -219,20 +236,13 @@ async function proxyHttpRequest(
       harness,
       project,
     );
-    await recorder.record("http", "client_to_upstream", body, "utf8", {
-      effectivePayload: processed.effectivePayload,
-      requestSummary: processed.requestSummary,
-      transformationChanged: processed.transformationChanged,
-      transformationExecutions: processed.transformationExecutions,
-      harness,
-      project,
-    });
 
     const requestUrl = new URL(request.url);
     const routes = modelRouteSource.get();
     let target = targetUrl(upstreamOrigin, request.url);
     let headers = forwardedHeaders(request.headers, cookies.header());
     let outbound = processed.value;
+    let routing: CaptureRouting | undefined;
     if (routes.length > 0 && isResponsesRequest(request.method, requestUrl.pathname)) {
       const inspected = inspectResponseModel(processed.value);
       const route = inspected === undefined ? undefined : modelRouteFor(routes, inspected.model);
@@ -243,8 +253,30 @@ async function proxyHttpRequest(
           ...inspected.payload,
           model: route.upstreamModel ?? route.model.slug,
         });
+        routing = {
+          action: "routed",
+          routeSlugs: [route.model.slug],
+          upstream: route.upstream.origin,
+          requestedModel: inspected.model,
+          upstreamModel: route.upstreamModel ?? route.model.slug,
+        };
       }
+    } else if (routes.length > 0 && isModelsRequest(request.method, requestUrl.pathname)) {
+      routing = {
+        action: "models-advertised",
+        routeSlugs: routes.map((route) => route.model.slug),
+      };
     }
+
+    await recorder.record("http", "client_to_upstream", body, "utf8", {
+      effectivePayload: processed.effectivePayload,
+      requestSummary: processed.requestSummary,
+      transformationChanged: processed.transformationChanged,
+      transformationExecutions: processed.transformationExecutions,
+      harness,
+      project,
+      routing,
+    });
 
     const response = await fetch(target, {
       method: request.method,
@@ -315,11 +347,20 @@ async function upgradeWebSocket(
         const upstream = await connectWebSocket(target, headers, protocols);
         attachUpstream(data, upstream);
         data.upstream = upstream;
-        if (route === undefined || inspected === undefined) return firstValue;
-        return JSON.stringify({
-          ...inspected.payload,
-          model: route.upstreamModel ?? route.model.slug,
-        });
+        if (route === undefined || inspected === undefined) return { value: firstValue };
+        return {
+          value: JSON.stringify({
+            ...inspected.payload,
+            model: route.upstreamModel ?? route.model.slug,
+          }),
+          routing: {
+            action: "routed" as const,
+            routeSlugs: [route.model.slug],
+            upstream: route.upstream.origin,
+            requestedModel: inspected.model,
+            upstreamModel: route.upstreamModel ?? route.model.slug,
+          },
+        };
       };
       if (server.upgrade(request, { data })) return undefined;
       return new Response("WebSocket upgrade failed", { status: 500 });

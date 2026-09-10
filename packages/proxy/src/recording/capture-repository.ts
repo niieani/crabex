@@ -6,6 +6,13 @@ import { transformResponseCreate, type ResponseCreatePayload } from "../context/
 import type { Transformation, TransformationTelemetry } from "../context/transformation.ts";
 import type { CaptureEvent, FullCaptureEvent } from "./capture.ts";
 
+export interface RoutingTelemetry {
+  action: string;
+  routeSlug?: string;
+  count: number;
+  lastSeenAt: string;
+}
+
 export interface SnapshotSource {
   list(): Promise<ContextSnapshot[]>;
   preview(
@@ -13,6 +20,7 @@ export interface SnapshotSource {
     transformations: Transformation[],
   ): Promise<ContextSnapshot | undefined>;
   transformationTelemetry(): Promise<TransformationTelemetry[]>;
+  routingTelemetry(): Promise<RoutingTelemetry[]>;
 }
 
 export class FileCaptureRepository implements SnapshotSource {
@@ -49,6 +57,30 @@ export class FileCaptureRepository implements SnapshotSource {
     }
     return [...telemetry.values()].sort((left, right) =>
       left.transformationId.localeCompare(right.transformationId),
+    );
+  }
+
+  async routingTelemetry(): Promise<RoutingTelemetry[]> {
+    const telemetry = new Map<string, RoutingTelemetry>();
+    for (const event of (await this.#eventGroups()).flat()) {
+      const routing = event.routing;
+      if (routing === undefined) continue;
+      const slug = routing.action === "routed" ? routing.routeSlugs?.[0] : undefined;
+      const key = slug === undefined ? routing.action : `${routing.action}:${slug}`;
+      const current = telemetry.get(key) ?? {
+        action: routing.action,
+        ...(slug === undefined ? {} : { routeSlug: slug }),
+        count: 0,
+        lastSeenAt: event.timestamp,
+      };
+      current.count += 1;
+      if (event.timestamp > current.lastSeenAt) current.lastSeenAt = event.timestamp;
+      telemetry.set(key, current);
+    }
+    return [...telemetry.values()].sort((left, right) =>
+      `${left.action}:${left.routeSlug ?? ""}`.localeCompare(
+        `${right.action}:${right.routeSlug ?? ""}`,
+      ),
     );
   }
 

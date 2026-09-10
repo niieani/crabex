@@ -3,6 +3,7 @@ import type {
   ConfigBundleOverride,
   ContextSnapshot,
   ModelRouteSet,
+  RoutingTelemetry,
   TransformationSet,
   TransformationTelemetry,
 } from "./types.ts";
@@ -31,6 +32,11 @@ export async function putTransformations(set: TransformationSet): Promise<Transf
 export async function getTransformationTelemetry(): Promise<TransformationTelemetry[]> {
   const response = await request(`${API}/transformation-telemetry`);
   return ((await response.json()) as { telemetry: TransformationTelemetry[] }).telemetry;
+}
+
+export async function getRoutingTelemetry(): Promise<RoutingTelemetry[]> {
+  const response = await request(`${API}/routing-telemetry`);
+  return ((await response.json()) as { telemetry: RoutingTelemetry[] }).telemetry;
 }
 
 export async function previewSnapshot(

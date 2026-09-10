@@ -2,13 +2,24 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
-import { getModelRouteEnvStatus, getModelRoutes, putModelRoutes } from "../lib/api.ts";
-import type { ModelRouteConfig, ModelRouteSet } from "../lib/types.ts";
+import {
+  getModelRouteEnvStatus,
+  getModelRoutes,
+  getRoutingTelemetry,
+  putModelRoutes,
+} from "../lib/api.ts";
+import type { ModelRouteConfig, ModelRouteSet, RoutingTelemetry } from "../lib/types.ts";
 
 export function ModelRoutesPage() {
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["model-routes"], queryFn: getModelRoutes });
   const envQuery = useQuery({ queryKey: ["model-route-env"], queryFn: getModelRouteEnvStatus });
+  const telemetryQuery = useQuery({
+    queryKey: ["routing-telemetry"],
+    queryFn: getRoutingTelemetry,
+    refetchInterval: 5000,
+  });
+  const telemetry = telemetryQuery.data ?? [];
   const mutation = useMutation({
     mutationFn: putModelRoutes,
     onSuccess: (set) => {
@@ -59,6 +70,9 @@ export function ModelRoutesPage() {
                 key={`${route.model.slug}-${index}`}
                 route={route}
                 envSet={envQuery.data?.[route.authorization_env]}
+                telemetry={telemetry.find(
+                  (entry) => entry.action === "routed" && entry.routeSlug === route.model.slug,
+                )}
                 onToggle={() =>
                   replace(updateRoute(set, index, { ...route, enabled: !(route.enabled ?? true) }))
                 }
@@ -85,11 +99,13 @@ export function ModelRoutesPage() {
 function RouteCard({
   route,
   envSet,
+  telemetry,
   onToggle,
   onDelete,
 }: {
   route: ModelRouteConfig;
   envSet?: boolean;
+  telemetry?: RoutingTelemetry;
   onToggle: () => void;
   onDelete: () => void;
 }) {
@@ -129,6 +145,11 @@ function RouteCard({
               ${route.authorization_env}
               {envSet === undefined ? "" : envSet ? " set" : " missing"}
             </Tag>
+            {telemetry === undefined ? null : (
+              <Tag>
+                routed:{telemetry.count} · last {new Date(telemetry.lastSeenAt).toLocaleString()}
+              </Tag>
+            )}
           </div>
           {envSet === false && enabled ? (
             <p className="mt-3 rounded-md bg-danger-dim px-3 py-2 text-[10px] text-danger">
