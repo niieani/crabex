@@ -73,6 +73,12 @@ interface RequestRecord {
 export interface SnapshotModelContext {
   original: ModelDefinition[];
   effective: ModelDefinition[];
+  /**
+   * Routed slug → template slug. Routed models have no upstream definition of
+   * their own; their original view diffs against the template's upstream
+   * definition so route overrides surface as original/effective diffs.
+   */
+  templates?: Record<string, string>;
 }
 
 export function buildSnapshots(
@@ -164,7 +170,12 @@ function partsFrom(request: RequestRecord): ContextPart[] {
 function modelPartsFor(model: string, context?: SnapshotModelContext): ContextPart[] {
   if (context === undefined) return [];
   const effective = context.effective.find((definition) => definition.slug === model);
-  const original = context.original.find((definition) => definition.slug === model);
+  const templateSlug = context.templates?.[model];
+  const original =
+    context.original.find((definition) => definition.slug === model) ??
+    (templateSlug === undefined
+      ? undefined
+      : context.original.find((definition) => definition.slug === templateSlug));
   if (effective === undefined && original === undefined) return [];
   const originals = new Map(
     (original === undefined ? [] : modelStringFields(original)).map((field) => [

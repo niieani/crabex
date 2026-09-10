@@ -154,7 +154,10 @@ export class FileCaptureRepository implements SnapshotSource {
     effective = transformModelDefinitions(effective, transformations, {
       harness: { kind: "unknown" },
     }).models;
-    return { original, effective };
+    const templates = Object.fromEntries(
+      set.routes.map((route) => [route.model.slug, route.model.template_slug]),
+    );
+    return { original, effective, templates };
   }
 
   async #eventGroups(): Promise<CaptureEvent[][]> {

@@ -7,6 +7,7 @@ import type {
   Transformation,
 } from "../../lib/types.ts";
 import { TransformationEditor } from "../transformations/TransformationEditor.tsx";
+import { collapseModelTwins } from "./collapse-model-twins.ts";
 import { ContextDiff, type TransformSelection } from "./ContextDiff.tsx";
 import { resolveJsonStringSelection, type TextRange } from "./json-selection.ts";
 
@@ -27,12 +28,16 @@ export function ContextInspector({
   const [search, setSearch] = useState("");
   const [selection, setSelection] = useState<TransformSelection>();
   const [highlightRange, setHighlightRange] = useState<TextRange>();
+  const { parts: displayParts, twins } = useMemo(
+    () => collapseModelTwins(snapshot.parts),
+    [snapshot.parts],
+  );
   const ordered = useMemo(
     () =>
       sort === "size"
-        ? [...snapshot.parts].sort((left, right) => right.characters - left.characters)
-        : snapshot.parts,
-    [snapshot.parts, sort],
+        ? [...displayParts].sort((left, right) => right.characters - left.characters)
+        : displayParts,
+    [displayParts, sort],
   );
   const visible = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
@@ -40,10 +45,9 @@ export function ContextInspector({
     return ordered.filter((part) => searchableText(part).toLocaleLowerCase().includes(needle));
   }, [ordered, search]);
   const [selectedKey, setSelectedKey] = useState(
-    snapshot.parts[0] === undefined ? undefined : partKey(snapshot.parts[0]),
+    displayParts[0] === undefined ? undefined : partKey(displayParts[0]),
   );
-  const selected =
-    snapshot.parts.find((part) => partKey(part) === selectedKey) ?? snapshot.parts[0];
+  const selected = displayParts.find((part) => partKey(part) === selectedKey) ?? displayParts[0];
   const totalCharacters = snapshot.parts
     .filter((part) => part.phase !== "model")
     .reduce((total, part) => total + part.characters, 0);
@@ -101,6 +105,7 @@ export function ContextInspector({
             <PartButton
               key={partKey(part)}
               part={part}
+              twinCount={twins.get(part)?.length ?? 0}
               totalCharacters={totalCharacters}
               selected={partKey(part) === partKey(selected)}
               onClick={() => {
@@ -133,6 +138,17 @@ export function ContextInspector({
             </div>
             <h1 className="truncate text-lg font-semibold tracking-tight">{selected.name}</h1>
             <p className="mt-1 truncate font-mono text-[11px] text-muted">{selected.path}</p>
+            {(twins.get(selected)?.length ?? 0) === 0 ? null : (
+              <p className="mt-1 text-[11px] text-warning">
+                Model template — also sent in {twins.get(selected)?.length} request{" "}
+                {(twins.get(selected)?.length ?? 0) === 1 ? "part" : "parts"} (
+                {twins
+                  .get(selected)
+                  ?.map((part) => part.path)
+                  .join(", ")}
+                )
+              </p>
+            )}
           </div>
           <div className="ml-5 flex items-center gap-5">
             {hasTransformations ? (
@@ -249,6 +265,7 @@ export function ContextInspector({
 
 function PartButton({
   part,
+  twinCount,
   totalCharacters,
   selected,
   onClick,
@@ -257,6 +274,7 @@ function PartButton({
   onSelectSection,
 }: {
   part: ContextPart;
+  twinCount: number;
   totalCharacters: number;
   selected: boolean;
   onClick: () => void;
@@ -289,7 +307,10 @@ function PartButton({
             />
           </div>
           <div className="mt-1.5 flex items-center justify-between text-[10px] text-content">
-            <span>{part.deleted ? "turned off" : part.phase}</span>
+            <span>
+              {part.deleted ? "turned off" : part.phase}
+              {twinCount === 0 ? "" : ` · ${twinCount}× in request`}
+            </span>
             <span>~{formatCompact(part.estimatedTokens)} tok</span>
           </div>
         </button>

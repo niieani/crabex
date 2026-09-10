@@ -137,6 +137,48 @@ describe("buildSnapshots", () => {
     });
   });
 
+  it("diffs a routed model's parts against its template's upstream definition", () => {
+    const events: CaptureEvent[] = [
+      event(1, "client_to_upstream", {
+        type: "response.create",
+        model: "kimi-k3",
+        input: [message("user", "hi")],
+      }),
+    ];
+    const original = [
+      {
+        slug: "gpt-5.6-terra",
+        model_messages: {
+          instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+        },
+      },
+    ];
+    // The effective list holds the routed model cloned from its template, with
+    // a route override applied to the instructions.
+    const effective = [
+      ...original,
+      {
+        slug: "kimi-k3",
+        model_messages: {
+          instructions_template: "You are Codex, an agent based on GPT-5. Be terse.",
+        },
+      },
+    ];
+
+    const snapshots = buildSnapshots(events, {
+      original,
+      effective,
+      templates: { "kimi-k3": "gpt-5.6-terra" },
+    });
+
+    const part = snapshots[0]?.parts.find((item) => item.phase === "model");
+    expect(part).toMatchObject({
+      identifier: "segment:codex_base",
+      text: "You are Codex, an agent based on GPT-5. Be terse.",
+      originalText: "You are Codex, an agent based on GPT-5. Be helpful.",
+    });
+  });
+
   it("omits model parts when the snapshot model is not in the model context", () => {
     const events: CaptureEvent[] = [
       event(1, "client_to_upstream", {
