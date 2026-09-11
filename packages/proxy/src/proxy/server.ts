@@ -24,6 +24,12 @@ import {
 } from "../routing/model-routes.ts";
 import { fetchWithFailover, TargetBreakers } from "../routing/failover.ts";
 import {
+  httpPayloadFor,
+  parseSseEvents,
+  rewriteResponseModel,
+  wrappedErrorEvent,
+} from "./responses-bridge.ts";
+import {
   isConfigBundleRequest,
   isModelsRequest,
   isResponsesPath,
@@ -90,6 +96,13 @@ export interface RunningProxy {
   close(): Promise<void>;
 }
 
+interface BridgeContext {
+  routes: readonly ModelRoute[];
+  search: string;
+  baseHeaders: Record<string, string>;
+  breakers: TargetBreakers;
+}
+
 interface SocketData {
   upstream?: WebSocket;
   recorder: EventRecorder;
@@ -100,6 +113,7 @@ interface SocketData {
   harness: HarnessIdentity;
   project?: string;
   transformationSource: TransformationSource;
+  bridge?: BridgeContext;
   connectUpstream?: (firstValue: string | ArrayBuffer | Uint8Array) => Promise<{
     value: string | ArrayBuffer | Uint8Array;
     routing?: CaptureRouting;
@@ -183,6 +197,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           transformationSource,
           modelRouteSource,
           options.project,
+          breakers,
         );
       }
       return proxyHttpRequest(
@@ -224,6 +239,18 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             );
             let outbound = processed.value;
             let routing: CaptureRouting | undefined;
+            const bridged = matchBridgeRoute(data.bridge, processed.value);
+            if (bridged !== undefined) {
+              await runBridgedCreate(
+                data,
+                bridged.route,
+                bridged.inspected,
+                message,
+                encoding,
+                processed,
+              );
+              return;
+            }
             if (data.upstream === undefined) {
               if (data.connectUpstream === undefined) {
                 throw new Error("upstream websocket is not open");
@@ -424,6 +451,7 @@ async function upgradeWebSocket(
   transformationSource: TransformationSource,
   modelRouteSource: ModelRouteSource,
   project: string | undefined,
+  breakers: TargetBreakers,
 ): Promise<Response | undefined> {
   try {
     const requestUrl = new URL(request.url);
@@ -443,6 +471,7 @@ async function upgradeWebSocket(
 
     if (lazyRouting) {
       const defaultTarget = webSocketTarget(targetUrl(upstreamOrigin, request.url));
+      data.bridge = { routes, search: requestUrl.search, baseHeaders, breakers };
       data.connectUpstream = async (firstValue) => {
         const inspected = inspectResponseModel(firstValue);
         const route = inspected === undefined ? undefined : modelRouteFor(routes, inspected.model);
@@ -528,6 +557,118 @@ function queueUpstreamMessage(data: SocketData, event: MessageEvent): void {
       if (client.send(message) === 0) throw new Error("client websocket send failed");
     })
     .catch(() => closePair(data, 1011, "capture failed"));
+}
+
+function matchBridgeRoute(
+  bridge: BridgeContext | undefined,
+  value: string | ArrayBuffer | Uint8Array,
+):
+  | { route: ModelRoute; inspected: { payload: Record<string, unknown>; model: string } }
+  | undefined {
+  if (bridge === undefined) return undefined;
+  const inspected = inspectResponseModel(value);
+  if (inspected === undefined) return undefined;
+  const route = modelRouteFor(bridge.routes, inspected.model);
+  if (route === undefined || route.transport !== "http") return undefined;
+  return { route, inspected };
+}
+
+/**
+ * Fulfills one response.create against an HTTP-only upstream: failover runs
+ * first, the request event is recorded with the attempt trail, then the SSE
+ * stream is forwarded to the client as WebSocket messages. Awaiting the whole
+ * stream keeps client messages processed in order.
+ */
+async function runBridgedCreate(
+  data: SocketData,
+  route: ModelRoute,
+  inspected: { payload: Record<string, unknown>; model: string },
+  rawMessage: string | ArrayBuffer | Uint8Array,
+  encoding: "utf8" | "base64",
+  processed: ReturnType<typeof processClientPayload>,
+): Promise<void> {
+  const bridge = data.bridge;
+  if (bridge === undefined) return;
+  const routingBase: CaptureRouting = {
+    action: "routed",
+    routeSlugs: [route.model.slug],
+    upstream: route.upstream.origin,
+    requestedModel: inspected.model,
+    upstreamModel: route.targets[0]?.upstreamModel ?? route.model.slug,
+  };
+  const recordRequest = (routing: CaptureRouting) =>
+    data.recorder.record("websocket", "client_to_upstream", rawMessage, encoding, {
+      effectivePayload: processed.effectivePayload,
+      requestSummary: processed.requestSummary,
+      transformationChanged: processed.transformationChanged,
+      transformationExecutions: processed.transformationExecutions,
+      harness: data.harness,
+      project: data.project,
+      routing,
+    });
+
+  let authorization: string;
+  try {
+    authorization = authorizationFor(route, process.env);
+  } catch (error) {
+    await recordRequest(routingBase);
+    await queueBridgedMessage(data, wrappedErrorEvent(502, errorMessage(error)));
+    return;
+  }
+
+  const result = await fetchWithFailover({
+    route,
+    breakers: bridge.breakers,
+    requestFor: (target) => ({
+      url: responseTargetUrl(route, bridge.search),
+      init: {
+        method: "POST",
+        headers: {
+          ...routedHeaders(bridge.baseHeaders, authorization),
+          "content-type": "application/json",
+          accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          ...httpPayloadFor(inspected.payload),
+          model: target.upstreamModel ?? route.model.slug,
+          stream: true,
+        }),
+        redirect: "manual",
+      },
+    }),
+  });
+  await recordRequest({
+    ...routingBase,
+    ...(result.servedBy === undefined ? {} : { upstreamModel: result.servedBy }),
+    attempts: result.attempts,
+  });
+
+  if (!result.response.ok || result.response.body === null) {
+    const detail = await result.response.text();
+    await queueBridgedMessage(data, wrappedErrorEvent(result.response.status, detail));
+    return;
+  }
+  for await (const eventData of parseSseEvents(result.response.body)) {
+    if (data.client === undefined || data.client.readyState !== WebSocket.OPEN) break;
+    await queueBridgedMessage(data, rewriteResponseModel(eventData, route.model.slug));
+  }
+}
+
+function queueBridgedMessage(data: SocketData, message: string): Promise<void> {
+  data.upstreamToClient = data.upstreamToClient
+    .then(async () => {
+      await data.recorder.record("websocket", "upstream_to_client", message, "utf8", {
+        harness: data.harness,
+        project: data.project,
+      });
+      const client = data.client;
+      if (client === undefined || client.readyState !== WebSocket.OPEN) {
+        throw new Error("client websocket is not open");
+      }
+      if (client.send(message) === 0) throw new Error("client websocket send failed");
+    })
+    .catch(() => closePair(data, 1011, "capture failed"));
+  return data.upstreamToClient;
 }
 
 function connectWebSocket(

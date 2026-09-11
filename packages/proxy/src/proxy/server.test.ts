@@ -849,6 +849,156 @@ describe("model routing and config bundle override", () => {
     }
   });
 
+  it("bridges a WebSocket response.create to an HTTP-only route and streams SSE back", async () => {
+    process.env.OPENAI_API_KEY = "test-gateway-key";
+    try {
+      const seen: string[] = [];
+      const gateway = await startHttpServer((request, response) => {
+        let body = "";
+        request.on("data", (chunk) => (body += chunk));
+        request.on("end", () => {
+          const payload = JSON.parse(body) as Record<string, unknown>;
+          seen.push(String(payload.model));
+          expect(request.headers.authorization).toBe("Bearer test-gateway-key");
+          expect(payload.stream).toBe(true);
+          expect(payload.type).toBeUndefined();
+          expect(payload.client_metadata).toBeUndefined();
+          expect(payload.generate).toBeUndefined();
+          response.setHeader("content-type", "text/event-stream");
+          response.end(
+            `event: response.created\ndata: {"type":"response.created","response":{"id":"resp_gw","model":"${String(payload.model)}","status":"in_progress"}}\n\n` +
+              `event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"audit-ok"}\n\n` +
+              `event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_gw","model":"${String(payload.model)}","status":"completed"}}\n\n`,
+          );
+        });
+      });
+      const route = modelRouteFromConfig({
+        authorization_env: "OPENAI_API_KEY",
+        model: {
+          description: "GPT-6 Astra via the AI gateway",
+          display_name: "GPT-6 Astra",
+          priority: 1,
+          slug: "gpt-6-astra",
+          template_slug: "gpt-6-astra",
+        },
+        upstream: `${gateway.origin}/openai/v1`,
+        transport: "http",
+        targets: [
+          { upstream_model: "openai.gpt-6-astra-flex", attempts: 2 },
+          { upstream_model: "openai.gpt-6-astra" },
+        ],
+        retry: { on_status: [429], backoff_ms: [0] },
+      });
+      const captures = new MemoryCaptureSink();
+      const chatgpt = await startWebSocketServer((socket) => {
+        socket.on("message", () => socket.send("chatgpt"));
+      });
+      const proxy = await startRoutingProxy(chatgpt.origin, captures, { routes: [route] });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: { authorization: "Bearer oauth-secret" } },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          client_metadata: { session_id: "s" },
+          model: "gpt-6-astra",
+          input: [],
+        }),
+      );
+
+      const created = JSON.parse(await nextMessage(client)) as {
+        type: string;
+        response: { model: string };
+      };
+      expect(created.type).toBe("response.created");
+      expect(created.response.model).toBe("gpt-6-astra");
+      const delta = JSON.parse(await nextMessage(client)) as { type: string };
+      expect(delta.type).toBe("response.output_text.delta");
+      const completed = JSON.parse(await nextMessage(client)) as {
+        type: string;
+        response: { model: string };
+      };
+      expect(completed.type).toBe("response.completed");
+      expect(completed.response.model).toBe("gpt-6-astra");
+
+      expect(seen).toEqual(["openai.gpt-6-astra-flex"]);
+      await eventually(() => expect(captures.events.length).toBeGreaterThanOrEqual(4));
+      expect(captures.events[0]).toMatchObject({
+        direction: "client_to_upstream",
+        routing: {
+          action: "routed",
+          requestedModel: "gpt-6-astra",
+          upstreamModel: "openai.gpt-6-astra-flex",
+          attempts: [{ upstreamModel: "openai.gpt-6-astra-flex", outcome: "served", status: 200 }],
+        },
+      });
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it("sends a wrapped error event when every bridged target is exhausted", async () => {
+    process.env.OPENAI_API_KEY = "test-gateway-key";
+    try {
+      const gateway = await startHttpServer((_request, response) => {
+        response.statusCode = 429;
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({ error: { code: "resource_unavailable", message: "no flex" } }),
+        );
+      });
+      const route = modelRouteFromConfig({
+        authorization_env: "OPENAI_API_KEY",
+        model: {
+          description: "GPT-6 Astra via the AI gateway",
+          display_name: "GPT-6 Astra",
+          priority: 1,
+          slug: "gpt-6-astra",
+          template_slug: "gpt-6-astra",
+        },
+        upstream: `${gateway.origin}/openai/v1`,
+        transport: "http",
+        targets: [{ upstream_model: "openai.gpt-6-astra-flex", attempts: 2 }],
+        retry: { on_status: [429], backoff_ms: [0] },
+      });
+      const chatgpt = await startWebSocketServer((socket) => {
+        socket.on("message", () => socket.send("chatgpt"));
+      });
+      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: { authorization: "Bearer oauth-secret" } },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+
+      client.send(JSON.stringify({ type: "response.create", model: "gpt-6-astra", input: [] }));
+
+      const error = JSON.parse(await nextMessage(client)) as {
+        type: string;
+        status: number;
+        error: { code: string; message: string };
+      };
+      expect(error).toEqual({
+        type: "error",
+        status: 429,
+        error: { code: "resource_unavailable", message: "no flex" },
+      });
+
+      // The socket survives: an unrouted model still flows to the default WS upstream.
+      client.send(JSON.stringify({ type: "response.create", model: "gpt-5.6-terra", input: [] }));
+      expect(await nextMessage(client)).toBe("chatgpt");
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
   it("keeps unmatched WebSocket models on the default upstream", async () => {
     const chatgpt = await startWebSocketServer((socket, request) => {
       expect(request.headers.authorization).toBe("Bearer oauth-secret");

@@ -28,7 +28,7 @@ release. Add a tool name to select part of the graph. For example, run
 
 ## References
 
-- Current Codex source: `/Volumes/Projects/SoftwareReferences/codex`; inspect it before relying on Codex docs.
+- Codex source is cloned on this machine; pull latest main and inspect it before relying on Codex docs.
 - Tests need Bun-native APIs: run `vp run test`, not bare `vp test`.
 - Monorepo packages: `packages/proxy` (Bun CLI/server) and `packages/ui` (React/Tailwind UI).
 
