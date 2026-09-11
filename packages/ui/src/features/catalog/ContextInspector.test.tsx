@@ -191,6 +191,35 @@ describe("ContextInspector", () => {
     expect(screen.getByRole("button", { name: /user message/ })).toBeTruthy();
   });
 
+  it("finds model parts by path and identifier, not just content", async () => {
+    const user = userEvent.setup();
+    const modelSnapshot: ContextSnapshot = {
+      ...snapshot,
+      parts: [
+        snapshot.parts[0]!,
+        {
+          ...snapshot.parts[0]!,
+          id: "model-part",
+          phase: "model",
+          name: "Codex base instructions",
+          path: "model_messages.instructions_template",
+          identifier: "segment:codex_base",
+          text: "You are Codex, an agent.",
+        },
+      ],
+    };
+    render(<ContextInspector snapshot={modelSnapshot} />);
+
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search markdown" }),
+      "instructions_template",
+    );
+
+    expect(screen.getByText("1 matching parts")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Codex base instructions/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /user message/ })).toBeNull();
+  });
+
   it("keeps disabled parts and sections visible and re-enableable", async () => {
     const disabledPart = {
       ...snapshot.parts[0]!,

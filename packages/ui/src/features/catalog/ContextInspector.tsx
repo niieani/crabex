@@ -493,7 +493,9 @@ function partKey(part: ContextPart): string {
 }
 
 function searchableText(part: ContextPart): string {
-  return part.kind === "message" ? part.text : (part.description ?? part.json ?? part.text);
+  const content =
+    part.kind === "message" ? part.text : (part.description ?? part.json ?? part.text);
+  return `${part.name}\n${part.path}\n${part.identifier ?? ""}\n${content}`;
 }
 
 function textRangeForSubstring(text: string, substring: string): TextRange | undefined {
