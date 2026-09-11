@@ -941,6 +941,68 @@ describe("model routing and config bundle override", () => {
     }
   });
 
+  it("answers a bridged generate:false warmup locally without touching the gateway", async () => {
+    process.env.OPENAI_API_KEY = "test-gateway-key";
+    try {
+      let gatewayRequests = 0;
+      const gateway = await startHttpServer((_request, response) => {
+        gatewayRequests += 1;
+        response.statusCode = 500;
+        response.end("should not be called");
+      });
+      const route = modelRouteFromConfig({
+        authorization_env: "OPENAI_API_KEY",
+        model: {
+          description: "GPT-6 Astra via the AI gateway",
+          display_name: "GPT-6 Astra",
+          priority: 1,
+          slug: "gpt-6-astra",
+          template_slug: "gpt-6-astra",
+        },
+        upstream: `${gateway.origin}/openai/v1`,
+        transport: "http",
+        targets: [{ upstream_model: "openai.gpt-6-astra-flex" }],
+      });
+      const captures = new MemoryCaptureSink();
+      const chatgpt = await startWebSocketServer((socket) => {
+        socket.on("message", () => socket.send("chatgpt"));
+      });
+      const proxy = await startRoutingProxy(chatgpt.origin, captures, { routes: [route] });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: { authorization: "Bearer oauth-secret" } },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+
+      client.send(
+        JSON.stringify({ type: "response.create", generate: false, model: "gpt-6-astra" }),
+      );
+
+      const created = JSON.parse(await nextMessage(client)) as {
+        type: string;
+        response: { model: string; status: string };
+      };
+      expect(created.type).toBe("response.created");
+      expect(created.response).toMatchObject({ model: "gpt-6-astra", status: "in_progress" });
+      const completed = JSON.parse(await nextMessage(client)) as {
+        type: string;
+        response: { model: string; status: string };
+      };
+      expect(completed.type).toBe("response.completed");
+      expect(completed.response).toMatchObject({ model: "gpt-6-astra", status: "completed" });
+
+      expect(gatewayRequests).toBe(0);
+      await eventually(() => expect(captures.events.length).toBeGreaterThanOrEqual(3));
+      expect(captures.events[0]).toMatchObject({
+        direction: "client_to_upstream",
+        routing: { action: "routed", requestedModel: "gpt-6-astra" },
+      });
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
   it("sends a wrapped error event when every bridged target is exhausted", async () => {
     process.env.OPENAI_API_KEY = "test-gateway-key";
     try {

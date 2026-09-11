@@ -10,6 +10,34 @@
 const WS_ONLY_REQUEST_FIELDS = new Set(["type", "client_metadata", "generate"]);
 
 /** Strips WebSocket-only envelope fields from a response.create payload. */
+/**
+ * Synthetic frames answering a `generate: false` warmup create locally, so the
+ * handshake never reaches the upstream (a stripped warmup would otherwise bill
+ * a real generation). Frame shape mirrors opencodex's
+ * buildWarmupCompletionFrames (MIT).
+ */
+export function warmupCompletionEvents(model: string): string[] {
+  const baseResponse: Record<string, unknown> = {
+    id: "",
+    object: "response",
+    created_at: Math.floor(Date.now() / 1000),
+    model,
+    output: [],
+  };
+  return [
+    JSON.stringify({
+      type: "response.created",
+      sequence_number: 0,
+      response: { ...baseResponse, status: "in_progress" },
+    }),
+    JSON.stringify({
+      type: "response.completed",
+      sequence_number: 1,
+      response: { ...baseResponse, status: "completed" },
+    }),
+  ];
+}
+
 export function httpPayloadFor(payload: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(payload).filter(([key]) => !WS_ONLY_REQUEST_FIELDS.has(key)),

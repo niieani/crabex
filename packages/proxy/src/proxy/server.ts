@@ -27,6 +27,7 @@ import {
   httpPayloadFor,
   parseSseEvents,
   rewriteResponseModel,
+  warmupCompletionEvents,
   wrappedErrorEvent,
 } from "./responses-bridge.ts";
 import {
@@ -606,6 +607,16 @@ async function runBridgedCreate(
       project: data.project,
       routing,
     });
+
+  // Warmup creates (generate: false) are answered locally: forwarding them
+  // would bill a real generation for a response the client ignores.
+  if (inspected.payload.generate === false) {
+    await recordRequest(routingBase);
+    for (const event of warmupCompletionEvents(inspected.model)) {
+      await queueBridgedMessage(data, event);
+    }
+    return;
+  }
 
   let authorization: string;
   try {

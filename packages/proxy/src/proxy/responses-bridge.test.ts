@@ -4,8 +4,32 @@ import {
   httpPayloadFor,
   parseSseEvents,
   rewriteResponseModel,
+  warmupCompletionEvents,
   wrappedErrorEvent,
 } from "./responses-bridge.ts";
+
+describe("warmupCompletionEvents", () => {
+  it("answers a generate:false create with a local created/completed pair", () => {
+    const [created, completed] = warmupCompletionEvents("gpt-6-astra").map(
+      (event) => JSON.parse(event) as { type: string; response: Record<string, unknown> },
+    );
+
+    expect(created?.type).toBe("response.created");
+    expect(created?.response).toMatchObject({
+      id: "",
+      model: "gpt-6-astra",
+      output: [],
+      status: "in_progress",
+    });
+    expect(completed?.type).toBe("response.completed");
+    expect(completed?.response).toMatchObject({
+      id: "",
+      model: "gpt-6-astra",
+      output: [],
+      status: "completed",
+    });
+  });
+});
 
 describe("httpPayloadFor", () => {
   it("strips WebSocket-only envelope fields", () => {
