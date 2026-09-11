@@ -6,7 +6,12 @@ import type { Transformation } from "../context/transformation.ts";
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
 import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
 import { transformModelDefinitions } from "../context/transform.ts";
-import { decodeBody, transformModelsResponse } from "../routing/model-list.ts";
+import {
+  decodeBody,
+  type ModelDefinition,
+  transformModelsResponse,
+} from "../routing/model-list.ts";
+import { modelsFixture } from "../routing/models-fixture.ts";
 import {
   authorizationFor,
   inspectResponseModel,
@@ -59,6 +64,8 @@ export interface ReverseProxyOptions {
   modelRouteSource?: ModelRouteSource;
   configBundleSource?: ConfigBundleSource;
   upstreamCache?: UpstreamCacheStore;
+  /** Baked-in model catalog; defaults to the packaged fixture. */
+  fixtureModels?: ModelDefinition[];
   project?: string;
   localApi?: LocalApi;
 }
@@ -68,7 +75,7 @@ export interface TransformationSource {
 }
 
 export interface ModelRouteSource {
-  get(): { routes: ModelRoute[]; adjustments: ModelAdjustment[] };
+  get(): { routes: ModelRoute[]; adjustments: ModelAdjustment[]; fixturePins: string[] };
 }
 
 export interface ConfigBundleSource {
@@ -107,8 +114,9 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
   const cookies = new CloudflareCookieJar();
   const transformationSource = options.transformationSource ?? { get: () => [] };
   const modelRouteSource = options.modelRouteSource ?? {
-    get: () => ({ routes: [], adjustments: [] }),
+    get: () => ({ routes: [], adjustments: [], fixturePins: [] }),
   };
+  const fixtureModels = options.fixtureModels ?? modelsFixture();
   const configBundleSource = options.configBundleSource;
   const upstreamCache = options.upstreamCache;
   let lastBundleObservation = 0;
@@ -183,6 +191,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         modelRouteSource,
         upstreamCache,
         options.project,
+        fixtureModels,
       );
     },
     websocket: {
@@ -257,6 +266,7 @@ async function proxyHttpRequest(
   modelRouteSource: ModelRouteSource,
   upstreamCache: UpstreamCacheStore | undefined,
   project: string | undefined,
+  fixtureModels: ModelDefinition[],
 ): Promise<Response> {
   try {
     const declaredLength = Number(request.headers.get("content-length") ?? 0);
@@ -329,17 +339,18 @@ async function proxyHttpRequest(
       headers: downstreamHeaders(response.headers),
     });
     if (isModelsRequest(request.method, requestUrl.pathname)) {
-      return await transformModelsResponse(
-        downstream,
+      return await transformModelsResponse(downstream, {
         routes,
-        routeSet.adjustments,
-        upstreamCache === undefined ? undefined : (body) => upstreamCache.observe("models", body),
-        (models) =>
+        adjustments: routeSet.adjustments,
+        fixture: { models: fixtureModels, pins: routeSet.fixturePins },
+        observe:
+          upstreamCache === undefined ? undefined : (body) => upstreamCache.observe("models", body),
+        applyTransformations: (models) =>
           transformModelDefinitions(models, transformationSource.get(), {
             harness,
             project,
           }).models,
-      );
+      });
     }
     if (isConfigBundleRequest(requestUrl.pathname)) {
       return await observePassthrough(downstream, upstreamCache);

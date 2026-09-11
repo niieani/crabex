@@ -28,16 +28,21 @@ describe("model route store", () => {
     const path = join(directory, "routes.json");
     const store = await openModelRouteStore(path);
 
-    expect(store.get()).toEqual({ routes: [], adjustments: [] });
-    await store.replace({ routes, adjustments: [] });
+    expect(store.get()).toEqual({ routes: [], adjustments: [], fixture_pins: [] });
+    await store.replace({ routes, adjustments: [], fixture_pins: [] });
 
-    expect(store.get()).toEqual({ routes, adjustments: [] });
+    expect(store.get()).toEqual({ routes, adjustments: [], fixture_pins: [] });
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
       version: 1,
       routes,
       adjustments: [],
+      fixture_pins: [],
     });
-    expect((await openModelRouteStore(path)).get()).toEqual({ routes, adjustments: [] });
+    expect((await openModelRouteStore(path)).get()).toEqual({
+      routes,
+      adjustments: [],
+      fixture_pins: [],
+    });
   });
 
   it("round-trips model adjustments", async () => {
@@ -46,9 +51,13 @@ describe("model route store", () => {
     const store = await openModelRouteStore(path);
     const adjustments = [{ slug: "gpt-5.6-terra", overrides: { context_window: 1_000_000 } }];
 
-    await store.replace({ routes, adjustments });
+    await store.replace({ routes, adjustments, fixture_pins: ["gpt-6-astra"] });
 
-    expect((await openModelRouteStore(path)).get()).toEqual({ routes, adjustments });
+    expect((await openModelRouteStore(path)).get()).toEqual({
+      routes,
+      adjustments,
+      fixture_pins: ["gpt-6-astra"],
+    });
   });
 
   it("loads a bare codex-enterprise route array", async () => {
@@ -56,7 +65,11 @@ describe("model route store", () => {
     const path = join(directory, "routes.json");
     await Bun.write(path, JSON.stringify(routes));
 
-    expect((await openModelRouteStore(path)).get()).toEqual({ routes, adjustments: [] });
+    expect((await openModelRouteStore(path)).get()).toEqual({
+      routes,
+      adjustments: [],
+      fixture_pins: [],
+    });
   });
 
   it("rejects malformed persisted configuration", async () => {

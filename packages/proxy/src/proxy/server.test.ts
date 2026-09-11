@@ -13,6 +13,7 @@ import type {
 } from "../config/upstream-cache.ts";
 import type { Transformation } from "../context/transformation.ts";
 import type { ModelAdjustment, ModelRoute } from "../routing/model-routes.ts";
+import type { ModelDefinition } from "../routing/model-list.ts";
 import { sanitizeCloseCode, startReverseProxy, type RunningProxy } from "./server.ts";
 
 class MemoryCaptureSink implements CaptureSink {
@@ -481,6 +482,72 @@ describe("model routing and config bundle override", () => {
     });
   });
 
+  it("advertises a route templated on a fixture-only model", async () => {
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ models: [{ slug: "gpt-5.6-terra" }] }));
+    });
+    const astraRoute: ModelRoute = {
+      ...testRoute("http://127.0.0.1:1"),
+      model: {
+        description: "Astra via another upstream",
+        displayName: "My Astra",
+        overrides: {},
+        priority: 1,
+        slug: "my-astra",
+        templateSlug: "gpt-6-astra",
+      },
+    };
+    const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      routes: [astraRoute],
+    });
+
+    const response = await fetch(`${proxy.origin}/backend-api/codex/models`);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      models: Array<{ slug: string; model_messages?: Record<string, unknown> }>;
+    };
+    expect(body.models.map((model) => model.slug)).toEqual(["my-astra", "gpt-5.6-terra"]);
+    // Cloned from the baked-in gpt-6-astra fixture, including its model_messages.
+    expect(body.models[0]?.model_messages).toHaveProperty("persistent_instructions");
+    expect(body.models[0]?.model_messages).toHaveProperty("guardian_v2");
+  });
+
+  it("serves the fixture version of a pinned upstream model", async () => {
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          models: [{ slug: "gpt-5.6-terra", display_name: "GPT-5.6 Terra (upstream)" }],
+        }),
+      );
+    });
+    const fixtureModels: ModelDefinition[] = [
+      { slug: "gpt-5.6-terra", display_name: "GPT-5.6 Terra (fixture)" },
+    ];
+    const pinned = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      fixtureModels,
+      fixturePins: ["gpt-5.6-terra"],
+    });
+
+    const pinnedResponse = await fetch(`${pinned.origin}/backend-api/codex/models`);
+    expect(pinnedResponse.status).toBe(200);
+    const pinnedBody = (await pinnedResponse.json()) as {
+      models: Array<{ display_name: string }>;
+    };
+    expect(pinnedBody.models[0]?.display_name).toBe("GPT-5.6 Terra (fixture)");
+
+    const unpinned = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      fixtureModels,
+    });
+    const unpinnedResponse = await fetch(`${unpinned.origin}/backend-api/codex/models`);
+    const unpinnedBody = (await unpinnedResponse.json()) as {
+      models: Array<{ display_name: string }>;
+    };
+    expect(unpinnedBody.models[0]?.display_name).toBe("GPT-5.6 Terra (upstream)");
+  });
+
   it("observes the upstream models response and applies adjustments", async () => {
     const chatgpt = await startHttpServer((_request, response) => {
       response.setHeader("content-type", "application/json");
@@ -748,6 +815,8 @@ async function startRoutingProxy(
   options: {
     routes?: ModelRoute[];
     adjustments?: ModelAdjustment[];
+    fixturePins?: string[];
+    fixtureModels?: ModelDefinition[];
     bundleOverride?: ConfigBundleOverride;
     upstreamCache?: MemoryUpstreamCache;
     transformations?: Transformation[];
@@ -760,8 +829,13 @@ async function startRoutingProxy(
     captureSink,
     transformationSource: { get: () => options.transformations ?? [] },
     modelRouteSource: {
-      get: () => ({ routes: options.routes ?? [], adjustments: options.adjustments ?? [] }),
+      get: () => ({
+        routes: options.routes ?? [],
+        adjustments: options.adjustments ?? [],
+        fixturePins: options.fixturePins ?? [],
+      }),
     },
+    ...(options.fixtureModels === undefined ? {} : { fixtureModels: options.fixtureModels }),
     configBundleSource: {
       get: () => options.bundleOverride ?? { version: 1, enabled: false, bundle: null },
     },

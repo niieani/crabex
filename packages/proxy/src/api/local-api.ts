@@ -9,6 +9,7 @@ import {
 import type { ModelRouteStore } from "../config/model-route-store.ts";
 import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
 import { parseModelRouteSet } from "../routing/model-routes.ts";
+import { modelsFixture } from "../routing/models-fixture.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
 
 const API_PREFIX = "/__agent-context-trimmer/api";
@@ -44,6 +45,9 @@ export function createLocalApi(options: {
         }
         if (url.pathname === `${API_PREFIX}/upstream-cache` && request.method === "GET") {
           return json(options.upstreamCache.get());
+        }
+        if (url.pathname === `${API_PREFIX}/models-fixture` && request.method === "GET") {
+          return json({ models: modelsFixture() });
         }
         if (url.pathname === `${API_PREFIX}/preview` && request.method === "POST") {
           const body = (await request.json()) as Record<string, unknown>;

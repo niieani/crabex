@@ -4,17 +4,36 @@ export type ModelDefinition = Record<string, unknown> & { slug: string };
 
 type ModelsResponse = Record<string, unknown> & { models: ModelDefinition[] };
 
+/**
+ * Fixture integration for the models list: `pins` are slugs served from the
+ * baked-in fixture instead of the fetched upstream definition, and fixture
+ * models act as template fallbacks for routes whose template slug is not in
+ * the upstream list at all.
+ */
+export interface ModelsFixtureOptions {
+  models: ModelDefinition[];
+  pins?: readonly string[];
+}
+
 export function transformModels(
   response: unknown,
   modelRoutes: readonly ModelRoute[],
   adjustments: readonly ModelAdjustment[] = [],
+  fixture?: ModelsFixtureOptions,
 ): ModelsResponse {
   if (!isRecord(response)) {
     throw new Error("upstream /models response must be a JSON object");
   }
 
-  const upstreamModels = modelDefinitions(response.models, "upstream /models response.models");
+  const fixtureBySlug = new Map((fixture?.models ?? []).map((model) => [model.slug, model]));
+  const pins = new Set(fixture?.pins ?? []);
+  const upstreamModels = modelDefinitions(response.models, "upstream /models response.models").map(
+    (model) => (pins.has(model.slug) ? (fixtureBySlug.get(model.slug) ?? model) : model),
+  );
   const templates = new Map(upstreamModels.map((model) => [model.slug, model]));
+  for (const fixtureModel of fixture?.models ?? []) {
+    if (!templates.has(fixtureModel.slug)) templates.set(fixtureModel.slug, fixtureModel);
+  }
   const advertisedSlugs = new Set<string>();
   const advertisedModels = modelRoutes.map((route) => {
     if (advertisedSlugs.has(route.model.slug)) {
@@ -60,16 +79,25 @@ export function transformModels(
   };
 }
 
+export interface TransformModelsResponseOptions {
+  routes?: readonly ModelRoute[];
+  adjustments?: readonly ModelAdjustment[];
+  fixture?: ModelsFixtureOptions;
+  observe?: (body: unknown) => Promise<void> | void;
+  applyTransformations?: (models: ModelDefinition[]) => ModelDefinition[];
+}
+
 export async function transformModelsResponse(
   response: Response,
-  routes: readonly ModelRoute[],
-  adjustments: readonly ModelAdjustment[] = [],
-  observe?: (body: unknown) => Promise<void> | void,
-  applyTransformations?: (models: ModelDefinition[]) => ModelDefinition[],
+  options: TransformModelsResponseOptions = {},
 ): Promise<Response> {
   if (!response.ok) {
     return response;
   }
+  const routes = options.routes ?? [];
+  const adjustments = options.adjustments ?? [];
+  const observe = options.observe;
+  const applyTransformations = options.applyTransformations;
   const bytes = new Uint8Array(await response.arrayBuffer());
   const passthrough = () =>
     new Response(bytes, {
@@ -77,7 +105,8 @@ export async function transformModelsResponse(
       statusText: response.statusText,
       headers: response.headers,
     });
-  const hasListTransforms = routes.length > 0 || adjustments.length > 0;
+  const hasListTransforms =
+    routes.length > 0 || adjustments.length > 0 || (options.fixture?.pins?.length ?? 0) > 0;
   let body: unknown;
   try {
     const contentEncoding = response.headers.get("content-encoding")?.toLowerCase() ?? "identity";
@@ -98,7 +127,7 @@ export async function transformModelsResponse(
   let transformed: unknown = body;
   if (hasListTransforms) {
     try {
-      transformed = transformModels(body, routes, adjustments);
+      transformed = transformModels(body, routes, adjustments, options.fixture);
     } catch (error) {
       const detail = error instanceof Error ? error.message : "unknown error";
       return new Response(`Could not advertise routed models: ${detail}`, { status: 502 });

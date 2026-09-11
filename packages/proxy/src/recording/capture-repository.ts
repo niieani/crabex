@@ -17,6 +17,7 @@ import {
 import type { Transformation, TransformationTelemetry } from "../context/transformation.ts";
 import { modelRouteFromConfig } from "../routing/model-routes.ts";
 import { transformModels, type ModelDefinition } from "../routing/model-list.ts";
+import { modelsFixture } from "../routing/models-fixture.ts";
 import type { CaptureEvent, FullCaptureEvent } from "./capture.ts";
 
 export interface RoutingTelemetry {
@@ -45,6 +46,8 @@ export interface CaptureRepositoryCollaborators {
   upstreamCache?: UpstreamCacheStore;
   modelRoutes?: ModelRouteStore;
   transformations?: TransformationStore;
+  /** Baked-in model catalog; defaults to the packaged fixture. */
+  fixtureModels?: ModelDefinition[];
 }
 
 export class FileCaptureRepository implements SnapshotSource {
@@ -137,15 +140,28 @@ export class FileCaptureRepository implements SnapshotSource {
     transformations: Transformation[],
   ): Promise<SnapshotModelContext | undefined> {
     const observed = this.#collaborators.upstreamCache?.get().models?.body;
-    const original = observedModels(observed);
-    if (original === undefined) return undefined;
-    const set = this.#collaborators.modelRoutes?.get() ?? { routes: [], adjustments: [] };
+    const observedList = observedModels(observed) ?? [];
+    const fixtureModels = this.#collaborators.fixtureModels ?? modelsFixture();
+    const observedSlugs = new Set(observedList.map((model) => model.slug));
+    // Observed upstream models win; fixture-only models are appended so their
+    // strings still appear in the catalog (and can template routes).
+    const original = [
+      ...observedList,
+      ...fixtureModels.filter((model) => !observedSlugs.has(model.slug)),
+    ];
+    if (original.length === 0) return undefined;
+    const set = this.#collaborators.modelRoutes?.get() ?? {
+      routes: [],
+      adjustments: [],
+      fixture_pins: [],
+    };
     let effective: ModelDefinition[];
     try {
       effective = transformModels(
         { models: original },
         set.routes.map(modelRouteFromConfig),
         set.adjustments,
+        { models: fixtureModels, pins: set.fixture_pins },
       ).models;
     } catch {
       // A broken route set must not break the catalog; show unadjusted models.

@@ -5,12 +5,14 @@ import { EmptyState } from "../features/catalog/ContextInspector.tsx";
 import {
   getModelRouteEnvStatus,
   getModelRoutes,
+  getModelsFixture,
   getRoutingTelemetry,
   getUpstreamCache,
   putModelRoutes,
 } from "../lib/api.ts";
 import type {
   ModelAdjustment,
+  ModelDefinition,
   ModelRouteConfig,
   ModelRouteSet,
   RoutingTelemetry,
@@ -33,6 +35,12 @@ export function ModelRoutesPage() {
   });
   const upstreamModels = modelDefinitions(upstreamQuery.data?.models?.body);
   const upstreamFetchedAt = upstreamQuery.data?.models?.fetchedAt;
+  const fixtureQuery = useQuery({ queryKey: ["models-fixture"], queryFn: getModelsFixture });
+  const fixtureModels = fixtureQuery.data?.models ?? [];
+  const fixtureBySlug = new Map(fixtureModels.map((model) => [model.slug, model]));
+  const fixtureOnlyModels = fixtureModels.filter(
+    (model) => !upstreamModels.some((upstream) => upstream.slug === model.slug),
+  );
   const mutation = useMutation({
     mutationFn: putModelRoutes,
     onSuccess: (set) => {
@@ -62,6 +70,13 @@ export function ModelRoutesPage() {
     replace({
       ...set,
       adjustments: (set.adjustments ?? []).filter((item) => item.slug !== slug),
+    });
+  const togglePin = (slug: string) =>
+    replace({
+      ...set,
+      fixture_pins: (set.fixture_pins ?? []).includes(slug)
+        ? (set.fixture_pins ?? []).filter((pin) => pin !== slug)
+        : [...(set.fixture_pins ?? []), slug],
     });
 
   return (
@@ -137,12 +152,42 @@ export function ModelRoutesPage() {
                 <UpstreamModelCard
                   key={model.slug}
                   model={model}
+                  fixtureModel={fixtureBySlug.get(model.slug)}
+                  pinned={(set.fixture_pins ?? []).includes(model.slug)}
+                  onTogglePin={() => togglePin(model.slug)}
                   adjustment={(set.adjustments ?? []).find((item) => item.slug === model.slug)}
                   onSave={saveAdjustment}
                   onRemove={removeAdjustment}
                   pending={mutation.isPending}
                 />
               ))}
+            </div>
+          )}
+          {fixtureOnlyModels.length === 0 ? null : (
+            <div className="mt-6">
+              <p className="section-label">Baked-in fixture</p>
+              <p className="mt-2 max-w-xl text-sm leading-6 text-muted">
+                Models packaged with the proxy that the upstream did not advertise. They are not
+                served directly, but any of their slugs can be used as a route template.
+              </p>
+              <div className="mt-3 space-y-2">
+                {fixtureOnlyModels.map((model) => (
+                  <article
+                    key={model.slug}
+                    className="rounded-xl border border-line/60 bg-panel/40 p-4"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <h3 className="truncate text-sm font-semibold">
+                        {typeof model.display_name === "string" ? model.display_name : model.slug}
+                      </h3>
+                      <div className="flex flex-wrap gap-1.5 text-[10px] text-muted">
+                        <Tag>{model.slug}</Tag>
+                        <Tag>fixture only</Tag>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
             </div>
           )}
           {(set.adjustments ?? [])
@@ -170,7 +215,15 @@ export function ModelRoutesPage() {
           The advertised model clones an upstream template. Requests naming the slug are rewritten
           to the upstream model and sent with the named env var as bearer token.
         </p>
-        <RouteEditor onCreate={add} />
+        <RouteEditor
+          onCreate={add}
+          templateSlugs={[
+            ...new Set([
+              ...upstreamModels.map((model) => model.slug),
+              ...fixtureModels.map((model) => model.slug),
+            ]),
+          ]}
+        />
       </aside>
     </div>
   );
@@ -254,12 +307,18 @@ type UpstreamModel = Record<string, unknown> & { slug: string };
 
 function UpstreamModelCard({
   model,
+  fixtureModel,
+  pinned,
+  onTogglePin,
   adjustment,
   onSave,
   onRemove,
   pending,
 }: {
   model: UpstreamModel;
+  fixtureModel?: ModelDefinition;
+  pinned: boolean;
+  onTogglePin: () => void;
   adjustment?: ModelAdjustment;
   onSave: (adjustment: ModelAdjustment) => void;
   onRemove: (slug: string) => void;
@@ -268,9 +327,10 @@ function UpstreamModelCard({
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
   const [error, setError] = useState("");
+  const base = pinned && fixtureModel !== undefined ? fixtureModel : model;
   const effective =
-    adjustment === undefined ? model : (deepMerge(model, adjustment.overrides) as UpstreamModel);
-  const displayName = typeof model.display_name === "string" ? model.display_name : model.slug;
+    adjustment === undefined ? base : (deepMerge(base, adjustment.overrides) as UpstreamModel);
+  const displayName = typeof base.display_name === "string" ? base.display_name : base.slug;
 
   function openEditor() {
     setText(adjustment === undefined ? "{}" : JSON.stringify(adjustment.overrides, null, 2));
@@ -303,10 +363,28 @@ function UpstreamModelCard({
             {fieldTag(effective, "visibility")}
             {fieldTag(effective, "priority")}
             {fieldTag(effective, "default_reasoning_level")}
+            {pinned ? <Tag>fixture</Tag> : null}
             {adjustment === undefined ? null : <Tag>adjusted</Tag>}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {fixtureModel === undefined ? null : (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={onTogglePin}
+              title={
+                pinned
+                  ? "Serve the fetched upstream version of this model"
+                  : "Serve the baked-in fixture version of this model"
+              }
+              className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${
+                pinned ? "bg-accent-dim text-accent" : "bg-canvas text-muted hover:text-ink"
+              }`}
+            >
+              {pinned ? "Fixture version" : "Upstream version"}
+            </button>
+          )}
           {adjustment === undefined ? null : (
             <button
               type="button"
@@ -351,12 +429,22 @@ function UpstreamModelCard({
       ) : null}
       <details className="mt-3">
         <summary className="cursor-pointer text-[10px] uppercase tracking-[0.12em] text-muted">
-          Original
+          Upstream original
         </summary>
         <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-canvas px-3 py-2 font-mono text-[10px] text-content">
           {JSON.stringify(model, null, 2)}
         </pre>
       </details>
+      {fixtureModel === undefined ? null : (
+        <details className="mt-2" open={pinned}>
+          <summary className="cursor-pointer text-[10px] uppercase tracking-[0.12em] text-muted">
+            Fixture version
+          </summary>
+          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-canvas px-3 py-2 font-mono text-[10px] text-content">
+            {JSON.stringify(fixtureModel, null, 2)}
+          </pre>
+        </details>
+      )}
       {adjustment === undefined ? null : (
         <details className="mt-2" open>
           <summary className="cursor-pointer text-[10px] uppercase tracking-[0.12em] text-accent">
@@ -405,7 +493,13 @@ function deepMerge(base: unknown, overrides: unknown): unknown {
   return merged;
 }
 
-function RouteEditor({ onCreate }: { onCreate: (route: ModelRouteConfig) => void }) {
+function RouteEditor({
+  onCreate,
+  templateSlugs,
+}: {
+  onCreate: (route: ModelRouteConfig) => void;
+  templateSlugs: string[];
+}) {
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [description, setDescription] = useState("");
@@ -475,6 +569,7 @@ function RouteEditor({ onCreate }: { onCreate: (route: ModelRouteConfig) => void
             onChange={(event) => setTemplateSlug(event.target.value)}
             className="input font-mono"
             placeholder="gpt-5.6-terra"
+            list="route-template-slugs"
           />
         </Field>
       </div>
@@ -557,6 +652,11 @@ function RouteEditor({ onCreate }: { onCreate: (route: ModelRouteConfig) => void
       >
         Add route
       </button>
+      <datalist id="route-template-slugs">
+        {templateSlugs.map((slug) => (
+          <option key={slug} value={slug} />
+        ))}
+      </datalist>
     </form>
   );
 }
@@ -576,6 +676,7 @@ function Tag({ children }: { children: React.ReactNode }) {
 
 function updateRoute(set: ModelRouteSet, index: number, replacement: ModelRouteConfig) {
   return {
+    ...set,
     version: 1 as const,
     routes: set.routes.map((route, i) => (i === index ? replacement : route)),
   };

@@ -34,6 +34,8 @@ export interface ModelAdjustment {
 export interface ModelRouteSetData {
   routes: ModelRouteConfig[];
   adjustments: ModelAdjustment[];
+  /** Slugs served from the baked-in fixture instead of the fetched upstream list. */
+  fixture_pins: string[];
 }
 
 export interface AdvertisedModel {
@@ -61,6 +63,9 @@ export function parseModelRouteSet(value: unknown): ModelRouteSetData {
     routes: set.routes.map((route, index) => routeConfig(route, `route[${index}]`)),
     adjustments: set.adjustments.map((adjustment, index) =>
       adjustmentConfig(adjustment, `adjustment[${index}]`),
+    ),
+    fixture_pins: set.fixturePins.map((pin, index) =>
+      nonEmptyString(pin, `fixture_pins[${index}]`),
     ),
   };
 }
@@ -136,14 +141,25 @@ export function inspectResponseModel(
   return undefined;
 }
 
-function routeSetValue(value: unknown): { routes: unknown[]; adjustments: unknown[] } {
-  if (Array.isArray(value)) return { routes: value, adjustments: [] };
+function routeSetValue(value: unknown): {
+  routes: unknown[];
+  adjustments: unknown[];
+  fixturePins: unknown[];
+} {
+  if (Array.isArray(value)) return { routes: value, adjustments: [], fixturePins: [] };
   const set = objectValue(value);
   if (set?.version === 1 && Array.isArray(set.routes)) {
     if (set.adjustments !== undefined && !Array.isArray(set.adjustments)) {
       throw new Error("model route set adjustments must be an array");
     }
-    return { routes: set.routes, adjustments: set.adjustments ?? [] };
+    if (set.fixture_pins !== undefined && !Array.isArray(set.fixture_pins)) {
+      throw new Error("model route set fixture_pins must be an array");
+    }
+    return {
+      routes: set.routes,
+      adjustments: set.adjustments ?? [],
+      fixturePins: set.fixture_pins ?? [],
+    };
   }
   throw new Error("unsupported model route set");
 }

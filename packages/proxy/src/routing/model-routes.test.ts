@@ -35,7 +35,27 @@ describe("parseModelRouteSet", () => {
     expect(parseModelRouteSet({ version: 1, routes: routeConfig })).toEqual({
       routes: routeConfig,
       adjustments: [],
+      fixture_pins: [],
     });
+  });
+
+  it("parses fixture pins from a versioned set", () => {
+    const parsed = parseModelRouteSet({
+      version: 1,
+      routes: routeConfig,
+      fixture_pins: ["gpt-6-astra"],
+    });
+
+    expect(parsed.fixture_pins).toEqual(["gpt-6-astra"]);
+  });
+
+  it("rejects malformed fixture pins", () => {
+    expect(() => parseModelRouteSet({ version: 1, routes: [], fixture_pins: ["", 7] })).toThrow(
+      "fixture_pins[0] must be a non-empty string",
+    );
+    expect(() => parseModelRouteSet({ version: 1, routes: [], fixture_pins: "gpt" })).toThrow(
+      "model route set fixture_pins must be an array",
+    );
   });
 
   it("parses model adjustments from a versioned set", () => {
@@ -69,7 +89,11 @@ describe("parseModelRouteSet", () => {
   });
 
   it("accepts a bare route array in the codex-enterprise file format", () => {
-    expect(parseModelRouteSet(routeConfig)).toEqual({ routes: routeConfig, adjustments: [] });
+    expect(parseModelRouteSet(routeConfig)).toEqual({
+      routes: routeConfig,
+      adjustments: [],
+      fixture_pins: [],
+    });
   });
 
   it("rejects lifecycle metadata overrides", () => {

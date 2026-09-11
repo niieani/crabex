@@ -10,7 +10,7 @@ export interface ModelRouteStore {
 }
 
 export async function openModelRouteStore(filePath: string): Promise<ModelRouteStore> {
-  let initial: ModelRouteSetData = { routes: [], adjustments: [] };
+  let initial: ModelRouteSetData = { routes: [], adjustments: [], fixture_pins: [] };
   try {
     initial = parseModelRouteSet(JSON.parse(await readFile(filePath, "utf8")));
   } catch (error) {

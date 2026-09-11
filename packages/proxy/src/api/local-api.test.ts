@@ -31,7 +31,7 @@ function stubSources(overrides: {
   let bundle = overrides.bundle ?? { version: 1 as const, enabled: false, bundle: null };
   return {
     modelRoutes: {
-      get: () => ({ routes, adjustments: [] }),
+      get: () => ({ routes, adjustments: [], fixture_pins: [] }),
       replace: async (next: ModelRouteSetData) => {
         routes = next.routes;
         overrides.onReplaceRoutes?.(next.routes);
@@ -245,7 +245,12 @@ describe("local context API", () => {
     const listed = await api.handle(
       new Request("http://localhost/__agent-context-trimmer/api/model-routes"),
     );
-    expect(await listed?.json()).toEqual({ version: 1, routes: routeConfigs, adjustments: [] });
+    expect(await listed?.json()).toEqual({
+      version: 1,
+      routes: routeConfigs,
+      adjustments: [],
+      fixture_pins: [],
+    });
 
     delete process.env.ACT_TEST_ROUTE_KEY;
     const missing = await api.handle(

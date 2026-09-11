@@ -61,7 +61,11 @@ async function main(): Promise<void> {
     modelRouteSource: {
       get: () => {
         const set = modelRouteStore.get();
-        return { routes: set.routes.map(modelRouteFromConfig), adjustments: set.adjustments };
+        return {
+          routes: set.routes.map(modelRouteFromConfig),
+          adjustments: set.adjustments,
+          fixturePins: set.fixture_pins,
+        };
       },
     },
     configBundleSource: { get: () => configBundleStore.get() },

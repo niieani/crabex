@@ -147,7 +147,7 @@ describe("transformModelsResponse", () => {
       },
     });
 
-    const response = await transformModelsResponse(upstream, [route]);
+    const response = await transformModelsResponse(upstream, { routes: [route] });
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-length")).toBeNull();
@@ -159,7 +159,7 @@ describe("transformModelsResponse", () => {
   it("passes through non-OK upstream responses unchanged", async () => {
     const upstream = new Response("rate limited", { status: 429 });
 
-    const response = await transformModelsResponse(upstream, [route]);
+    const response = await transformModelsResponse(upstream, { routes: [route] });
 
     expect(response.status).toBe(429);
     expect(await response.text()).toBe("rate limited");
@@ -168,7 +168,7 @@ describe("transformModelsResponse", () => {
   it("fails with 502 when the upstream model list cannot be decorated", async () => {
     const upstream = new Response("not json", { status: 200 });
 
-    const response = await transformModelsResponse(upstream, [route]);
+    const response = await transformModelsResponse(upstream, { routes: [route] });
 
     expect(response.status).toBe(502);
     expect(await response.text()).toContain("Could not advertise routed models");
@@ -181,8 +181,10 @@ describe("transformModelsResponse", () => {
     });
     const observed: unknown[] = [];
 
-    const response = await transformModelsResponse(upstream, [], [], async (body) => {
-      observed.push(body);
+    const response = await transformModelsResponse(upstream, {
+      observe: async (body) => {
+        observed.push(body);
+      },
     });
 
     expect(observed).toEqual([{ models: [template] }]);
@@ -193,14 +195,12 @@ describe("transformModelsResponse", () => {
     const upstream = new Response(JSON.stringify({ models: [template] }), { status: 200 });
     const observed: unknown[] = [];
 
-    const response = await transformModelsResponse(
-      upstream,
-      [],
-      [{ slug: "gpt-5.6-terra", overrides: { context_window: 1 } }],
-      async (body) => {
+    const response = await transformModelsResponse(upstream, {
+      adjustments: [{ slug: "gpt-5.6-terra", overrides: { context_window: 1 } }],
+      observe: async (body) => {
         observed.push(body);
       },
-    );
+    });
 
     expect(observed).toEqual([{ models: [template] }]);
     const body = (await response.json()) as { models: Array<{ context_window: number }> };
@@ -210,9 +210,84 @@ describe("transformModelsResponse", () => {
   it("passes non-JSON bodies through when nothing is configured", async () => {
     const upstream = new Response("not json", { status: 200 });
 
-    const response = await transformModelsResponse(upstream, []);
+    const response = await transformModelsResponse(upstream);
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("not json");
+  });
+
+  it("serves the fixture version of pinned slugs", async () => {
+    const upstream = new Response(JSON.stringify({ models: [template] }), { status: 200 });
+    const fixtureModel = { ...template, display_name: "GPT-5.6 Terra (fixture)" };
+
+    const response = await transformModelsResponse(upstream, {
+      fixture: { models: [fixtureModel], pins: ["gpt-5.6-terra"] },
+    });
+
+    const body = (await response.json()) as { models: Array<{ display_name: string }> };
+    expect(body.models).toHaveLength(1);
+    expect(body.models[0]?.display_name).toBe("GPT-5.6 Terra (fixture)");
+  });
+
+  it("keeps the upstream version when the slug is not pinned", async () => {
+    const upstream = new Response(JSON.stringify({ models: [template] }), { status: 200 });
+    const fixtureModel = { ...template, display_name: "GPT-5.6 Terra (fixture)" };
+
+    const response = await transformModelsResponse(upstream, {
+      fixture: { models: [fixtureModel], pins: [] },
+    });
+
+    const body = (await response.json()) as { models: Array<{ display_name: string }> };
+    expect(body.models[0]?.display_name).toBe("GPT-5.6 Terra");
+  });
+
+  it("keeps the upstream version when the pinned slug is absent from the fixture", async () => {
+    const upstream = new Response(JSON.stringify({ models: [template] }), { status: 200 });
+
+    const response = await transformModelsResponse(upstream, {
+      fixture: { models: [], pins: ["gpt-5.6-terra"] },
+    });
+
+    const body = (await response.json()) as { models: Array<{ display_name: string }> };
+    expect(body.models[0]?.display_name).toBe("GPT-5.6 Terra");
+  });
+
+  it("allows routes templated on fixture-only models", async () => {
+    const astraRoute: ModelRoute = {
+      ...route,
+      model: {
+        ...route.model,
+        slug: "my-astra",
+        templateSlug: "gpt-6-astra",
+        overrides: {},
+      },
+    };
+    const astra = { slug: "gpt-6-astra", display_name: "GPT-6 Astra" };
+    const upstream = new Response(JSON.stringify({ models: [template] }), { status: 200 });
+
+    const response = await transformModelsResponse(upstream, {
+      routes: [astraRoute],
+      fixture: { models: [astra] },
+    });
+
+    const body = (await response.json()) as { models: Array<{ slug: string }> };
+    expect(body.models.map((model) => model.slug)).toEqual(["my-astra", "gpt-5.6-terra"]);
+  });
+
+  it("still rejects fixture-templated routes when no fixture is provided", async () => {
+    const astraRoute: ModelRoute = {
+      ...route,
+      model: {
+        ...route.model,
+        slug: "my-astra",
+        templateSlug: "gpt-6-astra",
+        overrides: {},
+      },
+    };
+    const upstream = new Response(JSON.stringify({ models: [template] }), { status: 200 });
+
+    const response = await transformModelsResponse(upstream, { routes: [astraRoute] });
+
+    expect(response.status).toBe(502);
   });
 });

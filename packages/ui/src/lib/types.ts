@@ -144,6 +144,13 @@ export interface ModelRouteSet {
   version: 1;
   routes: ModelRouteConfig[];
   adjustments?: ModelAdjustment[];
+  fixture_pins?: string[];
+}
+
+export type ModelDefinition = Record<string, unknown> & { slug: string };
+
+export interface ModelsFixture {
+  models: ModelDefinition[];
 }
 
 export interface UpstreamObservation {

@@ -3,6 +3,7 @@ import type {
   ConfigBundleOverride,
   ContextSnapshot,
   ModelRouteSet,
+  ModelsFixture,
   RoutingTelemetry,
   TransformationSet,
   TransformationTelemetry,
@@ -74,6 +75,11 @@ export async function putModelRoutes(set: ModelRouteSet): Promise<ModelRouteSet>
 export async function getModelRouteEnvStatus(): Promise<Record<string, boolean>> {
   const response = await request(`${API}/model-routes/env-status`);
   return ((await response.json()) as { env: Record<string, boolean> }).env;
+}
+
+export async function getModelsFixture(): Promise<ModelsFixture> {
+  const response = await request(`${API}/models-fixture`);
+  return (await response.json()) as ModelsFixture;
 }
 
 export async function getConfigBundle(): Promise<ConfigBundleOverride> {

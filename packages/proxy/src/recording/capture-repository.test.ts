@@ -187,6 +187,7 @@ describe("file capture repository", () => {
         get: () => ({
           routes: [],
           adjustments: [{ slug: "gpt-5.6-luna", overrides: { context_window: 200_000 } }],
+          fixture_pins: [],
         }),
         replace: async () => {},
       },
@@ -215,6 +216,99 @@ describe("file capture repository", () => {
       identifier: "segment:codex_base",
       text: "You are Codex, an agent based on GPT-5. Be terse.",
       originalText: "You are Codex, an agent based on GPT-5. Be helpful.",
+    });
+  });
+
+  it("derives model parts for fixture-only models without an upstream observation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
+    await writeFile(
+      join(directory, "capture.ndjson"),
+      `${JSON.stringify(
+        event(1, "client_to_upstream", {
+          type: "response.create",
+          model: "gpt-6-astra",
+          input: [message("user", "hi")],
+        }),
+      )}\n`,
+    );
+    const repository = new FileCaptureRepository(directory, {
+      fixtureModels: [
+        {
+          slug: "gpt-6-astra",
+          model_messages: {
+            instructions_template: "You are Codex, an agent based on GPT-6. Be helpful.",
+            guardian_v2: { classifier_instructions: "Classify every tool call." },
+          },
+        },
+      ],
+    });
+
+    const snapshots = await repository.list();
+
+    const modelParts = (snapshots[0]?.parts ?? []).filter((part) => part.phase === "model");
+    expect(modelParts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identifier: "segment:codex_base",
+          text: "You are Codex, an agent based on GPT-6. Be helpful.",
+        }),
+        expect.objectContaining({
+          path: "model_messages.guardian_v2.classifier_instructions",
+          text: "Classify every tool call.",
+        }),
+      ]),
+    );
+  });
+
+  it("diffs a pinned model's fixture version against the observed upstream original", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
+    await writeFile(
+      join(directory, "capture.ndjson"),
+      `${JSON.stringify(
+        event(1, "client_to_upstream", {
+          type: "response.create",
+          model: "gpt-5.6-luna",
+          input: [message("user", "hi")],
+        }),
+      )}\n`,
+    );
+    const repository = new FileCaptureRepository(directory, {
+      upstreamCache: {
+        get: () => ({
+          models: {
+            fetchedAt: new Date(0).toISOString(),
+            body: {
+              models: [
+                {
+                  slug: "gpt-5.6-luna",
+                  model_messages: { instructions_template: "You are Codex, upstream base." },
+                },
+              ],
+            },
+          },
+        }),
+        observe: async () => {},
+      },
+      fixtureModels: [
+        {
+          slug: "gpt-5.6-luna",
+          model_messages: { instructions_template: "You are Codex, fixture base." },
+        },
+      ],
+      modelRoutes: {
+        get: () => ({ routes: [], adjustments: [], fixture_pins: ["gpt-5.6-luna"] }),
+        replace: async () => {},
+      },
+    });
+
+    const snapshots = await repository.list();
+
+    const modelPart = snapshots[0]?.parts.find(
+      (part) => part.phase === "model" && part.identifier === "segment:codex_base",
+    );
+    expect(modelPart).toMatchObject({
+      text: "You are Codex, fixture base.",
+      originalText: "You are Codex, upstream base.",
     });
   });
 
