@@ -15,6 +15,7 @@ import { TargetBreakers } from "./routing/failover.ts";
 import { modelRouteFromConfig } from "./routing/model-routes.ts";
 import { FileCaptureRepository } from "./recording/capture-repository.ts";
 import { openNdjsonCaptureSink } from "./recording/ndjson-capture-sink.ts";
+import { StatsStore } from "./recording/stats-store.ts";
 
 const HELP = `Usage:
   agent-context-trimmer proxy [options]
@@ -33,6 +34,11 @@ Options:
   --upstream-cache <file>
                         Last observed upstream models/bundle responses
                         (default: .agent-context-trimmer/upstream-cache.json)
+  --stats <file>        Persisted telemetry counters
+                        (default: .agent-context-trimmer/stats.json)
+  --snapshot-cache <file>
+                        Context snapshot disk cache
+                        (default: .agent-context-trimmer/snapshot-cache.json)
   --project <key>       Optional project scope for captures and transformations
 `;
 
@@ -50,6 +56,17 @@ async function main(): Promise<void> {
   const modelRouteStore = await openModelRouteStore(options.modelRoutesPath);
   const configBundleStore = await openConfigBundleStore(options.configBundlePath);
   const upstreamCacheStore = await openUpstreamCacheStore(options.upstreamCachePath);
+  const statsStore = await StatsStore.open(options.statsPath);
+  const snapshotRepository = new FileCaptureRepository(
+    options.capturesDirectory,
+    {
+      upstreamCache: upstreamCacheStore,
+      modelRoutes: modelRouteStore,
+      transformations: transformationStore,
+    },
+    { path: options.snapshotCachePath },
+  );
+  await snapshotRepository.load();
   const targetBreakers = new TargetBreakers();
   const proxyOrigin = `http://${
     options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host
@@ -73,18 +90,16 @@ async function main(): Promise<void> {
     configBundleSource: { get: () => configBundleStore.get() },
     upstreamCache: upstreamCacheStore,
     breakers: targetBreakers,
+    stats: statsStore,
     project: options.project,
     localApi: createLocalApi({
-      snapshots: new FileCaptureRepository(options.capturesDirectory, {
-        upstreamCache: upstreamCacheStore,
-        modelRoutes: modelRouteStore,
-        transformations: transformationStore,
-      }),
+      snapshots: snapshotRepository,
       transformations: transformationStore,
       modelRoutes: modelRouteStore,
       configBundle: configBundleStore,
       upstreamCache: upstreamCacheStore,
       breakers: targetBreakers,
+      stats: statsStore,
       codexConfig: createCodexConfigManager({
         configPath: options.codexConfigPath,
         proxyOrigin,
@@ -96,6 +111,8 @@ async function main(): Promise<void> {
   await waitForShutdownSignal();
   await proxy.close();
   await captureSink.close();
+  await statsStore.flush();
+  await snapshotRepository.flush();
 }
 
 function captureFileName(): string {

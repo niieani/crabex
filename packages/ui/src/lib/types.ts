@@ -56,11 +56,25 @@ export interface CaptureRouting {
   attempts?: CaptureRoutingAttempt[];
 }
 
+export interface RouteTargetStats {
+  attempts: number;
+  served: number;
+  failed: number;
+  totalLatencyMs: number;
+  avgLatencyMs?: number;
+  lastStatus?: number;
+  lastSeenAt: string;
+}
+
 export interface RoutingTelemetry {
   action: string;
   routeSlug?: string;
   count: number;
   lastSeenAt: string;
+  served?: number;
+  failed?: number;
+  avgLatencyMs?: number;
+  targets?: Record<string, RouteTargetStats>;
 }
 
 export interface ContextSnapshot {

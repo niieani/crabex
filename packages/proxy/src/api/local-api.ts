@@ -11,6 +11,7 @@ import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
 import { parseModelRouteSet } from "../routing/model-routes.ts";
 import { modelsFixture } from "../routing/models-fixture.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
+import type { StatsStore } from "../recording/stats-store.ts";
 
 const API_PREFIX = "/__agent-context-trimmer/api";
 
@@ -26,6 +27,7 @@ export function createLocalApi(options: {
   codexConfig: CodexConfigManager;
   upstreamCache: UpstreamCacheStore;
   breakers?: { openBreakers(): Record<string, string> };
+  stats?: StatsStore;
 }): LocalApi {
   return {
     async handle(request) {
@@ -39,13 +41,17 @@ export function createLocalApi(options: {
           return json(options.transformations.get());
         }
         if (url.pathname === `${API_PREFIX}/transformation-telemetry` && request.method === "GET") {
-          return json({ telemetry: await options.snapshots.transformationTelemetry() });
+          return json({ telemetry: options.stats?.transformationTelemetry() ?? [] });
         }
         if (url.pathname === `${API_PREFIX}/routing-telemetry` && request.method === "GET") {
           return json({
-            telemetry: await options.snapshots.routingTelemetry(),
+            telemetry: options.stats?.routingTelemetry() ?? [],
             breakers: options.breakers?.openBreakers() ?? {},
           });
+        }
+        if (url.pathname === `${API_PREFIX}/stats/reset` && request.method === "POST") {
+          await options.stats?.reset();
+          return json({ ok: true });
         }
         if (url.pathname === `${API_PREFIX}/upstream-cache` && request.method === "GET") {
           return json(options.upstreamCache.get());

@@ -9,6 +9,7 @@ import {
   getRoutingTelemetry,
   getUpstreamCache,
   putModelRoutes,
+  resetStats,
 } from "../lib/api.ts";
 import type {
   ModelAdjustment,
@@ -47,6 +48,13 @@ export function ModelRoutesPage() {
     onSuccess: (set) => {
       queryClient.setQueryData(["model-routes"], set);
       void queryClient.invalidateQueries({ queryKey: ["model-route-env"] });
+    },
+  });
+  const resetMutation = useMutation({
+    mutationFn: resetStats,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["routing-telemetry"] });
+      void queryClient.invalidateQueries({ queryKey: ["transformation-telemetry"] });
     },
   });
   const set = query.data;
@@ -92,9 +100,20 @@ export function ModelRoutesPage() {
               another upstream with its own credentials. Tokens stay in the proxy environment.
             </p>
           </div>
-          <span className="rounded-full border border-line px-3 py-1 text-xs text-muted">
-            {set.routes.length} routes
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={resetMutation.isPending}
+              onClick={() => resetMutation.mutate()}
+              title="Reset persisted transformation and routing counters"
+              className="rounded-full border border-line px-3 py-1 text-xs text-muted hover:bg-danger-dim hover:text-danger disabled:opacity-50"
+            >
+              {resetMutation.isPending ? "Resetting…" : "Reset counters"}
+            </button>
+            <span className="rounded-full border border-line px-3 py-1 text-xs text-muted">
+              {set.routes.length} routes
+            </span>
+          </div>
         </div>
         {mutation.isError ? (
           <p className="mb-4 rounded-lg bg-danger-dim px-3 py-2 text-xs text-danger">
@@ -301,12 +320,8 @@ function RouteCard({
               ${route.authorization_env}
               {envSet === undefined ? "" : envSet ? " set" : " missing"}
             </Tag>
-            {telemetry === undefined ? null : (
-              <Tag>
-                routed:{telemetry.count} · last {new Date(telemetry.lastSeenAt).toLocaleString()}
-              </Tag>
-            )}
           </div>
+          {telemetry === undefined ? null : <RouteStats telemetry={telemetry} />}
           {breakerUntil === undefined ? null : (
             <p className="mt-3 rounded-md bg-danger-dim px-3 py-2 text-[10px] text-danger">
               Circuit breaker open until {new Date(breakerUntil).toLocaleTimeString()} — skipping
@@ -330,6 +345,55 @@ function RouteCard({
       </div>
     </article>
   );
+}
+
+function RouteStats({ telemetry }: { telemetry: RoutingTelemetry }) {
+  const served = telemetry.served ?? 0;
+  const failed = telemetry.failed ?? 0;
+  const total = served + failed;
+  const errorRate = total === 0 ? undefined : Math.round((failed / total) * 100);
+  const targets = Object.entries(telemetry.targets ?? {}).sort(
+    (left, right) => right[1].attempts - left[1].attempts,
+  );
+  return (
+    <div className="mt-3 rounded-md bg-canvas px-3 py-2 font-mono text-[10px] text-muted">
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        <span>routed {telemetry.count}</span>
+        <span className="text-accent">served {served}</span>
+        {errorRate === undefined ? null : (
+          <span className={errorRate > 0 ? "text-danger" : ""}>errors {errorRate}%</span>
+        )}
+        {telemetry.avgLatencyMs === undefined ? null : (
+          <span>avg {formatMs(telemetry.avgLatencyMs)}</span>
+        )}
+        <span>last {new Date(telemetry.lastSeenAt).toLocaleString()}</span>
+      </div>
+      {targets.length === 0 ? null : (
+        <div className="mt-2 space-y-1 border-t border-line/60 pt-2">
+          {targets.map(([model, stats]) => (
+            <div key={model} className="flex flex-wrap gap-x-3 gap-y-1">
+              <span className="text-content">→ {model}</span>
+              <span>
+                served {stats.served}/{stats.attempts}
+              </span>
+              {stats.avgLatencyMs === undefined ? null : (
+                <span>avg {formatMs(stats.avgLatencyMs)}</span>
+              )}
+              {stats.lastStatus === undefined ? null : (
+                <span className={stats.lastStatus >= 400 ? "text-danger" : ""}>
+                  last {stats.lastStatus}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 }
 
 type UpstreamModel = Record<string, unknown> & { slug: string };

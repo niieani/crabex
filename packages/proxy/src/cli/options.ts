@@ -11,6 +11,8 @@ export interface ProxyCliOptions {
   configBundlePath: string;
   codexConfigPath: string;
   upstreamCachePath: string;
+  statsPath: string;
+  snapshotCachePath: string;
   project?: string;
 }
 
@@ -30,6 +32,8 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     configBundlePath: ".agent-context-trimmer/config-bundle.json",
     codexConfigPath: defaultCodexConfigPath(),
     upstreamCachePath: ".agent-context-trimmer/upstream-cache.json",
+    statsPath: ".agent-context-trimmer/stats.json",
+    snapshotCachePath: ".agent-context-trimmer/snapshot-cache.json",
   };
 
   for (let index = 1; index < args.length; index += 1) {
@@ -69,6 +73,14 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     } else if (argument === "--upstream-cache") {
       if (value === undefined) throw new Error("missing value for --upstream-cache");
       options.upstreamCachePath = value;
+      index += 1;
+    } else if (argument === "--stats") {
+      if (value === undefined) throw new Error("missing value for --stats");
+      options.statsPath = value;
+      index += 1;
+    } else if (argument === "--snapshot-cache") {
+      if (value === undefined) throw new Error("missing value for --snapshot-cache");
+      options.snapshotCachePath = value;
       index += 1;
     } else if (argument === "--project") {
       if (value === undefined) throw new Error("missing value for --project");

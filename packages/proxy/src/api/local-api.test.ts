@@ -1,3 +1,7 @@
+import { mkdtemp } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
@@ -5,6 +9,7 @@ import type { CodexConfigState } from "../config/codex-config.ts";
 import type { ContextSnapshot } from "../context/snapshot.ts";
 import type { TransformationSet } from "../context/transformation.ts";
 import type { ModelRouteConfig, ModelRouteSetData } from "../routing/model-routes.ts";
+import { StatsStore } from "../recording/stats-store.ts";
 import { createLocalApi } from "./local-api.ts";
 
 const routeConfigs: ModelRouteConfig[] = [
@@ -90,6 +95,32 @@ describe("local context API", () => {
         parts: [],
       },
     ];
+    const stats = await StatsStore.open(
+      join(await mkdtemp(join(tmpdir(), "act-stats-")), "stats.json"),
+    );
+    stats.recordTransformations(
+      [
+        { transformationId: "rule-1", status: "hit", matchCount: 3 },
+        { transformationId: "rule-1", status: "miss", matchCount: 0 },
+      ],
+      "2026-08-15T00:00:00.000Z",
+    );
+    stats.recordTransformations(
+      [{ transformationId: "rule-1", status: "hit", matchCount: 1 }],
+      "2026-08-15T00:00:00.000Z",
+    );
+    for (let index = 0; index < 3; index += 1) {
+      stats.recordRouting(
+        {
+          action: "routed",
+          routeSlugs: ["kimi-k3"],
+          upstream: "http://127.0.0.1:8317",
+          requestedModel: "kimi-k3",
+          upstreamModel: "moonshot-kimi-k3",
+        },
+        "2026-08-15T00:00:00.000Z",
+      );
+    }
     const api = createLocalApi({
       snapshots: {
         list: async () => snapshots,
@@ -98,24 +129,6 @@ describe("local context API", () => {
           id,
           parts: transformations.length === 0 ? [] : snapshots[0]!.parts,
         }),
-        transformationTelemetry: async () => [
-          {
-            transformationId: "rule-1",
-            hits: 2,
-            misses: 1,
-            errors: 0,
-            matchCount: 4,
-            lastRunAt: "2026-08-15T00:00:00.000Z",
-          },
-        ],
-        routingTelemetry: async () => [
-          {
-            action: "routed",
-            routeSlug: "kimi-k3",
-            count: 3,
-            lastSeenAt: "2026-08-15T00:00:00.000Z",
-          },
-        ],
       },
       transformations: {
         get: () => set,
@@ -128,6 +141,7 @@ describe("local context API", () => {
           "gpt-6-astra::openai.gpt-6-astra-flex": "2026-09-10T01:00:00.000Z",
         }),
       },
+      stats,
       ...stubSources({}),
     });
 
@@ -200,6 +214,17 @@ describe("local context API", () => {
     );
     expect(update?.status).toBe(200);
     expect(set).toEqual(next);
+
+    const reset = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/stats/reset", {
+        method: "POST",
+      }),
+    );
+    expect(reset?.status).toBe(200);
+    const cleared = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/transformation-telemetry"),
+    );
+    expect(await cleared?.json()).toEqual({ telemetry: [] });
   });
 
   it("returns undefined outside the reserved API surface", async () => {
@@ -207,8 +232,6 @@ describe("local context API", () => {
       snapshots: {
         list: async () => [],
         preview: async () => undefined,
-        transformationTelemetry: async () => [],
-        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -228,8 +251,6 @@ describe("local context API", () => {
       snapshots: {
         list: async () => [],
         preview: async () => undefined,
-        transformationTelemetry: async () => [],
-        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -284,8 +305,6 @@ describe("local context API", () => {
       snapshots: {
         list: async () => [],
         preview: async () => undefined,
-        transformationTelemetry: async () => [],
-        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -309,8 +328,6 @@ describe("local context API", () => {
       snapshots: {
         list: async () => [],
         preview: async () => undefined,
-        transformationTelemetry: async () => [],
-        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -339,8 +356,6 @@ describe("local context API", () => {
       snapshots: {
         list: async () => [],
         preview: async () => undefined,
-        transformationTelemetry: async () => [],
-        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -384,8 +399,6 @@ describe("local context API", () => {
       snapshots: {
         list: async () => [],
         preview: async () => undefined,
-        transformationTelemetry: async () => [],
-        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),
@@ -420,8 +433,6 @@ describe("local context API", () => {
       snapshots: {
         list: async () => [],
         preview: async () => undefined,
-        transformationTelemetry: async () => [],
-        routingTelemetry: async () => [],
       },
       transformations: {
         get: () => ({ version: 1, transformations: [] }),

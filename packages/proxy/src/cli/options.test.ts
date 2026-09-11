@@ -16,6 +16,8 @@ describe("parseCliOptions", () => {
       configBundlePath: ".agent-context-trimmer/config-bundle.json",
       codexConfigPath: defaultCodexConfigPath(),
       upstreamCachePath: ".agent-context-trimmer/upstream-cache.json",
+      statsPath: ".agent-context-trimmer/stats.json",
+      snapshotCachePath: ".agent-context-trimmer/snapshot-cache.json",
     });
   });
 
@@ -39,6 +41,10 @@ describe("parseCliOptions", () => {
         "codex.local.toml",
         "--upstream-cache",
         "upstream.local.json",
+        "--stats",
+        "stats.local.json",
+        "--snapshot-cache",
+        "snapshots.local.json",
         "--project",
         "fixture-project",
       ]),
@@ -53,6 +59,8 @@ describe("parseCliOptions", () => {
       configBundlePath: "bundle.local.json",
       codexConfigPath: "codex.local.toml",
       upstreamCachePath: "upstream.local.json",
+      statsPath: "stats.local.json",
+      snapshotCachePath: "snapshots.local.json",
       project: "fixture-project",
     });
   });

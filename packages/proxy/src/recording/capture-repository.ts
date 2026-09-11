@@ -1,5 +1,6 @@
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import type { ModelRouteStore } from "../config/model-route-store.ts";
 import type { TransformationStore } from "../config/transformation-store.ts";
@@ -14,18 +15,11 @@ import {
   transformResponseCreate,
   type ResponseCreatePayload,
 } from "../context/transform.ts";
-import type { Transformation, TransformationTelemetry } from "../context/transformation.ts";
+import type { Transformation } from "../context/transformation.ts";
 import { modelRouteFromConfig } from "../routing/model-routes.ts";
 import { transformModels, type ModelDefinition } from "../routing/model-list.ts";
 import { modelsFixture } from "../routing/models-fixture.ts";
 import type { CaptureEvent, FullCaptureEvent } from "./capture.ts";
-
-export interface RoutingTelemetry {
-  action: string;
-  routeSlug?: string;
-  count: number;
-  lastSeenAt: string;
-}
 
 export interface SnapshotSource {
   list(): Promise<ContextSnapshot[]>;
@@ -33,8 +27,6 @@ export interface SnapshotSource {
     snapshotId: string,
     transformations: Transformation[],
   ): Promise<ContextSnapshot | undefined>;
-  transformationTelemetry(): Promise<TransformationTelemetry[]>;
-  routingTelemetry(): Promise<RoutingTelemetry[]>;
 }
 
 /**
@@ -50,72 +42,128 @@ export interface CaptureRepositoryCollaborators {
   fixtureModels?: ModelDefinition[];
 }
 
+export interface SnapshotCacheOptions {
+  /** Disk cache file: loaded on boot, saved when idle. */
+  path?: string;
+  /** Max snapshots kept per model/project/harness combo (default 3). */
+  perCombo?: number;
+  /** Max snapshots kept overall (default 50). */
+  total?: number;
+}
+
+const DEFAULT_PER_COMBO = 3;
+const DEFAULT_TOTAL = 50;
+/** Idle delay after the last change before the snapshot cache is written. */
+const SAVE_DEBOUNCE_MS = 2000;
+
+interface SnapshotCacheFile {
+  version: 1;
+  savedAt: string;
+  snapshots: ContextSnapshot[];
+}
+
+interface ScannedFile {
+  size: number;
+  mtimeMs: number;
+  snapshotIds: string[];
+}
+
+/**
+ * Snapshot catalog over the capture directory. Snapshots are built
+ * incrementally — only capture files whose size/mtime changed are reparsed —
+ * capped per model/project/harness combo and overall, and mirrored to a disk
+ * cache so the UI is instant on boot and survives capture rotation.
+ */
 export class FileCaptureRepository implements SnapshotSource {
   readonly #directory: string;
   readonly #collaborators: CaptureRepositoryCollaborators;
+  readonly #cachePath?: string;
+  readonly #perCombo: number;
+  readonly #total: number;
+  readonly #snapshots = new Map<string, ContextSnapshot>();
+  readonly #files = new Map<string, ScannedFile>();
+  #modelSignature: string | undefined;
+  #dirty = false;
+  #saveTimer: ReturnType<typeof setTimeout> | undefined;
+  #saving: Promise<void> | undefined;
 
-  constructor(directory: string, collaborators: CaptureRepositoryCollaborators = {}) {
+  constructor(
+    directory: string,
+    collaborators: CaptureRepositoryCollaborators = {},
+    cache: SnapshotCacheOptions = {},
+  ) {
     this.#directory = directory;
     this.#collaborators = collaborators;
+    this.#cachePath = cache.path;
+    this.#perCombo = cache.perCombo ?? DEFAULT_PER_COMBO;
+    this.#total = cache.total ?? DEFAULT_TOTAL;
+  }
+
+  /** Loads the disk cache written by a previous run. Call once on boot. */
+  async load(): Promise<void> {
+    if (this.#cachePath === undefined) return;
+    let raw: string;
+    try {
+      raw = await readFile(this.#cachePath, "utf8");
+    } catch {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<SnapshotCacheFile>;
+      for (const snapshot of parsed.snapshots ?? []) {
+        if (typeof snapshot?.id === "string") this.#snapshots.set(snapshot.id, snapshot);
+      }
+      this.#prune();
+    } catch {
+      // A corrupt cache must not break the catalog; live data rescans anyway.
+    }
   }
 
   async list(): Promise<ContextSnapshot[]> {
     const models = await this.#modelContext(
       this.#collaborators.transformations?.get().transformations ?? [],
     );
-    const snapshots = (await this.#eventGroups()).flatMap((events) =>
-      buildSnapshots(events, models),
-    );
-    return snapshots.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
-  }
+    // Model-level parts are baked into snapshots, so a changed model context
+    // (routes, transformations, observed models) invalidates scanned files.
+    const signature = modelSignature(models);
+    if (signature !== this.#modelSignature) {
+      this.#modelSignature = signature;
+      this.#files.clear();
+    }
 
-  async transformationTelemetry(): Promise<TransformationTelemetry[]> {
-    const telemetry = new Map<string, TransformationTelemetry>();
-    for (const event of (await this.#eventGroups()).flat()) {
-      for (const execution of event.transformationExecutions ?? []) {
-        const current = telemetry.get(execution.transformationId) ?? {
-          transformationId: execution.transformationId,
-          hits: 0,
-          misses: 0,
-          errors: 0,
-          matchCount: 0,
-          lastRunAt: event.timestamp,
-        };
-        current.hits += execution.status === "hit" ? 1 : 0;
-        current.misses += execution.status === "miss" ? 1 : 0;
-        current.errors += execution.status === "error" ? 1 : 0;
-        current.matchCount += execution.matchCount;
-        if (event.timestamp > current.lastRunAt) current.lastRunAt = event.timestamp;
-        telemetry.set(execution.transformationId, current);
+    let names: string[];
+    try {
+      names = (await readdir(this.#directory)).filter((name) => name.endsWith(".ndjson")).sort();
+    } catch (error) {
+      if (isMissingDirectory(error)) names = [];
+      else throw error;
+    }
+    for (const name of names) {
+      const path = join(this.#directory, name);
+      const fileStat = await stat(path);
+      const previous = this.#files.get(name);
+      if (
+        previous !== undefined &&
+        previous.size === fileStat.size &&
+        previous.mtimeMs === fileStat.mtimeMs
+      ) {
+        continue;
       }
+      const events = parseEvents(await readFile(path, "utf8"));
+      const built = buildSnapshots(events, models);
+      for (const id of previous?.snapshotIds ?? []) this.#snapshots.delete(id);
+      for (const snapshot of built) this.#snapshots.set(snapshot.id, snapshot);
+      this.#files.set(name, {
+        size: fileStat.size,
+        mtimeMs: fileStat.mtimeMs,
+        snapshotIds: built.map((snapshot) => snapshot.id),
+      });
+      this.#dirty = true;
     }
-    return [...telemetry.values()].sort((left, right) =>
-      left.transformationId.localeCompare(right.transformationId),
-    );
-  }
 
-  async routingTelemetry(): Promise<RoutingTelemetry[]> {
-    const telemetry = new Map<string, RoutingTelemetry>();
-    for (const event of (await this.#eventGroups()).flat()) {
-      const routing = event.routing;
-      if (routing === undefined) continue;
-      const slug = routing.action === "routed" ? routing.routeSlugs?.[0] : undefined;
-      const key = slug === undefined ? routing.action : `${routing.action}:${slug}`;
-      const current = telemetry.get(key) ?? {
-        action: routing.action,
-        ...(slug === undefined ? {} : { routeSlug: slug }),
-        count: 0,
-        lastSeenAt: event.timestamp,
-      };
-      current.count += 1;
-      if (event.timestamp > current.lastSeenAt) current.lastSeenAt = event.timestamp;
-      telemetry.set(key, current);
-    }
-    return [...telemetry.values()].sort((left, right) =>
-      `${left.action}:${left.routeSlug ?? ""}`.localeCompare(
-        `${right.action}:${right.routeSlug ?? ""}`,
-      ),
-    );
+    const capped = this.#prune();
+    if (this.#dirty) this.#scheduleSave();
+    return capped;
   }
 
   async preview(
@@ -123,12 +171,89 @@ export class FileCaptureRepository implements SnapshotSource {
     transformations: Transformation[],
   ): Promise<ContextSnapshot | undefined> {
     const models = await this.#modelContext(transformations);
-    for (const events of await this.#eventGroups()) {
+    let names: string[];
+    try {
+      names = (await readdir(this.#directory)).filter((name) => name.endsWith(".ndjson")).sort();
+    } catch (error) {
+      if (isMissingDirectory(error)) return undefined;
+      throw error;
+    }
+    for (const name of names) {
+      const events = parseEvents(await readFile(join(this.#directory, name), "utf8"));
       const previewEvents = events.map((event) => previewEvent(event, transformations));
       const snapshot = buildSnapshots(previewEvents, models).find((item) => item.id === snapshotId);
       if (snapshot !== undefined) return snapshot;
     }
     return undefined;
+  }
+
+  /** Applies the combo/total caps, pruning the in-memory map to match. */
+  #prune(): ContextSnapshot[] {
+    const snapshots = [...this.#snapshots.values()].sort((left, right) =>
+      right.timestamp.localeCompare(left.timestamp),
+    );
+    const perCombo = new Map<string, number>();
+    const kept: ContextSnapshot[] = [];
+    for (const snapshot of snapshots) {
+      if (kept.length >= this.#total) break;
+      const combo = comboKey(snapshot);
+      const count = perCombo.get(combo) ?? 0;
+      if (count >= this.#perCombo) continue;
+      perCombo.set(combo, count + 1);
+      kept.push(snapshot);
+    }
+    if (kept.length !== snapshots.length) {
+      this.#snapshots.clear();
+      for (const snapshot of kept) this.#snapshots.set(snapshot.id, snapshot);
+      this.#dirty = true;
+    }
+    return kept;
+  }
+
+  #scheduleSave(): void {
+    if (this.#cachePath === undefined) return;
+    if (this.#saveTimer !== undefined) clearTimeout(this.#saveTimer);
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = undefined;
+      this.#dirty = false;
+      this.#saving = this.#save()
+        .catch(() => {})
+        .finally(() => {
+          this.#saving = undefined;
+        });
+    }, SAVE_DEBOUNCE_MS);
+    this.#saveTimer.unref?.();
+  }
+
+  /** Writes the cache immediately when a save is pending; call on shutdown. */
+  async flush(): Promise<void> {
+    if (this.#saveTimer !== undefined) {
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = undefined;
+    }
+    await this.#saving;
+    if (this.#dirty) {
+      this.#dirty = false;
+      await this.#save().catch(() => {});
+    }
+  }
+
+  async #save(): Promise<void> {
+    if (this.#cachePath === undefined) return;
+    const content: SnapshotCacheFile = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      snapshots: [...this.#snapshots.values()].sort((left, right) =>
+        right.timestamp.localeCompare(left.timestamp),
+      ),
+    };
+    await mkdir(dirname(this.#cachePath), { recursive: true });
+    const temporary = join(
+      dirname(this.#cachePath),
+      `.snapshots-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}.tmp`,
+    );
+    await writeFile(temporary, `${JSON.stringify(content)}\n`, "utf8");
+    await rename(temporary, this.#cachePath);
   }
 
   /**
@@ -175,19 +300,16 @@ export class FileCaptureRepository implements SnapshotSource {
     );
     return { original, effective, templates };
   }
+}
 
-  async #eventGroups(): Promise<CaptureEvent[][]> {
-    let names: string[];
-    try {
-      names = (await readdir(this.#directory)).filter((name) => name.endsWith(".ndjson")).sort();
-    } catch (error) {
-      if (isMissingDirectory(error)) return [];
-      throw error;
-    }
-    return Promise.all(
-      names.map(async (name) => parseEvents(await readFile(join(this.#directory, name), "utf8"))),
-    );
-  }
+function comboKey(snapshot: ContextSnapshot): string {
+  return `${snapshot.model}${snapshot.project ?? ""}${snapshot.harness.kind}`;
+}
+
+function modelSignature(models: SnapshotModelContext | undefined): string {
+  return createHash("sha256")
+    .update(JSON.stringify(models ?? null))
+    .digest("hex");
 }
 
 function previewEvent(event: CaptureEvent, transformations: Transformation[]): CaptureEvent {

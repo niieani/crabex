@@ -9,6 +9,7 @@ import type {
 } from "../recording/capture.ts";
 import { CaptureRetention } from "../recording/capture-retention.ts";
 import { observePayload } from "../recording/payload-observation.ts";
+import type { StatsStore } from "../recording/stats-store.ts";
 import type { HarnessIdentity } from "../context/harness.ts";
 import { transformResponseCreate, type ResponseCreatePayload } from "../context/transform.ts";
 import type { Transformation, TransformationExecution } from "../context/transformation.ts";
@@ -19,11 +20,18 @@ export class EventRecorder {
   readonly #sessionId: string;
   readonly #sink: CaptureSink;
   readonly #now: () => Date;
+  readonly #stats?: StatsStore;
 
-  constructor(sink: CaptureSink, now: () => Date, createSessionId: () => string) {
+  constructor(
+    sink: CaptureSink,
+    now: () => Date,
+    createSessionId: () => string,
+    stats?: StatsStore,
+  ) {
     this.#sink = sink;
     this.#now = now;
     this.#sessionId = createSessionId();
+    this.#stats = stats;
   }
 
   async record(
@@ -86,6 +94,18 @@ export class EventRecorder {
               ? {}
               : { responseSummary: observation.responseSummary }),
           };
+    // Telemetry counters are recorded at event time so they survive capture
+    // rotation and retention latching; a stats failure must not break capture.
+    try {
+      if (metadata.transformationExecutions !== undefined) {
+        this.#stats?.recordTransformations(metadata.transformationExecutions, common.timestamp);
+      }
+      if (metadata.routing !== undefined) {
+        this.#stats?.recordRouting(metadata.routing, common.timestamp);
+      }
+    } catch {
+      // stats are best-effort
+    }
     try {
       await this.#sink.record(event);
     } catch (error) {

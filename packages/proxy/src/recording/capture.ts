@@ -38,6 +38,8 @@ export interface CaptureRoutingAttempt {
   upstreamModel: string;
   outcome: "served" | "retry" | "failover" | "fatal" | "breaker-open" | "network-error";
   status?: number;
+  /** Wall-clock time the attempt took, including draining the error body. */
+  durationMs?: number;
 }
 
 export interface CaptureRouting {

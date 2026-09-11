@@ -115,7 +115,12 @@ describe("fetchWithFailover", () => {
     expect(result.response.status).toBe(200);
     expect(result.servedBy).toBe("openai.gpt-6-astra-flex");
     expect(result.attempts).toEqual([
-      { upstreamModel: "openai.gpt-6-astra-flex", outcome: "served", status: 200 },
+      {
+        upstreamModel: "openai.gpt-6-astra-flex",
+        outcome: "served",
+        status: 200,
+        durationMs: expect.any(Number),
+      },
     ]);
   });
 

@@ -48,6 +48,10 @@ export async function getRoutingTelemetry(): Promise<{
   return { telemetry: body.telemetry, breakers: body.breakers ?? {} };
 }
 
+export async function resetStats(): Promise<void> {
+  await request(`${API}/stats/reset`, { method: "POST" });
+}
+
 export async function getUpstreamCache(): Promise<UpstreamCacheState> {
   const response = await request(`${API}/upstream-cache`);
   return (await response.json()) as UpstreamCacheState;

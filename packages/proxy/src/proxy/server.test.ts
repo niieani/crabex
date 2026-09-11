@@ -633,7 +633,12 @@ describe("model routing and config bundle override", () => {
     ]);
     expect(captures.events[1]?.routing?.attempts).toEqual([
       { upstreamModel: "openai.gpt-6-astra-flex", outcome: "breaker-open" },
-      { upstreamModel: "openai.gpt-6-astra", outcome: "served", status: 200 },
+      {
+        upstreamModel: "openai.gpt-6-astra",
+        outcome: "served",
+        status: 200,
+        durationMs: expect.any(Number),
+      },
     ]);
     delete process.env.OPENAI_API_KEY;
   });

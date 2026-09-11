@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -39,78 +39,114 @@ describe("file capture repository", () => {
     expect(snapshots[0]).toMatchObject({ model: "gpt-5.6-luna", usage: { inputTokens: 12 } });
   });
 
-  it("aggregates hit, miss, and error executions by transformation", async () => {
+  it("caps snapshots per model/harness combo and overall", async () => {
     const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
-    const first = event(1, "client_to_upstream", { type: "response.create" });
-    first.transformationExecutions = [
-      { transformationId: "trim", status: "hit", matchCount: 3 },
-      { transformationId: "optional", status: "miss", matchCount: 0 },
-    ];
-    const second = event(2, "client_to_upstream", { type: "response.create" });
-    second.transformationExecutions = [
-      { transformationId: "trim", status: "miss", matchCount: 0 },
-      {
-        transformationId: "optional",
-        status: "error",
-        matchCount: 0,
-        error: "invalid expression",
-      },
-    ];
-    await writeFile(
-      join(directory, "capture.ndjson"),
-      `${JSON.stringify(first)}\n${JSON.stringify(second)}\n`,
-    );
+    // Five same-model sessions (one combo) plus two others.
+    for (let session = 0; session < 5; session += 1) {
+      await writeFile(
+        join(directory, `capture-${session}.ndjson`),
+        `${JSON.stringify(
+          event(
+            1,
+            "client_to_upstream",
+            {
+              type: "response.create",
+              model: "gpt-5.6-luna",
+              input: [message("user", `prompt ${session}`)],
+            },
+            `s${session}`,
+            new Date((session + 1) * 60_000).toISOString(),
+          ),
+        )}\n`,
+      );
+    }
+    for (const [index, model] of ["gpt-5.6-sol", "gpt-5.6-terra"].entries()) {
+      await writeFile(
+        join(directory, `capture-${model}.ndjson`),
+        `${JSON.stringify(
+          event(
+            1,
+            "client_to_upstream",
+            {
+              type: "response.create",
+              model,
+              input: [message("user", "hi")],
+            },
+            model,
+            new Date((index + 6) * 60_000).toISOString(),
+          ),
+        )}\n`,
+      );
+    }
+    const repository = new FileCaptureRepository(directory, {}, { perCombo: 3, total: 50 });
 
-    const telemetry = await new FileCaptureRepository(directory).transformationTelemetry();
+    const snapshots = await repository.list();
 
-    expect(telemetry).toEqual([
-      {
-        transformationId: "optional",
-        hits: 0,
-        misses: 1,
-        errors: 1,
-        matchCount: 0,
-        lastRunAt: second.timestamp,
-      },
-      {
-        transformationId: "trim",
-        hits: 1,
-        misses: 1,
-        errors: 0,
-        matchCount: 3,
-        lastRunAt: second.timestamp,
-      },
+    expect(snapshots).toHaveLength(5);
+    expect(snapshots.filter((snapshot) => snapshot.model === "gpt-5.6-luna")).toHaveLength(3);
+    // Newest win.
+    expect(snapshots.map((snapshot) => snapshot.sessionId).sort()).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "s2",
+      "s3",
+      "s4",
     ]);
   });
 
-  it("aggregates routing decisions by action and route", async () => {
+  it("enforces the overall cap across combos", async () => {
     const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
-    const routed = event(1, "client_to_upstream", { type: "response.create" });
-    routed.routing = {
-      action: "routed",
-      routeSlugs: ["kimi-k3"],
-      upstream: "http://127.0.0.1:8317",
-      requestedModel: "kimi-k3",
-      upstreamModel: "moonshot-kimi-k3",
-    };
-    const routedAgain = event(2, "client_to_upstream", { type: "response.create" });
-    routedAgain.routing = routed.routing;
-    const bundle = event(3, "client_to_upstream", "");
-    bundle.routing = { action: "bundle-override" };
-    const advertised = event(4, "client_to_upstream", "");
-    advertised.routing = { action: "models-advertised", routeSlugs: ["kimi-k3"] };
+    for (let session = 0; session < 6; session += 1) {
+      await writeFile(
+        join(directory, `capture-${session}.ndjson`),
+        `${JSON.stringify(
+          event(
+            1,
+            "client_to_upstream",
+            {
+              type: "response.create",
+              model: `model-${session}`,
+              input: [message("user", "hi")],
+            },
+            `s${session}`,
+            new Date((session + 1) * 60_000).toISOString(),
+          ),
+        )}\n`,
+      );
+    }
+    const repository = new FileCaptureRepository(directory, {}, { perCombo: 3, total: 4 });
+
+    const snapshots = await repository.list();
+
+    expect(snapshots.map((snapshot) => snapshot.sessionId)).toEqual(["s5", "s4", "s3", "s2"]);
+  });
+
+  it("loads the disk cache on boot and saves it when idle", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
+    const cachePath = join(directory, "snapshot-cache.json");
     await writeFile(
       join(directory, "capture.ndjson"),
-      `${[routed, routedAgain, bundle, advertised].map((value) => JSON.stringify(value)).join("\n")}\n`,
+      `${JSON.stringify(
+        event(1, "client_to_upstream", {
+          type: "response.create",
+          model: "gpt-5.6-luna",
+          input: [message("user", "hi")],
+        }),
+      )}\n`,
     );
+    const first = new FileCaptureRepository(directory, {}, { path: cachePath });
+    expect((await first.list()).map((snapshot) => snapshot.model)).toEqual(["gpt-5.6-luna"]);
+    await first.flush();
+    expect(JSON.parse(await readFile(cachePath, "utf8"))).toMatchObject({
+      version: 1,
+      snapshots: [{ model: "gpt-5.6-luna" }],
+    });
 
-    const telemetry = await new FileCaptureRepository(directory).routingTelemetry();
-
-    expect(telemetry).toEqual([
-      { action: "bundle-override", count: 1, lastSeenAt: bundle.timestamp },
-      { action: "models-advertised", count: 1, lastSeenAt: advertised.timestamp },
-      { action: "routed", routeSlug: "kimi-k3", count: 2, lastSeenAt: routedAgain.timestamp },
-    ]);
+    // A fresh repository over an EMPTY captures dir still serves the cache.
+    const empty = await mkdtemp(join(tmpdir(), "act-captures-empty-"));
+    const restored = new FileCaptureRepository(empty, {}, { path: cachePath });
+    await restored.load();
+    expect((await restored.list()).map((snapshot) => snapshot.model)).toEqual(["gpt-5.6-luna"]);
   });
 
   it("previews current transformations against an immutable historical snapshot", async () => {
@@ -354,11 +390,13 @@ function event(
   sequence: number,
   direction: CaptureEvent["direction"],
   payload: unknown,
+  sessionId = "session",
+  timestamp?: string,
 ): FullCaptureEvent {
   return {
-    sessionId: "session",
+    sessionId,
     sequence,
-    timestamp: new Date(sequence * 1000).toISOString(),
+    timestamp: timestamp ?? new Date(sequence * 1000).toISOString(),
     transport: "websocket",
     direction,
     encoding: "utf8",

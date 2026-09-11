@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { CaptureRouting, CaptureSink } from "../recording/capture.ts";
+import type { StatsStore } from "../recording/stats-store.ts";
 import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
 import type { Transformation } from "../context/transformation.ts";
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
@@ -76,6 +77,8 @@ export interface ReverseProxyOptions {
   fixtureModels?: ModelDefinition[];
   /** Shared circuit-breaker registry for route targets; defaults to a fresh one. */
   breakers?: TargetBreakers;
+  /** Persisted telemetry counters fed by the event recorder. */
+  stats?: StatsStore;
   project?: string;
   localApi?: LocalApi;
 }
@@ -128,6 +131,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     options.captureSink,
     options.now ?? (() => new Date()),
     options.createSessionId ?? randomUUID,
+    options.stats,
   );
   const cookies = new CloudflareCookieJar();
   const transformationSource = options.transformationSource ?? { get: () => [] };

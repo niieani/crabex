@@ -31,6 +31,8 @@ export interface RouteAttempt {
   upstreamModel: string;
   outcome: "served" | "retry" | "failover" | "fatal" | "breaker-open" | "network-error";
   status?: number;
+  /** Wall-clock time the attempt took, including draining the error body. */
+  durationMs?: number;
 }
 
 /**
@@ -126,26 +128,44 @@ export async function fetchWithFailover(
         await sleep(backoffDelayMs(route.retry.backoffMs, attempt - 1));
       }
       const { url, init } = requestFor(target);
+      const startedAt = performance.now();
+      const durationMs = () => Math.round(performance.now() - startedAt);
       let response: Response;
       try {
         response = await fetchImpl(url, init);
       } catch (error) {
-        attempts.push({ upstreamModel, outcome: "network-error" });
+        attempts.push({ upstreamModel, outcome: "network-error", durationMs: durationMs() });
         lastFailure = { error };
         if (attempt + 1 >= target.attempts) exhausted = true;
         continue;
       }
       if (response.ok) {
         breakers.recordSuccess(key);
-        attempts.push({ upstreamModel, outcome: "served", status: response.status });
+        attempts.push({
+          upstreamModel,
+          outcome: "served",
+          status: response.status,
+          durationMs: durationMs(),
+        });
         return { response, attempts, servedBy: upstreamModel };
       }
       const failureClass = classifyHttpFailure(response.status, route.retry.onStatus);
-      attempts.push({ upstreamModel, outcome: failureClass, status: response.status });
       if (failureClass === "fatal") {
+        attempts.push({
+          upstreamModel,
+          outcome: failureClass,
+          status: response.status,
+          durationMs: durationMs(),
+        });
         return { response, attempts };
       }
       if (failureClass === "failover") {
+        attempts.push({
+          upstreamModel,
+          outcome: failureClass,
+          status: response.status,
+          durationMs: durationMs(),
+        });
         lastFailure = { response };
         exhausted = true;
         break;
@@ -153,6 +173,12 @@ export async function fetchWithFailover(
       // retry: drain the error body so the connection is reusable, and keep a
       // replayable copy in case every later target is unavailable too
       const body = new Uint8Array(await response.arrayBuffer());
+      attempts.push({
+        upstreamModel,
+        outcome: failureClass,
+        status: response.status,
+        durationMs: durationMs(),
+      });
       lastFailure = {
         response: new Response(body, {
           status: response.status,
