@@ -11,6 +11,11 @@ export interface PayloadObservation {
   eventType?: string;
   requestSummary?: CaptureRequestSummary;
   responseSummary?: CaptureResponseSummary;
+  /**
+   * Codex conversation scope for retention latching: `client_metadata`'s
+   * thread_id (falling back to session_id) on response.create payloads.
+   */
+  sessionKey?: string;
 }
 
 export function observePayload(payload: string, direction: CaptureDirection): PayloadObservation {
@@ -19,12 +24,22 @@ export function observePayload(payload: string, direction: CaptureDirection): Pa
 
   const eventType = stringValue(value.type);
   if (direction === "client_to_upstream" && eventType === "response.create") {
-    return { eventType, requestSummary: requestSummary(value) };
+    const sessionKey = sessionKeyOf(value);
+    return {
+      eventType,
+      requestSummary: requestSummary(value),
+      ...(sessionKey === undefined ? {} : { sessionKey }),
+    };
   }
   if (direction === "upstream_to_client" && eventType === "response.completed") {
     return { eventType, responseSummary: responseSummary(value) };
   }
   return eventType === undefined ? {} : { eventType };
+}
+
+function sessionKeyOf(value: Record<string, unknown>): string | undefined {
+  const metadata = objectValue(value.client_metadata);
+  return stringValue(metadata?.thread_id) ?? stringValue(metadata?.session_id);
 }
 
 function requestSummary(value: Record<string, unknown>): CaptureRequestSummary {

@@ -47,7 +47,7 @@ export class EventRecorder {
         : bufferFrom(value).toString(encoding === "base64" ? "base64" : "utf8");
     const observation = observePayload(payload, direction);
     const requestSummary = metadata.requestSummary ?? observation.requestSummary;
-    const mode = this.#retention.modeFor(requestSummary);
+    const mode = this.#retention.modeFor(requestSummary, observation.sessionKey);
     const common = {
       sessionId: this.#sessionId,
       sequence: ++this.#sequence,
