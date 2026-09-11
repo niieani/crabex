@@ -47,6 +47,33 @@ describe("collapseModelTwins", () => {
     expect(twins.get(model)).toEqual([prewarm, inference]);
   });
 
+  it("folds mirrored model fields into the first model twin", () => {
+    const template = part({
+      id: "model-template",
+      phase: "model",
+      path: "model_messages.instructions_template",
+      identifier: "segment:codex_base",
+      text: "You are Codex, an agent.",
+    });
+    const mirror = part({
+      id: "model-mirror",
+      phase: "model",
+      path: "base_instructions",
+      identifier: "segment:codex_base",
+      text: "You are Codex, an agent.",
+    });
+    const inference = part({
+      id: "inference-1",
+      identifier: "segment:codex_base",
+      text: "You are Codex, an agent.",
+    });
+
+    const { parts, twins } = collapseModelTwins([inference, template, mirror]);
+
+    expect(parts).toEqual([template]);
+    expect(twins.get(template)).toEqual([inference, mirror]);
+  });
+
   it("keeps untwinned model parts at their trailing position", () => {
     const reminder = part({
       id: "model-reminder",

@@ -59,6 +59,22 @@ describe("modelStringFields", () => {
     ]);
   });
 
+  it("includes mirrored top-level instruction fields after model_messages", () => {
+    const fields = modelStringFields({
+      slug: "gpt-5.6-luna",
+      base_instructions: "You are Codex, an agent based on GPT-5. Be helpful.",
+      description: "Fast model",
+      model_messages: {
+        instructions_template: "You are Codex, an agent based on GPT-5. Be helpful.",
+      },
+    });
+    expect(fields.map((field) => field.dotPath)).toEqual([
+      "model_messages.instructions_template",
+      "base_instructions",
+    ]);
+    expect(fields[1]?.identifier).toBe("segment:codex_base");
+  });
+
   it("returns nothing without a model_messages object", () => {
     expect(modelStringFields({ slug: "gpt-5.6-luna" })).toEqual([]);
     expect(modelStringFields({ slug: "gpt-5.6-luna", model_messages: null })).toEqual([]);

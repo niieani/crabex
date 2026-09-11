@@ -20,12 +20,27 @@ export interface ModelStringField {
   classificationId?: string;
 }
 
-/** Extracts every non-empty string leaf under `model_messages`. */
+/**
+ * Top-level string fields that mirror instruction content also present under
+ * `model_messages` (upstream sends `base_instructions` identical to
+ * `instructions_template`). They are walked after `model_messages` so edits
+ * keep the mirrors in sync and the catalog can fold the duplicates.
+ */
+const MIRRORED_TOP_LEVEL_FIELDS = ["base_instructions"];
+
+/** Extracts every non-empty instruction string of a model definition. */
 export function modelStringFields(model: Record<string, unknown>): ModelStringField[] {
-  const messages = model.model_messages;
-  if (typeof messages !== "object" || messages === null || Array.isArray(messages)) return [];
   const fields: ModelStringField[] = [];
-  collectFields(messages as Record<string, unknown>, ["model_messages"], fields);
+  const messages = model.model_messages;
+  if (typeof messages === "object" && messages !== null && !Array.isArray(messages)) {
+    collectFields(messages as Record<string, unknown>, ["model_messages"], fields);
+  }
+  for (const key of MIRRORED_TOP_LEVEL_FIELDS) {
+    const value = model[key];
+    if (typeof value === "string" && value.trim() !== "") {
+      fields.push(stringField([key], value));
+    }
+  }
   return fields;
 }
 

@@ -21,20 +21,28 @@ export function collapseModelTwins(parts: ContextPart[]): CollapsedParts {
   if (modelParts.length === 0) return { parts, twins: new Map() };
   const twins = new Map<ContextPart, ContextPart[]>();
   const placed = new Set<ContextPart>();
+  const keptModels: ContextPart[] = [];
   const kept: ContextPart[] = [];
+  const matches = (candidate: ContextPart, part: ContextPart) =>
+    candidate.identifier === part.identifier &&
+    candidate.text === part.text &&
+    (candidate.originalText ?? candidate.text) === (part.originalText ?? part.text);
   for (const part of parts) {
     if (part.phase === "model") {
+      // Mirrored model fields (e.g. top-level base_instructions duplicating
+      // model_messages.instructions_template) fold into the first kept twin.
+      const mirror = keptModels.find((candidate) => matches(candidate, part));
+      if (mirror !== undefined) {
+        twins.set(mirror, [...(twins.get(mirror) ?? []), part]);
+        continue;
+      }
       // Untwinned model parts keep their trailing position; placed ones were
       // already emitted at their first request twin's payload position.
       if (!placed.has(part)) kept.push(part);
+      keptModels.push(part);
       continue;
     }
-    const twin = modelParts.find(
-      (candidate) =>
-        candidate.identifier === part.identifier &&
-        candidate.text === part.text &&
-        (candidate.originalText ?? candidate.text) === (part.originalText ?? part.text),
-    );
+    const twin = modelParts.find((candidate) => matches(candidate, part));
     if (twin === undefined) {
       kept.push(part);
       continue;

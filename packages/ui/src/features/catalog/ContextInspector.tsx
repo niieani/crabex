@@ -140,13 +140,11 @@ export function ContextInspector({
             <p className="mt-1 truncate font-mono text-[11px] text-muted">{selected.path}</p>
             {(twins.get(selected)?.length ?? 0) === 0 ? null : (
               <p className="mt-1 text-[11px] text-warning">
-                Model template — also sent in {twins.get(selected)?.length} request{" "}
-                {(twins.get(selected)?.length ?? 0) === 1 ? "part" : "parts"} (
+                Model template — identical content also appears at{" "}
                 {twins
                   .get(selected)
                   ?.map((part) => part.path)
                   .join(", ")}
-                )
               </p>
             )}
           </div>
@@ -309,7 +307,7 @@ function PartButton({
           <div className="mt-1.5 flex items-center justify-between text-[10px] text-content">
             <span>
               {part.deleted ? "turned off" : part.phase}
-              {twinCount === 0 ? "" : ` · ${twinCount}× in request`}
+              {twinCount === 0 ? "" : ` · +${twinCount}`}
             </span>
             <span>~{formatCompact(part.estimatedTokens)} tok</span>
           </div>
