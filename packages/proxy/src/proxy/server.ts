@@ -26,7 +26,7 @@ import { fetchWithFailover, TargetBreakers } from "../routing/failover.ts";
 import {
   httpPayloadFor,
   parseSseEvents,
-  rewriteResponseModel,
+  rewriteBridgedEvent,
   warmupCompletionEvents,
   wrappedErrorEvent,
 } from "./responses-bridge.ts";
@@ -661,7 +661,7 @@ async function runBridgedCreate(
   }
   for await (const eventData of parseSseEvents(result.response.body)) {
     if (data.client === undefined || data.client.readyState !== WebSocket.OPEN) break;
-    await queueBridgedMessage(data, rewriteResponseModel(eventData, route.model.slug));
+    await queueBridgedMessage(data, rewriteBridgedEvent(eventData, route.model.slug));
   }
 }
 

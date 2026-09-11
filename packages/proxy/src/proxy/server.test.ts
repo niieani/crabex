@@ -912,18 +912,20 @@ describe("model routing and config bundle override", () => {
 
       const created = JSON.parse(await nextMessage(client)) as {
         type: string;
-        response: { model: string };
+        response: { id: string; model: string };
       };
       expect(created.type).toBe("response.created");
       expect(created.response.model).toBe("gpt-6-astra");
+      expect(created.response.id).toBe("");
       const delta = JSON.parse(await nextMessage(client)) as { type: string };
       expect(delta.type).toBe("response.output_text.delta");
       const completed = JSON.parse(await nextMessage(client)) as {
         type: string;
-        response: { model: string };
+        response: { id: string; model: string };
       };
       expect(completed.type).toBe("response.completed");
       expect(completed.response.model).toBe("gpt-6-astra");
+      expect(completed.response.id).toBe("");
 
       expect(seen).toEqual(["openai.gpt-6-astra-flex"]);
       await eventually(() => expect(captures.events.length).toBeGreaterThanOrEqual(4));

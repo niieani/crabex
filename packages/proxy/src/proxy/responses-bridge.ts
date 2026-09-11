@@ -45,22 +45,32 @@ export function httpPayloadFor(payload: Record<string, unknown>): Record<string,
 }
 
 /**
- * Best-effort rewrite of `response.model` in a streamed event so the client
- * keeps seeing the advertised slug rather than the upstream's model name.
+ * Best-effort rewrite of a streamed event's `response` object for bridged
+ * (HTTP upstream) routes:
+ *
+ * - `model` becomes the advertised slug, so the client keeps seeing the model
+ *   it asked for rather than the upstream's name.
+ * - `id` is blanked. Bridged upstreams are stateless for our purposes — ZDR
+ *   orgs reject `previous_response_id` outright ("Previous response cannot be
+ *   used for this organization due to Zero Data Retention"), and gateways
+ *   generally don't persist responses. Codex only chains tool-call
+ *   continuations via `previous_response_id` when the last response id is
+ *   non-empty; an empty id makes it replay the full input instead
+ *   (core/src/client.rs `prepare_websocket_request`; opencodex does the same
+ *   with `forceEmptyResponseId`).
+ *
  * Unparseable events pass through untouched.
  */
-export function rewriteResponseModel(eventData: string, advertisedSlug: string): string {
+export function rewriteBridgedEvent(eventData: string, advertisedSlug: string): string {
   try {
     const parsed: unknown = JSON.parse(eventData);
     if (typeof parsed !== "object" || parsed === null) return eventData;
     const event = parsed as Record<string, unknown>;
     const response = event.response;
-    if (
-      typeof response === "object" &&
-      response !== null &&
-      typeof (response as { model?: unknown }).model === "string"
-    ) {
-      (response as { model: unknown }).model = advertisedSlug;
+    if (typeof response === "object" && response !== null) {
+      const r = response as { model?: unknown; id?: unknown };
+      if (typeof r.model === "string") r.model = advertisedSlug;
+      if (typeof r.id === "string") r.id = "";
     }
     return JSON.stringify(event);
   } catch {

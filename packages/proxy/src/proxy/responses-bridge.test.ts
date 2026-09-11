@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   httpPayloadFor,
   parseSseEvents,
-  rewriteResponseModel,
+  rewriteBridgedEvent,
   warmupCompletionEvents,
   wrappedErrorEvent,
 } from "./responses-bridge.ts";
@@ -46,23 +46,26 @@ describe("httpPayloadFor", () => {
   });
 });
 
-describe("rewriteResponseModel", () => {
-  it("rewrites response.model in streamed events", () => {
+describe("rewriteBridgedEvent", () => {
+  it("rewrites response.model and blanks response.id in streamed events", () => {
     const event = JSON.stringify({
       type: "response.completed",
       response: { id: "resp_1", model: "openai.gpt-6-astra-flex", status: "completed" },
     });
 
-    const rewritten = JSON.parse(rewriteResponseModel(event, "gpt-6-astra")) as {
-      response: { model: string };
+    const rewritten = JSON.parse(rewriteBridgedEvent(event, "gpt-6-astra")) as {
+      response: { id: string; model: string };
     };
     expect(rewritten.response.model).toBe("gpt-6-astra");
+    // Empty id stops Codex from chaining via previous_response_id, which ZDR
+    // upstreams reject; it replays the full input on the next create instead.
+    expect(rewritten.response.id).toBe("");
   });
 
-  it("leaves events without a response model and non-JSON data untouched", () => {
+  it("leaves events without a response object and non-JSON data untouched", () => {
     const delta = JSON.stringify({ type: "response.output_text.delta", delta: "hi" });
-    expect(rewriteResponseModel(delta, "gpt-6-astra")).toBe(delta);
-    expect(rewriteResponseModel("not json", "gpt-6-astra")).toBe("not json");
+    expect(rewriteBridgedEvent(delta, "gpt-6-astra")).toBe(delta);
+    expect(rewriteBridgedEvent("not json", "gpt-6-astra")).toBe("not json");
   });
 });
 
