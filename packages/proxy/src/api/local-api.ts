@@ -25,6 +25,7 @@ export function createLocalApi(options: {
   configBundle: ConfigBundleStore;
   codexConfig: CodexConfigManager;
   upstreamCache: UpstreamCacheStore;
+  breakers?: { openBreakers(): Record<string, string> };
 }): LocalApi {
   return {
     async handle(request) {
@@ -41,7 +42,10 @@ export function createLocalApi(options: {
           return json({ telemetry: await options.snapshots.transformationTelemetry() });
         }
         if (url.pathname === `${API_PREFIX}/routing-telemetry` && request.method === "GET") {
-          return json({ telemetry: await options.snapshots.routingTelemetry() });
+          return json({
+            telemetry: await options.snapshots.routingTelemetry(),
+            breakers: options.breakers?.openBreakers() ?? {},
+          });
         }
         if (url.pathname === `${API_PREFIX}/upstream-cache` && request.method === "GET") {
           return json(options.upstreamCache.get());

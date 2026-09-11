@@ -11,6 +11,7 @@ import { openModelRouteStore } from "./config/model-route-store.ts";
 import { openTransformationStore } from "./config/transformation-store.ts";
 import { openUpstreamCacheStore } from "./config/upstream-cache.ts";
 import { startReverseProxy } from "./proxy/server.ts";
+import { TargetBreakers } from "./routing/failover.ts";
 import { modelRouteFromConfig } from "./routing/model-routes.ts";
 import { FileCaptureRepository } from "./recording/capture-repository.ts";
 import { openNdjsonCaptureSink } from "./recording/ndjson-capture-sink.ts";
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
   const modelRouteStore = await openModelRouteStore(options.modelRoutesPath);
   const configBundleStore = await openConfigBundleStore(options.configBundlePath);
   const upstreamCacheStore = await openUpstreamCacheStore(options.upstreamCachePath);
+  const targetBreakers = new TargetBreakers();
   const proxyOrigin = `http://${
     options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host
   }:${options.port}`;
@@ -70,6 +72,7 @@ async function main(): Promise<void> {
     },
     configBundleSource: { get: () => configBundleStore.get() },
     upstreamCache: upstreamCacheStore,
+    breakers: targetBreakers,
     project: options.project,
     localApi: createLocalApi({
       snapshots: new FileCaptureRepository(options.capturesDirectory, {
@@ -81,6 +84,7 @@ async function main(): Promise<void> {
       modelRoutes: modelRouteStore,
       configBundle: configBundleStore,
       upstreamCache: upstreamCacheStore,
+      breakers: targetBreakers,
       codexConfig: createCodexConfigManager({
         configPath: options.codexConfigPath,
         proxyOrigin,

@@ -41,12 +41,19 @@ export interface ContextSection {
   deleted?: boolean;
 }
 
+export interface CaptureRoutingAttempt {
+  upstreamModel: string;
+  outcome: "served" | "retry" | "failover" | "fatal" | "breaker-open" | "network-error";
+  status?: number;
+}
+
 export interface CaptureRouting {
   action: "routed" | "bundle-override" | "models-advertised";
   routeSlugs?: string[];
   upstream?: string;
   requestedModel?: string;
   upstreamModel?: string;
+  attempts?: CaptureRoutingAttempt[];
 }
 
 export interface RoutingTelemetry {
@@ -127,12 +134,26 @@ export interface AdvertisedModelConfig {
   template_slug: string;
 }
 
+export interface RouteTargetConfig {
+  upstream_model?: string;
+  attempts?: number;
+}
+
+export interface RouteRetryConfig {
+  on_status?: number[];
+  backoff_ms?: number[];
+  breaker?: { failures?: number; cooldown_ms?: number };
+}
+
 export interface ModelRouteConfig {
   authorization_env: string;
   enabled?: boolean;
   model: AdvertisedModelConfig;
   upstream: string;
   upstream_model?: string;
+  targets?: RouteTargetConfig[];
+  retry?: RouteRetryConfig;
+  transport?: "http" | "ws";
 }
 
 export interface ModelAdjustment {

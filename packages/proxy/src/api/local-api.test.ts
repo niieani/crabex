@@ -123,6 +123,11 @@ describe("local context API", () => {
           set = next;
         },
       },
+      breakers: {
+        openBreakers: () => ({
+          "gpt-6-astra::openai.gpt-6-astra-flex": "2026-09-10T01:00:00.000Z",
+        }),
+      },
       ...stubSources({}),
     });
 
@@ -160,6 +165,7 @@ describe("local context API", () => {
           lastSeenAt: "2026-08-15T00:00:00.000Z",
         },
       ],
+      breakers: { "gpt-6-astra::openai.gpt-6-astra-flex": "2026-09-10T01:00:00.000Z" },
     });
 
     const next: TransformationSet = {

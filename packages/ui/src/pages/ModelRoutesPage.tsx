@@ -27,7 +27,8 @@ export function ModelRoutesPage() {
     queryFn: getRoutingTelemetry,
     refetchInterval: 5000,
   });
-  const telemetry = telemetryQuery.data ?? [];
+  const telemetry = telemetryQuery.data?.telemetry ?? [];
+  const openBreakers = telemetryQuery.data?.breakers ?? {};
   const upstreamQuery = useQuery({
     queryKey: ["upstream-cache"],
     queryFn: getUpstreamCache,
@@ -111,6 +112,7 @@ export function ModelRoutesPage() {
                 key={`${route.model.slug}-${index}`}
                 route={route}
                 envSet={envQuery.data?.[route.authorization_env]}
+                breakerUntil={breakerUntilFor(route, openBreakers)}
                 telemetry={telemetry.find(
                   (entry) => entry.action === "routed" && entry.routeSlug === route.model.slug,
                 )}
@@ -229,15 +231,29 @@ export function ModelRoutesPage() {
   );
 }
 
+function breakerUntilFor(
+  route: ModelRouteConfig,
+  openBreakers: Record<string, string>,
+): string | undefined {
+  const prefix = `${route.model.slug}::`;
+  const untils = Object.entries(openBreakers)
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, until]) => until)
+    .sort();
+  return untils[untils.length - 1];
+}
+
 function RouteCard({
   route,
   envSet,
+  breakerUntil,
   telemetry,
   onToggle,
   onDelete,
 }: {
   route: ModelRouteConfig;
   envSet?: boolean;
+  breakerUntil?: string;
   telemetry?: RoutingTelemetry;
   onToggle: () => void;
   onDelete: () => void;
@@ -273,7 +289,14 @@ function RouteCard({
             <Tag>template:{route.model.template_slug}</Tag>
             <Tag>priority:{route.model.priority}</Tag>
             <Tag>{route.upstream}</Tag>
+            {route.transport === undefined ? null : <Tag>{route.transport}</Tag>}
             {route.upstream_model === undefined ? null : <Tag>as:{route.upstream_model}</Tag>}
+            {(route.targets ?? []).map((target) => (
+              <Tag key={target.upstream_model ?? "default"}>
+                → {target.upstream_model ?? route.model.slug}
+                {(target.attempts ?? 1) > 1 ? ` ×${target.attempts}` : ""}
+              </Tag>
+            ))}
             <Tag>
               ${route.authorization_env}
               {envSet === undefined ? "" : envSet ? " set" : " missing"}
@@ -284,6 +307,12 @@ function RouteCard({
               </Tag>
             )}
           </div>
+          {breakerUntil === undefined ? null : (
+            <p className="mt-3 rounded-md bg-danger-dim px-3 py-2 text-[10px] text-danger">
+              Circuit breaker open until {new Date(breakerUntil).toLocaleTimeString()} — skipping
+              the failing target and serving the fallback directly.
+            </p>
+          )}
           {envSet === false && enabled ? (
             <p className="mt-3 rounded-md bg-danger-dim px-3 py-2 text-[10px] text-danger">
               Environment variable {route.authorization_env} is not set in the proxy process —

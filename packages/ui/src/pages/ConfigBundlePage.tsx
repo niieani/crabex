@@ -18,7 +18,9 @@ export function ConfigBundlePage() {
     queryFn: getRoutingTelemetry,
     refetchInterval: 5000,
   });
-  const served = (telemetryQuery.data ?? []).find((entry) => entry.action === "bundle-override");
+  const served = (telemetryQuery.data?.telemetry ?? []).find(
+    (entry) => entry.action === "bundle-override",
+  );
   const upstreamQuery = useQuery({
     queryKey: ["upstream-cache"],
     queryFn: getUpstreamCache,

@@ -36,9 +36,16 @@ export async function getTransformationTelemetry(): Promise<TransformationTeleme
   return ((await response.json()) as { telemetry: TransformationTelemetry[] }).telemetry;
 }
 
-export async function getRoutingTelemetry(): Promise<RoutingTelemetry[]> {
+export async function getRoutingTelemetry(): Promise<{
+  telemetry: RoutingTelemetry[];
+  breakers: Record<string, string>;
+}> {
   const response = await request(`${API}/routing-telemetry`);
-  return ((await response.json()) as { telemetry: RoutingTelemetry[] }).telemetry;
+  const body = (await response.json()) as {
+    telemetry: RoutingTelemetry[];
+    breakers?: Record<string, string>;
+  };
+  return { telemetry: body.telemetry, breakers: body.breakers ?? {} };
 }
 
 export async function getUpstreamCache(): Promise<UpstreamCacheState> {

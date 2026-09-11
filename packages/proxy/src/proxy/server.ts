@@ -67,6 +67,8 @@ export interface ReverseProxyOptions {
   upstreamCache?: UpstreamCacheStore;
   /** Baked-in model catalog; defaults to the packaged fixture. */
   fixtureModels?: ModelDefinition[];
+  /** Shared circuit-breaker registry for route targets; defaults to a fresh one. */
+  breakers?: TargetBreakers;
   project?: string;
   localApi?: LocalApi;
 }
@@ -118,7 +120,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     get: () => ({ routes: [], adjustments: [], fixturePins: [] }),
   };
   const fixtureModels = options.fixtureModels ?? modelsFixture();
-  const breakers = new TargetBreakers();
+  const breakers = options.breakers ?? new TargetBreakers();
   const configBundleSource = options.configBundleSource;
   const upstreamCache = options.upstreamCache;
   let lastBundleObservation = 0;
