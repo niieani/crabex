@@ -42,8 +42,24 @@ describe("collapseModelTwins", () => {
 
     const { parts, twins } = collapseModelTwins([prewarm, inference, user, model]);
 
-    expect(parts).toEqual([user, model]);
+    // The surviving model part takes its first twin's payload position.
+    expect(parts).toEqual([model, user]);
     expect(twins.get(model)).toEqual([prewarm, inference]);
+  });
+
+  it("keeps untwinned model parts at their trailing position", () => {
+    const reminder = part({
+      id: "model-reminder",
+      phase: "model",
+      path: "model_messages.token_budget.reminder_message_template",
+      identifier: "model:model_messages.token_budget.reminder_message_template",
+      text: "reminder",
+    });
+    const user = part({ id: "user-1", text: "hi" });
+
+    const { parts } = collapseModelTwins([user, reminder]);
+
+    expect(parts).toEqual([user, reminder]);
   });
 
   it("keeps both when the effective text diverges", () => {

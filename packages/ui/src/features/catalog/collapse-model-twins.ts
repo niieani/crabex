@@ -20,22 +20,30 @@ export function collapseModelTwins(parts: ContextPart[]): CollapsedParts {
   );
   if (modelParts.length === 0) return { parts, twins: new Map() };
   const twins = new Map<ContextPart, ContextPart[]>();
+  const placed = new Set<ContextPart>();
   const kept: ContextPart[] = [];
   for (const part of parts) {
-    const twin =
-      part.phase === "model"
-        ? undefined
-        : modelParts.find(
-            (candidate) =>
-              candidate.identifier === part.identifier &&
-              candidate.text === part.text &&
-              (candidate.originalText ?? candidate.text) === (part.originalText ?? part.text),
-          );
+    if (part.phase === "model") {
+      // Untwinned model parts keep their trailing position; placed ones were
+      // already emitted at their first request twin's payload position.
+      if (!placed.has(part)) kept.push(part);
+      continue;
+    }
+    const twin = modelParts.find(
+      (candidate) =>
+        candidate.identifier === part.identifier &&
+        candidate.text === part.text &&
+        (candidate.originalText ?? candidate.text) === (part.originalText ?? part.text),
+    );
     if (twin === undefined) {
       kept.push(part);
       continue;
     }
     twins.set(twin, [...(twins.get(twin) ?? []), part]);
+    if (!placed.has(twin)) {
+      placed.add(twin);
+      kept.push(twin);
+    }
   }
   return { parts: kept, twins };
 }
