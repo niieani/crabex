@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { transformModels, transformModelsResponse } from "./model-list.ts";
-import type { ModelRoute } from "./model-routes.ts";
+import { modelRouteFromConfig, type ModelRoute } from "./model-routes.ts";
 
-const route: ModelRoute = {
-  authorizationEnv: "CLIPROXYAPI_KEY",
-  enabled: true,
+const route: ModelRoute = modelRouteFromConfig({
+  authorization_env: "CLIPROXYAPI_KEY",
   model: {
     description: "Kimi K3 via CLIProxyAPI",
-    displayName: "Kimi K3",
+    display_name: "Kimi K3",
     overrides: {
       context_window: 1048576,
       input_modalities: ["text", "image"],
@@ -16,10 +15,10 @@ const route: ModelRoute = {
     },
     priority: 1,
     slug: "kimi-k3",
-    templateSlug: "gpt-5.6-terra",
+    template_slug: "gpt-5.6-terra",
   },
-  upstream: new URL("http://127.0.0.1:8317/v1"),
-};
+  upstream: "http://127.0.0.1:8317/v1",
+});
 
 const template = {
   context_window: 272000,

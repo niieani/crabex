@@ -18,12 +18,39 @@ export interface AdvertisedModelConfig {
   template_slug: string;
 }
 
+export interface RouteTargetConfig {
+  /** Model name sent to the upstream; defaults to the advertised slug. */
+  upstream_model?: string;
+  /** Attempts for this target before moving to the next one; default 1. */
+  attempts?: number;
+}
+
+export interface RouteBreakerConfig {
+  /** Consecutive exhausted-target episodes before the breaker opens; default 3. */
+  failures?: number;
+  /** How long an open breaker skips the target, in ms; default 60000. */
+  cooldown_ms?: number;
+}
+
+export interface RouteRetryConfig {
+  /** Statuses worth retrying on the same target; default [429, 500, 502, 503, 504]. */
+  on_status?: number[];
+  /** Backoff between attempts in ms; the last value repeats; default [250, 1000]. */
+  backoff_ms?: number[];
+  breaker?: RouteBreakerConfig;
+}
+
 export interface ModelRouteConfig {
   authorization_env: string;
   enabled?: boolean;
   model: AdvertisedModelConfig;
   upstream: string;
   upstream_model?: string;
+  /** Ordered failover targets; mutually exclusive with upstream_model. */
+  targets?: RouteTargetConfig[];
+  retry?: RouteRetryConfig;
+  /** Upstream transport; default "ws" (Responses-over-WebSocket). */
+  transport?: "http" | "ws";
 }
 
 export interface ModelAdjustment {
@@ -47,12 +74,30 @@ export interface AdvertisedModel {
   templateSlug: string;
 }
 
+export interface RouteTarget {
+  upstreamModel?: string;
+  attempts: number;
+}
+
+export interface RouteRetryPolicy {
+  onStatus: number[];
+  backoffMs: number[];
+  breaker: { failures: number; cooldownMs: number };
+}
+
+export const DEFAULT_RETRY_ON_STATUS = [429, 500, 502, 503, 504];
+export const DEFAULT_RETRY_BACKOFF_MS = [250, 1000];
+export const DEFAULT_BREAKER = { failures: 3, cooldownMs: 60_000 };
+
 export interface ModelRoute {
   authorizationEnv: string;
   enabled: boolean;
   model: AdvertisedModel;
   upstream: URL;
   upstreamModel?: string;
+  targets: RouteTarget[];
+  retry: RouteRetryPolicy;
+  transport: "http" | "ws";
 }
 
 export class RouteUnavailable extends Error {}
@@ -84,6 +129,19 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
     },
     upstream: new URL(config.upstream),
     ...(config.upstream_model === undefined ? {} : { upstreamModel: config.upstream_model }),
+    targets: (config.targets ?? [{ upstream_model: config.upstream_model }]).map((target) => ({
+      ...(target.upstream_model === undefined ? {} : { upstreamModel: target.upstream_model }),
+      attempts: target.attempts ?? 1,
+    })),
+    retry: {
+      onStatus: config.retry?.on_status ?? [...DEFAULT_RETRY_ON_STATUS],
+      backoffMs: config.retry?.backoff_ms ?? [...DEFAULT_RETRY_BACKOFF_MS],
+      breaker: {
+        failures: config.retry?.breaker?.failures ?? DEFAULT_BREAKER.failures,
+        cooldownMs: config.retry?.breaker?.cooldown_ms ?? DEFAULT_BREAKER.cooldownMs,
+      },
+    },
+    transport: config.transport ?? "ws",
   };
 }
 
@@ -186,6 +244,13 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   if (enabled !== undefined && typeof enabled !== "boolean") {
     throw new Error(`${source}.enabled must be a boolean`);
   }
+  if (value.upstream_model !== undefined && value.targets !== undefined) {
+    throw new Error(`${source} cannot set both upstream_model and targets`);
+  }
+  const transport = value.transport;
+  if (transport !== undefined && transport !== "http" && transport !== "ws") {
+    throw new Error(`${source}.transport must be "http" or "ws"`);
+  }
   return {
     authorization_env: nonEmptyString(value.authorization_env, `${source}.authorization_env`),
     ...(enabled === undefined ? {} : { enabled }),
@@ -195,6 +260,91 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
       value.upstream_model === undefined
         ? undefined
         : nonEmptyString(value.upstream_model, `${source}.upstream_model`),
+    ...(value.targets === undefined
+      ? {}
+      : { targets: targetsConfig(value.targets, `${source}.targets`) }),
+    ...(value.retry === undefined ? {} : { retry: retryConfig(value.retry, `${source}.retry`) }),
+    ...(transport === undefined ? {} : { transport }),
+  };
+}
+
+function targetsConfig(value: unknown, source: string): RouteTargetConfig[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${source} must be a non-empty array`);
+  }
+  return value.map((target, index) => {
+    const targetSource = `${source}[${index}]`;
+    if (!isRecord(target)) {
+      throw new Error(`${targetSource} must be an object`);
+    }
+    const attempts = target.attempts;
+    if (
+      attempts !== undefined &&
+      (typeof attempts !== "number" || !Number.isInteger(attempts) || attempts < 1)
+    ) {
+      throw new Error(`${targetSource}.attempts must be a positive integer`);
+    }
+    return {
+      ...(target.upstream_model === undefined
+        ? {}
+        : {
+            upstream_model: nonEmptyString(target.upstream_model, `${targetSource}.upstream_model`),
+          }),
+      ...(attempts === undefined ? {} : { attempts }),
+    };
+  });
+}
+
+function retryConfig(value: unknown, source: string): RouteRetryConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${source} must be an object`);
+  }
+  const onStatus = value.on_status;
+  if (
+    onStatus !== undefined &&
+    (!Array.isArray(onStatus) ||
+      onStatus.some(
+        (status) =>
+          typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599,
+      ))
+  ) {
+    throw new Error(`${source}.on_status must be an array of HTTP status codes`);
+  }
+  const backoffMs = value.backoff_ms;
+  if (
+    backoffMs !== undefined &&
+    (!Array.isArray(backoffMs) ||
+      backoffMs.length === 0 ||
+      backoffMs.some((ms) => typeof ms !== "number" || ms < 0))
+  ) {
+    throw new Error(`${source}.backoff_ms must be a non-empty array of non-negative numbers`);
+  }
+  const breaker = value.breaker;
+  if (breaker !== undefined && !isRecord(breaker)) {
+    throw new Error(`${source}.breaker must be an object`);
+  }
+  const failures = breaker?.failures;
+  if (
+    failures !== undefined &&
+    (typeof failures !== "number" || !Number.isInteger(failures) || failures < 1)
+  ) {
+    throw new Error(`${source}.breaker.failures must be a positive integer`);
+  }
+  const cooldownMs = breaker?.cooldown_ms;
+  if (cooldownMs !== undefined && (typeof cooldownMs !== "number" || cooldownMs < 0)) {
+    throw new Error(`${source}.breaker.cooldown_ms must be a non-negative number`);
+  }
+  return {
+    ...(onStatus === undefined ? {} : { on_status: onStatus }),
+    ...(backoffMs === undefined ? {} : { backoff_ms: backoffMs }),
+    ...(breaker === undefined
+      ? {}
+      : {
+          breaker: {
+            ...(failures === undefined ? {} : { failures }),
+            ...(cooldownMs === undefined ? {} : { cooldown_ms: cooldownMs }),
+          },
+        }),
   };
 }
 

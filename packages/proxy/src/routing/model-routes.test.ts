@@ -138,7 +138,88 @@ describe("modelRouteFromConfig", () => {
       },
       upstream: new URL("http://127.0.0.1:8317/v1"),
       upstreamModel: "kimi-k3",
+      targets: [{ upstreamModel: "kimi-k3", attempts: 1 }],
+      retry: {
+        onStatus: [429, 500, 502, 503, 504],
+        backoffMs: [250, 1000],
+        breaker: { failures: 3, cooldownMs: 60_000 },
+      },
+      transport: "ws",
     });
+  });
+
+  it("maps failover targets and retry policy", () => {
+    const route = modelRouteFromConfig({
+      authorization_env: "OPENAI_API_KEY",
+      model: {
+        description: "GPT-6 Astra via the AI gateway",
+        display_name: "GPT-6 Astra",
+        priority: 1,
+        slug: "gpt-6-astra",
+        template_slug: "gpt-6-astra",
+      },
+      upstream: "https://gateway.example.test/openai/v1",
+      transport: "http",
+      targets: [
+        { upstream_model: "openai.gpt-6-astra-flex", attempts: 3 },
+        { upstream_model: "openai.gpt-6-astra" },
+      ],
+      retry: { on_status: [429], backoff_ms: [500, 2000], breaker: { failures: 2 } },
+    });
+
+    expect(route.targets).toEqual([
+      { upstreamModel: "openai.gpt-6-astra-flex", attempts: 3 },
+      { upstreamModel: "openai.gpt-6-astra", attempts: 1 },
+    ]);
+    expect(route.retry).toEqual({
+      onStatus: [429],
+      backoffMs: [500, 2000],
+      breaker: { failures: 2, cooldownMs: 60_000 },
+    });
+    expect(route.transport).toBe("http");
+  });
+
+  it("rejects routes setting both upstream_model and targets", () => {
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [
+          {
+            ...routeConfig[0],
+            upstream_model: "kimi-k3",
+            targets: [{ upstream_model: "kimi-k3" }],
+          },
+        ],
+      }),
+    ).toThrow("route[0] cannot set both upstream_model and targets");
+  });
+
+  it("rejects malformed targets and retry policies", () => {
+    const { upstream_model: _upstreamModel, ...base } = routeConfig[0]!;
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [{ ...base, targets: [] }],
+      }),
+    ).toThrow("route[0].targets must be a non-empty array");
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [{ ...base, targets: [{ attempts: 0 }] }],
+      }),
+    ).toThrow("route[0].targets[0].attempts must be a positive integer");
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [{ ...base, retry: { on_status: [42] } }],
+      }),
+    ).toThrow("route[0].retry.on_status must be an array of HTTP status codes");
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [{ ...base, transport: "grpc" }],
+      }),
+    ).toThrow('route[0].transport must be "http" or "ws"');
   });
 });
 

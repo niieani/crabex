@@ -34,12 +34,20 @@ export interface CaptureResponseSummary {
   usage?: CaptureUsage;
 }
 
+export interface CaptureRoutingAttempt {
+  upstreamModel: string;
+  outcome: "served" | "retry" | "failover" | "fatal" | "breaker-open" | "network-error";
+  status?: number;
+}
+
 export interface CaptureRouting {
   action: "routed" | "bundle-override" | "models-advertised";
   routeSlugs?: string[];
   upstream?: string;
   requestedModel?: string;
   upstreamModel?: string;
+  /** Per-attempt trail for routed requests, in order; the last entry served or failed. */
+  attempts?: CaptureRoutingAttempt[];
 }
 
 interface CaptureEventBase {

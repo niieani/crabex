@@ -13,6 +13,7 @@ import type {
 } from "../config/upstream-cache.ts";
 import type { Transformation } from "../context/transformation.ts";
 import type { ModelAdjustment, ModelRoute } from "../routing/model-routes.ts";
+import { modelRouteFromConfig } from "../routing/model-routes.ts";
 import type { ModelDefinition } from "../routing/model-list.ts";
 import { sanitizeCloseCode, startReverseProxy, type RunningProxy } from "./server.ts";
 
@@ -548,6 +549,95 @@ describe("model routing and config bundle override", () => {
     expect(unpinnedBody.models[0]?.display_name).toBe("GPT-5.6 Terra (upstream)");
   });
 
+  it("retries flex on 429 and fails over to the regular model", async () => {
+    process.env.OPENAI_API_KEY = "test-gateway-key";
+    const seen: string[] = [];
+    let flexFailures = 0;
+    const gateway = await startHttpServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        const model = (JSON.parse(body) as { model: string }).model;
+        seen.push(model);
+        response.setHeader("content-type", "application/json");
+        if (model === "openai.gpt-6-astra-flex" && flexFailures < 5) {
+          flexFailures += 1;
+          response.statusCode = 429;
+          response.end(JSON.stringify({ error: { message: "resource unavailable" } }));
+          return;
+        }
+        response.end(JSON.stringify({ model, ok: true }));
+      });
+    });
+    const route = modelRouteFromConfig({
+      authorization_env: "OPENAI_API_KEY",
+      model: {
+        description: "GPT-6 Astra via the AI gateway",
+        display_name: "GPT-6 Astra",
+        priority: 1,
+        slug: "gpt-6-astra",
+        template_slug: "gpt-6-astra",
+      },
+      upstream: `${gateway.origin}/openai/v1`,
+      transport: "http",
+      targets: [
+        { upstream_model: "openai.gpt-6-astra-flex", attempts: 3 },
+        { upstream_model: "openai.gpt-6-astra" },
+      ],
+      retry: { on_status: [429], backoff_ms: [0], breaker: { failures: 1, cooldown_ms: 300_000 } },
+    });
+    const captures = new MemoryCaptureSink();
+    const proxy = await startRoutingProxy(gateway.origin, captures, { routes: [route] });
+
+    const first = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-6-astra", input: "hello" }),
+    });
+
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ model: "openai.gpt-6-astra", ok: true });
+    expect(seen).toEqual([
+      "openai.gpt-6-astra-flex",
+      "openai.gpt-6-astra-flex",
+      "openai.gpt-6-astra-flex",
+      "openai.gpt-6-astra",
+    ]);
+    expect(captures.events[0]?.routing).toMatchObject({
+      action: "routed",
+      requestedModel: "gpt-6-astra",
+      upstreamModel: "openai.gpt-6-astra",
+      attempts: [
+        { upstreamModel: "openai.gpt-6-astra-flex", outcome: "retry", status: 429 },
+        { upstreamModel: "openai.gpt-6-astra-flex", outcome: "retry", status: 429 },
+        { upstreamModel: "openai.gpt-6-astra-flex", outcome: "retry", status: 429 },
+        { upstreamModel: "openai.gpt-6-astra", outcome: "served", status: 200 },
+      ],
+    });
+
+    // The flex breaker opened after the exhausted episode: the next request
+    // goes straight to the regular model.
+    const second = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-6-astra", input: "again" }),
+    });
+
+    expect(second.status).toBe(200);
+    expect(seen).toEqual([
+      "openai.gpt-6-astra-flex",
+      "openai.gpt-6-astra-flex",
+      "openai.gpt-6-astra-flex",
+      "openai.gpt-6-astra",
+      "openai.gpt-6-astra",
+    ]);
+    expect(captures.events[1]?.routing?.attempts).toEqual([
+      { upstreamModel: "openai.gpt-6-astra-flex", outcome: "breaker-open" },
+      { upstreamModel: "openai.gpt-6-astra", outcome: "served", status: 200 },
+    ]);
+    delete process.env.OPENAI_API_KEY;
+  });
+
   it("observes the upstream models response and applies adjustments", async () => {
     const chatgpt = await startHttpServer((_request, response) => {
       response.setHeader("content-type", "application/json");
@@ -859,18 +949,18 @@ class MemoryUpstreamCache implements UpstreamCacheStore {
 
 function testRoute(upstreamOrigin: string): ModelRoute {
   return {
-    authorizationEnv: "ACT_TEST_ROUTE_KEY",
-    enabled: true,
-    model: {
-      description: "Kimi K3 via CLIProxyAPI",
-      displayName: "Kimi K3",
-      overrides: {},
-      priority: 1,
-      slug: "kimi-k3",
-      templateSlug: "gpt-5.6-terra",
-    },
-    upstream: new URL(`${upstreamOrigin}/v1`),
-    upstreamModel: "moonshot-kimi-k3",
+    ...modelRouteFromConfig({
+      authorization_env: "ACT_TEST_ROUTE_KEY",
+      model: {
+        description: "Kimi K3 via CLIProxyAPI",
+        display_name: "Kimi K3",
+        priority: 1,
+        slug: "kimi-k3",
+        template_slug: "gpt-5.6-terra",
+      },
+      upstream: `${upstreamOrigin}/v1`,
+      upstream_model: "moonshot-kimi-k3",
+    }),
   };
 }
 

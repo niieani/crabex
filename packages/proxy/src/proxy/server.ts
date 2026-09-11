@@ -22,6 +22,7 @@ import {
   type ModelAdjustment,
   type ModelRoute,
 } from "../routing/model-routes.ts";
+import { fetchWithFailover, TargetBreakers } from "../routing/failover.ts";
 import {
   isConfigBundleRequest,
   isModelsRequest,
@@ -117,6 +118,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     get: () => ({ routes: [], adjustments: [], fixturePins: [] }),
   };
   const fixtureModels = options.fixtureModels ?? modelsFixture();
+  const breakers = new TargetBreakers();
   const configBundleSource = options.configBundleSource;
   const upstreamCache = options.upstreamCache;
   let lastBundleObservation = 0;
@@ -192,6 +194,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         upstreamCache,
         options.project,
         fixtureModels,
+        breakers,
       );
     },
     websocket: {
@@ -267,6 +270,7 @@ async function proxyHttpRequest(
   upstreamCache: UpstreamCacheStore | undefined,
   project: string | undefined,
   fixtureModels: ModelDefinition[],
+  breakers: TargetBreakers,
 ): Promise<Response> {
   try {
     const declaredLength = Number(request.headers.get("content-length") ?? 0);
@@ -285,28 +289,28 @@ async function proxyHttpRequest(
     const requestUrl = new URL(request.url);
     const routeSet = modelRouteSource.get();
     const routes = routeSet.routes;
-    let target = targetUrl(upstreamOrigin, request.url);
+    const target = targetUrl(upstreamOrigin, request.url);
     let headers = forwardedHeaders(request.headers, cookies.header());
-    let outbound = processed.value;
+    const outbound = processed.value;
     let routing: CaptureRouting | undefined;
-    if (routes.length > 0 && isResponsesRequest(request.method, requestUrl.pathname)) {
+    const routedRequest = (() => {
+      if (routes.length === 0 || !isResponsesRequest(request.method, requestUrl.pathname)) {
+        return undefined;
+      }
       const inspected = inspectResponseModel(processed.value);
       const route = inspected === undefined ? undefined : modelRouteFor(routes, inspected.model);
-      if (inspected !== undefined && route !== undefined) {
-        target = responseTargetUrl(route, requestUrl.search);
-        headers = routedHeaders(headers, authorizationFor(route, process.env));
-        outbound = JSON.stringify({
-          ...inspected.payload,
-          model: route.upstreamModel ?? route.model.slug,
-        });
-        routing = {
-          action: "routed",
-          routeSlugs: [route.model.slug],
-          upstream: route.upstream.origin,
-          requestedModel: inspected.model,
-          upstreamModel: route.upstreamModel ?? route.model.slug,
-        };
-      }
+      return inspected === undefined || route === undefined ? undefined : { inspected, route };
+    })();
+    if (routedRequest !== undefined) {
+      const { inspected, route } = routedRequest;
+      headers = routedHeaders(headers, authorizationFor(route, process.env));
+      routing = {
+        action: "routed",
+        routeSlugs: [route.model.slug],
+        upstream: route.upstream.origin,
+        requestedModel: inspected.model,
+        upstreamModel: route.targets[0]?.upstreamModel ?? route.model.slug,
+      };
     } else if (routes.length > 0 && isModelsRequest(request.method, requestUrl.pathname)) {
       routing = {
         action: "models-advertised",
@@ -314,24 +318,68 @@ async function proxyHttpRequest(
       };
     }
 
-    await recorder.record("http", "client_to_upstream", body, "utf8", {
-      effectivePayload: processed.effectivePayload,
-      requestSummary: processed.requestSummary,
-      transformationChanged: processed.transformationChanged,
-      transformationExecutions: processed.transformationExecutions,
-      harness,
-      project,
-      routing,
-    });
+    // Non-routed requests record before touching the upstream so a capture
+    // failure fails closed; routed requests record after the attempt loop so
+    // the event carries the attempt trail.
+    if (routedRequest === undefined) {
+      await recorder.record("http", "client_to_upstream", body, "utf8", {
+        effectivePayload: processed.effectivePayload,
+        requestSummary: processed.requestSummary,
+        transformationChanged: processed.transformationChanged,
+        transformationExecutions: processed.transformationExecutions,
+        harness,
+        project,
+        routing,
+      });
+    }
 
-    const response = await fetch(target, {
-      method: request.method,
-      headers,
-      body: request.method === "GET" || request.method === "HEAD" ? undefined : outbound,
-      redirect: "manual",
-      decompress: false,
-    });
+    const response =
+      routedRequest === undefined
+        ? await fetch(target, {
+            method: request.method,
+            headers,
+            body: request.method === "GET" || request.method === "HEAD" ? undefined : outbound,
+            redirect: "manual",
+            decompress: false,
+          })
+        : await fetchWithFailover({
+            route: routedRequest.route,
+            breakers,
+            requestFor: (routeTarget) => ({
+              url: responseTargetUrl(routedRequest.route, requestUrl.search),
+              init: {
+                method: request.method,
+                headers,
+                body: JSON.stringify({
+                  ...routedRequest.inspected.payload,
+                  model: routeTarget.upstreamModel ?? routedRequest.route.model.slug,
+                }),
+                redirect: "manual",
+                decompress: false,
+              },
+            }),
+          }).then((result) => {
+            const base: CaptureRouting = routing ?? { action: "routed" };
+            routing = {
+              ...base,
+              ...(result.servedBy === undefined ? {} : { upstreamModel: result.servedBy }),
+              attempts: result.attempts,
+            };
+            return result.response;
+          });
     cookies.capture(response.headers);
+
+    if (routedRequest !== undefined) {
+      await recorder.record("http", "client_to_upstream", body, "utf8", {
+        effectivePayload: processed.effectivePayload,
+        requestSummary: processed.requestSummary,
+        transformationChanged: processed.transformationChanged,
+        transformationExecutions: processed.transformationExecutions,
+        harness,
+        project,
+        routing,
+      });
+    }
 
     const downstream = new Response(response.body, {
       status: response.status,
