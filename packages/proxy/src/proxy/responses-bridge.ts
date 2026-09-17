@@ -165,11 +165,16 @@ export async function resolveEventStreamResponse(
 
   const buffered: string[] = [];
   const iterator = parseSseEvents(response.body);
-  for await (const event of iterator) {
+  // Use next() so a successful commit does not close the iterator. `for await`
+  // would call return() on the way out and drop the rest of the SSE stream.
+  for (;;) {
+    const next = await iterator.next();
+    if (next.done) break;
+    const event = next.value;
     buffered.push(event);
     const retryStatus = eventStreamRetryStatus(event);
     if (retryStatus !== undefined && !buffered.some((item) => hasStreamOutput(item))) {
-      await iterator.return?.(undefined);
+      await iterator.return(undefined);
       return { kind: "retry", status: retryStatus };
     }
     if (hasStreamOutput(event)) {

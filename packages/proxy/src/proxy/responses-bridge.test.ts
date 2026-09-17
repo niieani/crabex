@@ -150,6 +150,38 @@ describe("resolveEventStreamResponse", () => {
     expect(body).toContain("response.output_text.delta");
     expect(body).toContain("response.completed");
   });
+
+  it("keeps reading later SSE chunks after the attempt is committed", async () => {
+    const encoder = new TextEncoder();
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) {
+          controller.enqueue(encoder.encode('data: {"type":"response.created"}\n\n'));
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"response.output_item.added","item":{"type":"message"}}\n\n',
+            ),
+          );
+          return;
+        }
+        controller.enqueue(
+          encoder.encode('data: {"type":"response.output_text.delta","delta":"hi"}\n\n'),
+        );
+        controller.enqueue(encoder.encode('data: {"type":"response.completed"}\n\n'));
+        controller.close();
+      },
+    });
+    const resolved = await resolveEventStreamResponse(
+      new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    );
+    expect(resolved.kind).toBe("ok");
+    if (resolved.kind !== "ok") return;
+    const text = await resolved.response.text();
+    expect(text).toContain("response.output_text.delta");
+    expect(text).toContain("response.completed");
+  });
 });
 
 describe("parseSseEvents", () => {
