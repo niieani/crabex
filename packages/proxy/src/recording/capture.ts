@@ -34,6 +34,24 @@ export interface CaptureResponseSummary {
   usage?: CaptureUsage;
 }
 
+/** Compact diagnostic from `error` / `response.failed` — kept after retention latches. */
+export interface CaptureErrorSummary {
+  eventType: string;
+  status?: number;
+  code?: string;
+  message?: string;
+  model?: string;
+}
+
+/**
+ * Where an upstream-to-client event actually came from. Distinguishes a
+ * routed gateway SSE stream from a ChatGPT websocket/HTTP passthrough.
+ */
+export interface CaptureUpstreamOrigin {
+  kind: "gateway-http" | "gateway-websocket" | "chatgpt-http" | "chatgpt-websocket";
+  url: string;
+}
+
 export interface CaptureRoutingAttempt {
   upstreamModel: string;
   outcome: "served" | "retry" | "failover" | "fatal" | "breaker-open" | "network-error";
@@ -64,6 +82,8 @@ interface CaptureEventBase {
   harness?: HarnessIdentity;
   project?: string;
   routing?: CaptureRouting;
+  origin?: CaptureUpstreamOrigin;
+  errorSummary?: CaptureErrorSummary;
 }
 
 export interface FullCaptureEvent extends CaptureEventBase {

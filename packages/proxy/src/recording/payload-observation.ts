@@ -1,6 +1,7 @@
 import { classifyMessage } from "../context/classification.ts";
 import type {
   CaptureDirection,
+  CaptureErrorSummary,
   CaptureMessageObservation,
   CaptureRequestSummary,
   CaptureResponseSummary,
@@ -11,6 +12,7 @@ export interface PayloadObservation {
   eventType?: string;
   requestSummary?: CaptureRequestSummary;
   responseSummary?: CaptureResponseSummary;
+  errorSummary?: CaptureErrorSummary;
   /**
    * Codex conversation scope for retention latching: `client_metadata`'s
    * thread_id (falling back to session_id) on response.create payloads.
@@ -34,7 +36,46 @@ export function observePayload(payload: string, direction: CaptureDirection): Pa
   if (direction === "upstream_to_client" && eventType === "response.completed") {
     return { eventType, responseSummary: responseSummary(value) };
   }
+  if (direction === "upstream_to_client") {
+    const error = errorSummary(value, eventType);
+    if (error !== undefined) return { eventType: error.eventType, errorSummary: error };
+  }
   return eventType === undefined ? {} : { eventType };
+}
+
+const ERROR_EVENT_TYPES = new Set(["error", "response.failed", "response.error"]);
+const MAX_ERROR_MESSAGE = 500;
+
+function errorSummary(
+  value: Record<string, unknown>,
+  eventType: string | undefined,
+): CaptureErrorSummary | undefined {
+  const response = objectValue(value.response);
+  const nested = objectValue(value.error) ?? objectValue(response?.error);
+  const detail = stringValue(value.detail) ?? stringValue(nested?.detail);
+  const message =
+    stringValue(nested?.message) ??
+    detail ??
+    (typeof value.error === "string" ? value.error : undefined);
+  const code = stringValue(nested?.code);
+  const status = typeof value.status === "number" ? value.status : undefined;
+  const model = stringValue(response?.model) ?? stringValue(value.model);
+  const isError =
+    (eventType !== undefined && ERROR_EVENT_TYPES.has(eventType)) ||
+    nested !== undefined ||
+    detail !== undefined;
+  if (!isError) return undefined;
+  return {
+    eventType: eventType ?? "error",
+    ...(status === undefined ? {} : { status }),
+    ...(code === undefined ? {} : { code }),
+    ...(message === undefined ? {} : { message: clip(message, MAX_ERROR_MESSAGE) }),
+    ...(model === undefined ? {} : { model }),
+  };
+}
+
+function clip(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max)}…`;
 }
 
 function sessionKeyOf(value: Record<string, unknown>): string | undefined {

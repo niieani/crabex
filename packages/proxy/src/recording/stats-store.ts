@@ -5,16 +5,32 @@ import type {
   TransformationExecution,
   TransformationTelemetry,
 } from "../context/transformation.ts";
-import type { CaptureRouting } from "./capture.ts";
+import type { CaptureRouting, CaptureUsage } from "./capture.ts";
+
+/** Token-cache samples collected from `response.completed` usage. */
+export interface CacheUsageStats {
+  samples: number;
+  inputTokens: number;
+  cachedTokens: number;
+}
 
 /** Per-target aggregates for one upstream model of a route. */
 export interface RouteTargetStats {
   attempts: number;
   served: number;
   failed: number;
+  /** Individual attempts classified as `retry` (same target, try again). */
+  retries: number;
+  /** Requests that included at least one retry on this target. */
+  retriedRequests: number;
+  /** Subset of `retriedRequests` that later served on the same target. */
+  retryRecoveries: number;
+  /** Attempts that left this target for the next one (`failover`). */
+  failovers: number;
   totalLatencyMs: number;
   lastStatus?: number;
   lastSeenAt: string;
+  cache?: CacheUsageStats;
 }
 
 /** Per-route aggregates across all of its targets. */
@@ -22,9 +38,13 @@ export interface RouteStats {
   requests: number;
   served: number;
   failed: number;
+  /** Requests served by a later target than the first one tried. */
+  failovers: number;
   totalLatencyMs: number;
   lastSeenAt: string;
   targets: Record<string, RouteTargetStats>;
+  cache?: CacheUsageStats;
+  fallbackCache?: CacheUsageStats;
 }
 
 /** Routing telemetry entry served to the UI: action counts plus route stats. */
@@ -35,8 +55,22 @@ export interface RoutingTelemetryEntry {
   lastSeenAt: string;
   served?: number;
   failed?: number;
+  failovers?: number;
+  errorRate?: number;
   avgLatencyMs?: number;
-  targets?: Record<string, RouteTargetStats & { avgLatencyMs: number }>;
+  cacheHitRate?: number;
+  fallbackCacheHitRate?: number;
+  cache?: CacheUsageStats;
+  fallbackCache?: CacheUsageStats;
+  targets?: Record<string, RouteTargetTelemetry>;
+}
+
+/** Per-target telemetry with computed rates. */
+export interface RouteTargetTelemetry extends RouteTargetStats {
+  avgLatencyMs: number;
+  errorRate?: number;
+  retrySuccessRate?: number;
+  cacheHitRate?: number;
 }
 
 interface StatsFileData {
@@ -89,7 +123,7 @@ export class StatsStore {
       return new StatsStore(path, {
         version: 1,
         transformations: parsed.transformations ?? {},
-        routes: parsed.routes ?? {},
+        routes: normalizeRoutes(parsed.routes ?? {}),
         actions: parsed.actions ?? {},
       });
     } catch {
@@ -140,40 +174,69 @@ export class StatsStore {
     this.#scheduleSave();
   }
 
+  /**
+   * Attributes `response.completed` token usage to the route/target that
+   * served the request. Fallback serves (later target than the first tried)
+   * are also tallied on `fallbackCache` so we can see whether a flex→standard
+   * switch kept the prompt prefix cached.
+   */
+  recordUsage(routing: CaptureRouting, usage: CaptureUsage, timestamp: string): void {
+    const slug = routing.action === "routed" ? routing.routeSlugs?.[0] : undefined;
+    if (slug === undefined) return;
+    const servedBy =
+      routing.upstreamModel ??
+      [...(routing.attempts ?? [])].reverse().find((attempt) => attempt.outcome === "served")
+        ?.upstreamModel;
+    if (servedBy === undefined) return;
+    const route = this.#data.routes[slug];
+    if (route === undefined) return;
+
+    addCache(route, "cache", usage);
+    if (isFallbackServe(routing.attempts ?? [])) addCache(route, "fallbackCache", usage);
+    const target = route.targets[servedBy];
+    if (target !== undefined) addCache(target, "cache", usage);
+    if (timestamp > route.lastSeenAt) route.lastSeenAt = timestamp;
+    this.#scheduleSave();
+  }
+
   #recordRouteAttempts(
     slug: string,
     attempts: NonNullable<CaptureRouting["attempts"]>,
     timestamp: string,
   ): void {
-    const route = this.#data.routes[slug] ?? {
-      requests: 0,
-      served: 0,
-      failed: 0,
-      totalLatencyMs: 0,
-      lastSeenAt: timestamp,
-      targets: {},
-    };
+    const route = this.#data.routes[slug] ?? emptyRoute(timestamp);
     route.requests += 1;
     const served = attempts.at(-1)?.outcome === "served";
     route.served += served ? 1 : 0;
     route.failed += served ? 0 : 1;
+    if (isFallbackServe(attempts)) route.failovers += 1;
     if (timestamp > route.lastSeenAt) route.lastSeenAt = timestamp;
+
+    const byTarget = new Map<string, NonNullable<CaptureRouting["attempts"]>>();
     for (const attempt of attempts) {
       route.totalLatencyMs += attempt.durationMs ?? 0;
-      const target = route.targets[attempt.upstreamModel] ?? {
-        attempts: 0,
-        served: 0,
-        failed: 0,
-        totalLatencyMs: 0,
-        lastSeenAt: timestamp,
-      };
+      const target = route.targets[attempt.upstreamModel] ?? emptyTarget(timestamp);
       target.attempts += 1;
       target.served += attempt.outcome === "served" ? 1 : 0;
       target.failed += attempt.outcome === "served" ? 0 : 1;
+      target.retries += attempt.outcome === "retry" ? 1 : 0;
+      target.failovers += attempt.outcome === "failover" ? 1 : 0;
       target.totalLatencyMs += attempt.durationMs ?? 0;
       if (attempt.status !== undefined) target.lastStatus = attempt.status;
       if (timestamp > target.lastSeenAt) target.lastSeenAt = timestamp;
       route.targets[attempt.upstreamModel] = target;
+      const list = byTarget.get(attempt.upstreamModel) ?? [];
+      list.push(attempt);
+      byTarget.set(attempt.upstreamModel, list);
+    }
+    for (const [model, targetAttempts] of byTarget) {
+      const target = route.targets[model];
+      if (target === undefined) continue;
+      if (!targetAttempts.some((attempt) => attempt.outcome === "retry")) continue;
+      target.retriedRequests += 1;
+      if (targetAttempts.some((attempt) => attempt.outcome === "served")) {
+        target.retryRecoveries += 1;
+      }
     }
     this.#data.routes[slug] = route;
   }
@@ -196,11 +259,25 @@ export class StatsStore {
             : {
                 served: route.served,
                 failed: route.failed,
+                failovers: route.failovers,
+                errorRate: percent(route.failed, route.requests),
                 avgLatencyMs: average(route.totalLatencyMs, route.requests),
+                cacheHitRate: cacheHitRate(route.cache),
+                fallbackCacheHitRate: cacheHitRate(route.fallbackCache),
+                ...(route.cache === undefined ? {} : { cache: route.cache }),
+                ...(route.fallbackCache === undefined
+                  ? {}
+                  : { fallbackCache: route.fallbackCache }),
                 targets: Object.fromEntries(
                   Object.entries(route.targets).map(([model, target]) => [
                     model,
-                    { ...target, avgLatencyMs: average(target.totalLatencyMs, target.attempts) },
+                    {
+                      ...target,
+                      avgLatencyMs: average(target.totalLatencyMs, target.attempts),
+                      errorRate: percent(target.failed, target.attempts),
+                      retrySuccessRate: percent(target.retryRecoveries, target.retriedRequests),
+                      cacheHitRate: cacheHitRate(target.cache),
+                    },
                   ]),
                 ),
               }),
@@ -255,4 +332,85 @@ export class StatsStore {
 
 function average(totalMs: number, count: number): number {
   return count === 0 ? 0 : Math.round(totalMs / count);
+}
+
+function percent(numerator: number, denominator: number): number | undefined {
+  if (denominator === 0) return undefined;
+  return Math.round((numerator / denominator) * 100);
+}
+
+function cacheHitRate(cache: CacheUsageStats | undefined): number | undefined {
+  if (cache === undefined || cache.samples === 0 || cache.inputTokens === 0) return undefined;
+  return Math.round((cache.cachedTokens / cache.inputTokens) * 100);
+}
+
+/** Served by a different upstream model than the first one we tried. */
+export function isFallbackServe(attempts: NonNullable<CaptureRouting["attempts"]>): boolean {
+  const served = [...attempts].reverse().find((attempt) => attempt.outcome === "served");
+  if (served === undefined) return false;
+  return attempts[0]?.upstreamModel !== served.upstreamModel;
+}
+
+function emptyRoute(timestamp: string): RouteStats {
+  return {
+    requests: 0,
+    served: 0,
+    failed: 0,
+    failovers: 0,
+    totalLatencyMs: 0,
+    lastSeenAt: timestamp,
+    targets: {},
+  };
+}
+
+function emptyTarget(timestamp: string): RouteTargetStats {
+  return {
+    attempts: 0,
+    served: 0,
+    failed: 0,
+    retries: 0,
+    retriedRequests: 0,
+    retryRecoveries: 0,
+    failovers: 0,
+    totalLatencyMs: 0,
+    lastSeenAt: timestamp,
+  };
+}
+
+function addCache(
+  holder: { cache?: CacheUsageStats; fallbackCache?: CacheUsageStats },
+  key: "cache" | "fallbackCache",
+  usage: CaptureUsage,
+): void {
+  const current = holder[key] ?? { samples: 0, inputTokens: 0, cachedTokens: 0 };
+  current.samples += 1;
+  current.inputTokens += usage.inputTokens;
+  current.cachedTokens += usage.cachedTokens;
+  holder[key] = current;
+}
+
+function normalizeRoutes(routes: Record<string, RouteStats>): Record<string, RouteStats> {
+  return Object.fromEntries(
+    Object.entries(routes).map(([slug, route]) => [
+      slug,
+      {
+        ...emptyRoute(route.lastSeenAt ?? new Date(0).toISOString()),
+        ...route,
+        failovers: route.failovers ?? 0,
+        targets: Object.fromEntries(
+          Object.entries(route.targets ?? {}).map(([model, target]) => [
+            model,
+            {
+              ...emptyTarget(target.lastSeenAt ?? route.lastSeenAt ?? new Date(0).toISOString()),
+              ...target,
+              retries: target.retries ?? 0,
+              retriedRequests: target.retriedRequests ?? 0,
+              retryRecoveries: target.retryRecoveries ?? 0,
+              failovers: target.failovers ?? 0,
+            },
+          ]),
+        ),
+      },
+    ]),
+  );
 }

@@ -44,10 +44,13 @@ recorder then switches to metadata-only events for the rest of the Probe.
 
 Metadata-only events retain protocol type and correlation fields, payload byte
 count, message paths and roles, stable harness classifications such as
-`segment:environment`, response usage, and Transformation Executions. They do
-not retain the original or Effective Payload. Harness-injected user messages
-recognized by the stable classifier—including `<environment_context>`, project
-instructions, and recommended plugins—do not count as ordinary user input.
+`segment:environment`, response usage, Transformation Executions, a compact
+error summary (`type`, status, code, message, model), and the upstream origin
+(`gateway-http`, `gateway-websocket`, `chatgpt-http`, or `chatgpt-websocket`
+plus the URL). They do not retain the original or Effective Payload — including
+the full `response.failed` body. Harness-injected user messages recognized by
+the stable classifier—including `<environment_context>`, project instructions,
+and recommended plugins—do not count as ordinary user input.
 
 Forwarding and transformation behavior is unchanged: the proxy still processes
 the complete in-memory payload before forwarding it. The retention policy only

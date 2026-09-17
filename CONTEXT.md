@@ -63,3 +63,15 @@ _Avoid_: Parse failure
 **Harness**:
 The Codex client that constructs the request context, currently Codex Desktop or Codex TUI.
 _Avoid_: Originator, frontend
+
+**Flex Route**:
+A model route that prefers OpenAI flex-tier pricing (Batch rates, about half of standard) and may fail over to the regular model. Prompt cache does not survive that switch. See `docs/flex-routes.md`.
+_Avoid_: cheap model, batch job
+
+**Error Summary**:
+The compact diagnostic kept on a captured upstream failure after retention latches: event type, status, code, message, and model. The full failed payload is not retained.
+_Avoid_: error body, failed response
+
+**Upstream Origin**:
+The concrete peer that produced an upstream-to-client event: a routed gateway HTTP/WebSocket URL, or the ChatGPT HTTP/WebSocket URL the request would otherwise have used.
+_Avoid_: upstream, destination

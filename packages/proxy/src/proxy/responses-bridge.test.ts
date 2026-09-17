@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  eventStreamRetryStatus,
   httpPayloadFor,
   parseSseEvents,
+  resolveEventStreamResponse,
   rewriteBridgedEvent,
   warmupCompletionEvents,
   wrappedErrorEvent,
@@ -97,6 +99,56 @@ describe("wrappedErrorEvent", () => {
       status: 502,
       error: { code: "http_502", message: "bad gateway" },
     });
+  });
+});
+
+describe("eventStreamRetryStatus", () => {
+  it("maps a rate_limit_exceeded SSE error to 429", () => {
+    expect(
+      eventStreamRetryStatus(
+        JSON.stringify({
+          type: "error",
+          error: { code: "rate_limit_exceeded", message: "try again later" },
+        }),
+      ),
+    ).toBe(429);
+    expect(
+      eventStreamRetryStatus(
+        JSON.stringify({
+          type: "response.failed",
+          response: { error: { code: "rate_limit_exceeded" } },
+        }),
+      ),
+    ).toBe(429);
+    expect(eventStreamRetryStatus(JSON.stringify({ type: "error", code: "server_error" }))).toBe(
+      undefined,
+    );
+  });
+});
+
+describe("resolveEventStreamResponse", () => {
+  it("classifies an HTTP 200 SSE rate limit as a retryable 429", async () => {
+    const resolved = await resolveEventStreamResponse(
+      new Response(
+        'data: {"type":"response.created"}\n\ndata: {"type":"error","error":{"code":"rate_limit_exceeded"}}\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    expect(resolved).toEqual({ kind: "retry", status: 429 });
+  });
+
+  it("replays a successful SSE body after the first output event", async () => {
+    const resolved = await resolveEventStreamResponse(
+      new Response(
+        'data: {"type":"response.created"}\n\ndata: {"type":"response.output_text.delta","delta":"hi"}\n\ndata: {"type":"response.completed"}\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    expect(resolved.kind).toBe("ok");
+    if (resolved.kind !== "ok") return;
+    const body = await resolved.response.text();
+    expect(body).toContain("response.output_text.delta");
+    expect(body).toContain("response.completed");
   });
 });
 

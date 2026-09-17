@@ -6,6 +6,8 @@ import type {
   CaptureRouting,
   CaptureSink,
   CaptureTransport,
+  CaptureUpstreamOrigin,
+  CaptureUsage,
 } from "../recording/capture.ts";
 import { CaptureRetention } from "../recording/capture-retention.ts";
 import { observePayload } from "../recording/payload-observation.ts";
@@ -34,6 +36,15 @@ export class EventRecorder {
     this.#stats = stats;
   }
 
+  /** Attributes completed-response token usage to a prior routing decision. */
+  recordUsage(routing: CaptureRouting, usage: CaptureUsage): void {
+    try {
+      this.#stats?.recordUsage(routing, usage, this.#now().toISOString());
+    } catch {
+      // stats are best-effort
+    }
+  }
+
   async record(
     transport: CaptureTransport,
     direction: CaptureDirection,
@@ -47,6 +58,9 @@ export class EventRecorder {
       harness?: HarnessIdentity;
       project?: string;
       routing?: CaptureRouting;
+      /** Attribute `response.completed` usage without re-counting the route. */
+      usageFor?: CaptureRouting;
+      origin?: CaptureUpstreamOrigin;
     } = {},
   ): Promise<void> {
     const payload =
@@ -72,6 +86,8 @@ export class EventRecorder {
       ...(metadata.harness === undefined ? {} : { harness: metadata.harness }),
       ...(metadata.project === undefined ? {} : { project: metadata.project }),
       ...(metadata.routing === undefined ? {} : { routing: metadata.routing }),
+      ...(metadata.origin === undefined ? {} : { origin: metadata.origin }),
+      ...(observation.errorSummary === undefined ? {} : { errorSummary: observation.errorSummary }),
     };
     const event: CaptureEvent =
       mode === "full"
@@ -100,8 +116,13 @@ export class EventRecorder {
       if (metadata.transformationExecutions !== undefined) {
         this.#stats?.recordTransformations(metadata.transformationExecutions, common.timestamp);
       }
-      if (metadata.routing !== undefined) {
+      if (metadata.routing !== undefined && direction === "client_to_upstream") {
         this.#stats?.recordRouting(metadata.routing, common.timestamp);
+      }
+      const usage = observation.responseSummary?.usage;
+      const usageFor = metadata.usageFor ?? metadata.routing;
+      if (usage !== undefined && usageFor !== undefined) {
+        this.#stats?.recordUsage(usageFor, usage, common.timestamp);
       }
     } catch {
       // stats are best-effort

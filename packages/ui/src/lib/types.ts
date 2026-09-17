@@ -56,14 +56,28 @@ export interface CaptureRouting {
   attempts?: CaptureRoutingAttempt[];
 }
 
+export interface CacheUsageStats {
+  samples: number;
+  inputTokens: number;
+  cachedTokens: number;
+}
+
 export interface RouteTargetStats {
   attempts: number;
   served: number;
   failed: number;
+  retries?: number;
+  retriedRequests?: number;
+  retryRecoveries?: number;
+  failovers?: number;
   totalLatencyMs: number;
   avgLatencyMs?: number;
   lastStatus?: number;
   lastSeenAt: string;
+  errorRate?: number;
+  retrySuccessRate?: number;
+  cacheHitRate?: number;
+  cache?: CacheUsageStats;
 }
 
 export interface RoutingTelemetry {
@@ -73,7 +87,13 @@ export interface RoutingTelemetry {
   lastSeenAt: string;
   served?: number;
   failed?: number;
+  failovers?: number;
+  errorRate?: number;
   avgLatencyMs?: number;
+  cacheHitRate?: number;
+  fallbackCacheHitRate?: number;
+  cache?: CacheUsageStats;
+  fallbackCache?: CacheUsageStats;
   targets?: Record<string, RouteTargetStats>;
 }
 

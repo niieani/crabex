@@ -66,6 +66,10 @@ describe("subscription reverse proxy", () => {
         transport: "http",
         direction: "client_to_upstream",
         payload: requestBody,
+        origin: {
+          kind: "chatgpt-http",
+          url: expect.stringContaining("/backend-api/codex/responses"),
+        },
       },
     ]);
     expect(JSON.stringify(captures.events)).not.toContain("oauth-secret");
@@ -112,6 +116,7 @@ describe("subscription reverse proxy", () => {
         transport: "websocket",
         direction: "upstream_to_client",
         payload: '{"type":"response.created","response":{"id":"resp_1"}}',
+        origin: { kind: "chatgpt-websocket", url: expect.stringMatching(/^ws:\/\//) },
       },
     ]);
   });
@@ -403,6 +408,60 @@ describe("model routing and config bundle override", () => {
           requestedModel: "kimi-k3",
           upstreamModel: "moonshot-kimi-k3",
         },
+        origin: {
+          kind: "gateway-http",
+          url: `${routed.origin}/v1/responses?trace=1`,
+        },
+      });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("decompresses a zstd Responses body before routing it to the gateway", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let chatgptHits = 0;
+      const chatgpt = await startHttpServer((_request, response) => {
+        chatgptHits += 1;
+        response.end("chatgpt");
+      });
+      const routed = await startHttpServer(async (request, response) => {
+        expect(request.headers["content-encoding"]).toBeUndefined();
+        const body = await readBody(request);
+        expect(JSON.parse(body.toString())).toMatchObject({
+          model: "moonshot-kimi-k3",
+          input: "hello",
+        });
+        response.end("routed");
+      });
+      const captures = new MemoryCaptureSink();
+      const proxy = await startRoutingProxy(chatgpt.origin, captures, {
+        routes: [testRoute(routed.origin)],
+      });
+      const payload = JSON.stringify({ model: "kimi-k3", input: "hello" });
+      const compressed = Buffer.from(await Bun.zstdCompress(payload));
+
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer oauth-secret",
+          "content-type": "application/json",
+          "content-encoding": "zstd",
+        },
+        body: compressed,
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("routed");
+      expect(chatgptHits).toBe(0);
+      expect(captures.events[0]).toMatchObject({
+        routing: {
+          action: "routed",
+          requestedModel: "kimi-k3",
+          upstreamModel: "moonshot-kimi-k3",
+        },
+        origin: { kind: "gateway-http" },
       });
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
@@ -948,6 +1007,93 @@ describe("model routing and config bundle override", () => {
     }
   });
 
+  it("fails over a bridged SSE rate_limit_exceeded to the regular model", async () => {
+    process.env.OPENAI_API_KEY = "test-gateway-key";
+    try {
+      const seen: string[] = [];
+      const gateway = await startHttpServer((request, response) => {
+        let body = "";
+        request.on("data", (chunk) => (body += chunk));
+        request.on("end", () => {
+          const model = String((JSON.parse(body) as { model: string }).model);
+          seen.push(model);
+          response.setHeader("content-type", "text/event-stream");
+          if (model.endsWith("-flex")) {
+            response.end(
+              `data: {"type":"response.created","response":{"status":"in_progress"}}\n\n` +
+                `data: {"type":"error","error":{"code":"rate_limit_exceeded","message":"We're currently processing too many requests — please try again later."}}\n\n` +
+                `data: {"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded"}}}\n\n`,
+            );
+            return;
+          }
+          response.end(
+            `data: {"type":"response.created","response":{"id":"resp_std","model":"${model}","status":"in_progress"}}\n\n` +
+              `data: {"type":"response.output_text.delta","delta":"ok"}\n\n` +
+              `data: {"type":"response.completed","response":{"id":"resp_std","model":"${model}","status":"completed"}}\n\n`,
+          );
+        });
+      });
+      const route = modelRouteFromConfig({
+        authorization_env: "OPENAI_API_KEY",
+        model: {
+          description: "GPT-6 Astra via the AI gateway",
+          display_name: "GPT-6 Astra",
+          priority: 1,
+          slug: "gpt-6-astra",
+          template_slug: "gpt-6-astra",
+        },
+        upstream: `${gateway.origin}/openai/v1`,
+        transport: "http",
+        targets: [
+          { upstream_model: "openai.gpt-6-astra-flex", attempts: 2 },
+          { upstream_model: "openai.gpt-6-astra" },
+        ],
+        retry: { on_status: [429], backoff_ms: [0] },
+      });
+      const captures = new MemoryCaptureSink();
+      const chatgpt = await startWebSocketServer((socket) => {
+        socket.on("message", () => socket.send("chatgpt"));
+      });
+      const proxy = await startRoutingProxy(chatgpt.origin, captures, { routes: [route] });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: { authorization: "Bearer oauth-secret" } },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+
+      client.send(JSON.stringify({ type: "response.create", model: "gpt-6-astra", input: [] }));
+
+      const created = JSON.parse(await nextMessage(client)) as { type: string };
+      expect(created.type).toBe("response.created");
+      expect(JSON.parse(await nextMessage(client))).toMatchObject({
+        type: "response.output_text.delta",
+        delta: "ok",
+      });
+      expect(seen).toEqual([
+        "openai.gpt-6-astra-flex",
+        "openai.gpt-6-astra-flex",
+        "openai.gpt-6-astra",
+      ]);
+      await eventually(() =>
+        expect(captures.events[0]).toMatchObject({
+          direction: "client_to_upstream",
+          routing: {
+            requestedModel: "gpt-6-astra",
+            upstreamModel: "openai.gpt-6-astra",
+            attempts: [
+              { upstreamModel: "openai.gpt-6-astra-flex", outcome: "retry", status: 429 },
+              { upstreamModel: "openai.gpt-6-astra-flex", outcome: "retry", status: 429 },
+              { upstreamModel: "openai.gpt-6-astra", outcome: "served", status: 200 },
+            ],
+          },
+        }),
+      );
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
   it("answers a bridged generate:false warmup locally without touching the gateway", async () => {
     process.env.OPENAI_API_KEY = "test-gateway-key";
     try {
@@ -1034,10 +1180,11 @@ describe("model routing and config bundle override", () => {
         targets: [{ upstream_model: "openai.gpt-6-astra-flex", attempts: 2 }],
         retry: { on_status: [429], backoff_ms: [0] },
       });
+      const captures = new MemoryCaptureSink();
       const chatgpt = await startWebSocketServer((socket) => {
         socket.on("message", () => socket.send("chatgpt"));
       });
-      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+      const proxy = await startRoutingProxy(chatgpt.origin, captures, {
         routes: [route],
       });
       const client = new WebSocket(
@@ -1058,6 +1205,23 @@ describe("model routing and config bundle override", () => {
         type: "error",
         status: 429,
         error: { code: "resource_unavailable", message: "no flex" },
+      });
+      await eventually(() =>
+        expect(captures.events.some((event) => event.errorSummary !== undefined)).toBe(true),
+      );
+      expect(
+        captures.events.find((event) => event.direction === "upstream_to_client"),
+      ).toMatchObject({
+        origin: {
+          kind: "gateway-http",
+          url: `${gateway.origin}/openai/v1/responses`,
+        },
+        errorSummary: {
+          eventType: "error",
+          status: 429,
+          code: "resource_unavailable",
+          message: "no flex",
+        },
       });
 
       // The socket survives: an unrouted model still flows to the default WS upstream.

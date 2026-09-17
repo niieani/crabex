@@ -30,6 +30,47 @@ function astraRoute(): ModelRoute {
   });
 }
 
+function sseResponse(events: unknown[]): Response {
+  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+function sseRateLimited(): Response {
+  return sseResponse([
+    { type: "response.created", response: { status: "in_progress" } },
+    {
+      type: "error",
+      error: {
+        code: "rate_limit_exceeded",
+        message: "We're currently processing too many requests — please try again later.",
+      },
+    },
+    {
+      type: "response.failed",
+      response: {
+        status: "failed",
+        error: {
+          code: "rate_limit_exceeded",
+          message: "We're currently processing too many requests — please try again later.",
+        },
+      },
+    },
+  ]);
+}
+
+async function readSseData(response: Response): Promise<unknown[]> {
+  const text = await response.text();
+  return text.split("\n\n").flatMap((block) =>
+    block
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => JSON.parse(line.slice(5).trimStart()) as unknown),
+  );
+}
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -150,6 +191,49 @@ describe("fetchWithFailover", () => {
       "openai.gpt-6-astra-flex",
     ]);
     expect(result.attempts.map((attempt) => attempt.outcome)).toEqual(["retry", "retry", "served"]);
+  });
+
+  it("treats an SSE rate_limit_exceeded after HTTP 200 like a 429", async () => {
+    const fetchImpl = fakeFetch({
+      "openai.gpt-6-astra-flex": [sseRateLimited(), sseRateLimited(), sseRateLimited()],
+      "openai.gpt-6-astra": [
+        sseResponse([
+          { type: "response.created", response: { status: "in_progress" } },
+          { type: "response.output_text.delta", delta: "ok" },
+          { type: "response.completed", response: { status: "completed" } },
+        ]),
+      ],
+    });
+
+    const result = await fetchWithFailover({
+      route: astraRoute(),
+      fetchImpl,
+      sleep: noSleep,
+      requestFor: (target) => ({
+        url: new URL("https://gateway.test/openai/v1/responses"),
+        init: { method: "POST", body: JSON.stringify({ model: target.upstreamModel }) },
+      }),
+    });
+
+    expect(result.servedBy).toBe("openai.gpt-6-astra");
+    expect(fetchImpl.seen).toEqual([
+      "openai.gpt-6-astra-flex",
+      "openai.gpt-6-astra-flex",
+      "openai.gpt-6-astra-flex",
+      "openai.gpt-6-astra",
+    ]);
+    expect(result.attempts.map((attempt) => attempt.outcome)).toEqual([
+      "retry",
+      "retry",
+      "retry",
+      "served",
+    ]);
+    expect(result.attempts[0]).toMatchObject({ status: 429 });
+    expect(await readSseData(result.response)).toEqual([
+      { type: "response.created", response: { status: "in_progress" } },
+      { type: "response.output_text.delta", delta: "ok" },
+      { type: "response.completed", response: { status: "completed" } },
+    ]);
   });
 
   it("fails over to the regular model when flex exhausts its attempts", async () => {

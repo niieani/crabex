@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { CaptureRouting, CaptureSink } from "../recording/capture.ts";
+import type { CaptureRouting, CaptureSink, CaptureUpstreamOrigin } from "../recording/capture.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
 import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
 import type { Transformation } from "../context/transformation.ts";
@@ -38,6 +38,7 @@ import {
   isResponsesRequest,
 } from "../routing/paths.ts";
 import { CloudflareCookieJar } from "./cloudflare-cookie-jar.ts";
+import { observePayload } from "../recording/payload-observation.ts";
 import { CaptureFailure, EventRecorder, processClientPayload } from "./event-recorder.ts";
 import type { LocalApi } from "../api/local-api.ts";
 
@@ -122,6 +123,10 @@ interface SocketData {
     value: string | ArrayBuffer | Uint8Array;
     routing?: CaptureRouting;
   }>;
+  /** Last routed request on this socket; used to attribute completed usage. */
+  lastRouting?: CaptureRouting;
+  /** Origin of the live ChatGPT/gateway WebSocket peer. */
+  upstreamOrigin?: CaptureUpstreamOrigin;
 }
 
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
@@ -264,6 +269,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
               outbound = connected.value;
               routing = connected.routing;
             }
+            if (routing !== undefined) data.lastRouting = routing;
             await data.recorder.record("websocket", "client_to_upstream", message, encoding, {
               effectivePayload: processed.effectivePayload,
               requestSummary: processed.requestSummary,
@@ -272,6 +278,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
               harness: data.harness,
               project: data.project,
               routing,
+              ...(data.upstreamOrigin === undefined ? {} : { origin: data.upstreamOrigin }),
             });
             const upstream = data.upstream;
             if (upstream === undefined || upstream.readyState !== WebSocket.OPEN) {
@@ -309,8 +316,10 @@ async function proxyHttpRequest(
   try {
     const declaredLength = Number(request.headers.get("content-length") ?? 0);
     if (declaredLength > maxRequestBytes) throw new RequestTooLarge();
-    const body = Buffer.from(await request.arrayBuffer());
-    if (body.byteLength > maxRequestBytes) throw new RequestTooLarge();
+    const rawBody = Buffer.from(await request.arrayBuffer());
+    if (rawBody.byteLength > maxRequestBytes) throw new RequestTooLarge();
+    const contentEncoding = request.headers.get("content-encoding")?.toLowerCase() ?? "identity";
+    const body = Buffer.from(await decodeBody(rawBody, contentEncoding));
     const harness = classifyHarness(request.headers);
     const processed = processClientPayload(
       body,
@@ -325,6 +334,10 @@ async function proxyHttpRequest(
     const routes = routeSet.routes;
     const target = targetUrl(upstreamOrigin, request.url);
     let headers = forwardedHeaders(request.headers, cookies.header());
+    if (contentEncoding !== "identity" && contentEncoding.length > 0) {
+      delete headers["content-encoding"];
+      delete headers["content-length"];
+    }
     const outbound = processed.value;
     let routing: CaptureRouting | undefined;
     const routedRequest = (() => {
@@ -352,6 +365,14 @@ async function proxyHttpRequest(
       };
     }
 
+    const origin: CaptureUpstreamOrigin =
+      routedRequest === undefined
+        ? { kind: "chatgpt-http", url: target.toString() }
+        : {
+            kind: "gateway-http",
+            url: responseTargetUrl(routedRequest.route, requestUrl.search).toString(),
+          };
+
     // Non-routed requests record before touching the upstream so a capture
     // failure fails closed; routed requests record after the attempt loop so
     // the event carries the attempt trail.
@@ -364,6 +385,7 @@ async function proxyHttpRequest(
         harness,
         project,
         routing,
+        origin,
       });
     }
 
@@ -412,10 +434,30 @@ async function proxyHttpRequest(
         harness,
         project,
         routing,
+        origin,
       });
     }
 
-    const downstream = new Response(response.body, {
+    if (!response.ok) {
+      const errorBody = await response.text();
+      await recorder.record("http", "upstream_to_client", errorBody, "utf8", {
+        harness,
+        project,
+        origin,
+        ...(routing === undefined ? {} : { usageFor: routing }),
+      });
+      return new Response(errorBody, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: downstreamHeaders(response.headers),
+      });
+    }
+
+    const downstreamBody =
+      routedRequest !== undefined && routing !== undefined && response.ok && response.body !== null
+        ? tapRoutedUsage(response.body, routing, recorder)
+        : response.body;
+    const downstream = new Response(downstreamBody, {
       status: response.status,
       statusText: response.statusText,
       headers: downstreamHeaders(response.headers),
@@ -489,6 +531,10 @@ async function upgradeWebSocket(
             ? baseHeaders
             : routedHeaders(baseHeaders, authorizationFor(route, process.env));
         const upstream = await connectWebSocket(target, headers, protocols);
+        data.upstreamOrigin = {
+          kind: route === undefined ? "chatgpt-websocket" : "gateway-websocket",
+          url: target.toString(),
+        };
         attachUpstream(data, upstream);
         data.upstream = upstream;
         if (route === undefined || inspected === undefined) return { value: firstValue };
@@ -510,11 +556,9 @@ async function upgradeWebSocket(
       return new Response("WebSocket upgrade failed", { status: 500 });
     }
 
-    const upstream = await connectWebSocket(
-      webSocketTarget(targetUrl(upstreamOrigin, request.url)),
-      baseHeaders,
-      protocols,
-    );
+    const chatgptTarget = webSocketTarget(targetUrl(upstreamOrigin, request.url));
+    const upstream = await connectWebSocket(chatgptTarget, baseHeaders, protocols);
+    data.upstreamOrigin = { kind: "chatgpt-websocket", url: chatgptTarget.toString() };
     data.upstream = upstream;
     attachUpstream(data, upstream);
 
@@ -554,6 +598,8 @@ function queueUpstreamMessage(data: SocketData, event: MessageEvent): void {
       await data.recorder.record("websocket", "upstream_to_client", message, encoding, {
         harness: data.harness,
         project: data.project,
+        ...(data.lastRouting === undefined ? {} : { usageFor: data.lastRouting }),
+        ...(data.upstreamOrigin === undefined ? {} : { origin: data.upstreamOrigin }),
       });
       const client = data.client;
       if (client === undefined || client.readyState !== WebSocket.OPEN) {
@@ -601,6 +647,10 @@ async function runBridgedCreate(
     requestedModel: inspected.model,
     upstreamModel: route.targets[0]?.upstreamModel ?? route.model.slug,
   };
+  const origin: CaptureUpstreamOrigin = {
+    kind: "gateway-http",
+    url: responseTargetUrl(route, bridge.search).toString(),
+  };
   const recordRequest = (routing: CaptureRouting) =>
     data.recorder.record("websocket", "client_to_upstream", rawMessage, encoding, {
       effectivePayload: processed.effectivePayload,
@@ -610,6 +660,7 @@ async function runBridgedCreate(
       harness: data.harness,
       project: data.project,
       routing,
+      origin,
     });
 
   // Warmup creates (generate: false) are answered locally: forwarding them
@@ -617,7 +668,7 @@ async function runBridgedCreate(
   if (inspected.payload.generate === false) {
     await recordRequest(routingBase);
     for (const event of warmupCompletionEvents(inspected.model)) {
-      await queueBridgedMessage(data, event);
+      await queueBridgedMessage(data, event, origin);
     }
     return;
   }
@@ -627,7 +678,7 @@ async function runBridgedCreate(
     authorization = authorizationFor(route, process.env);
   } catch (error) {
     await recordRequest(routingBase);
-    await queueBridgedMessage(data, wrappedErrorEvent(502, errorMessage(error)));
+    await queueBridgedMessage(data, wrappedErrorEvent(502, errorMessage(error)), origin);
     return;
   }
 
@@ -652,29 +703,37 @@ async function runBridgedCreate(
       },
     }),
   });
-  await recordRequest({
+  const routing: CaptureRouting = {
     ...routingBase,
     ...(result.servedBy === undefined ? {} : { upstreamModel: result.servedBy }),
     attempts: result.attempts,
-  });
+  };
+  data.lastRouting = routing;
+  await recordRequest(routing);
 
   if (!result.response.ok || result.response.body === null) {
     const detail = await result.response.text();
-    await queueBridgedMessage(data, wrappedErrorEvent(result.response.status, detail));
+    await queueBridgedMessage(data, wrappedErrorEvent(result.response.status, detail), origin);
     return;
   }
   for await (const eventData of parseSseEvents(result.response.body)) {
     if (data.client === undefined || data.client.readyState !== WebSocket.OPEN) break;
-    await queueBridgedMessage(data, rewriteBridgedEvent(eventData, route.model.slug));
+    await queueBridgedMessage(data, rewriteBridgedEvent(eventData, route.model.slug), origin);
   }
 }
 
-function queueBridgedMessage(data: SocketData, message: string): Promise<void> {
+function queueBridgedMessage(
+  data: SocketData,
+  message: string,
+  origin: CaptureUpstreamOrigin,
+): Promise<void> {
   data.upstreamToClient = data.upstreamToClient
     .then(async () => {
       await data.recorder.record("websocket", "upstream_to_client", message, "utf8", {
         harness: data.harness,
         project: data.project,
+        ...(data.lastRouting === undefined ? {} : { usageFor: data.lastRouting }),
+        origin,
       });
       const client = data.client;
       if (client === undefined || client.readyState !== WebSocket.OPEN) {
@@ -812,6 +871,35 @@ function closeClient(socket: Bun.ServerWebSocket<SocketData>, code: number, reas
   const valid = sanitizeCloseCode(code);
   if (valid === undefined) socket.close();
   else socket.close(valid, reason);
+}
+
+/**
+ * Tees a routed HTTP body so we can scrape `response.completed` usage without
+ * delaying the client. The observe side is fully drained to avoid backpressure.
+ */
+function tapRoutedUsage(
+  body: ReadableStream<Uint8Array>,
+  routing: CaptureRouting,
+  recorder: EventRecorder,
+): ReadableStream<Uint8Array> {
+  const [toClient, toObserve] = body.tee();
+  void collectRoutedUsage(toObserve, routing, recorder);
+  return toClient;
+}
+
+async function collectRoutedUsage(
+  body: ReadableStream<Uint8Array>,
+  routing: CaptureRouting,
+  recorder: EventRecorder,
+): Promise<void> {
+  try {
+    for await (const eventData of parseSseEvents(body)) {
+      const usage = observePayload(eventData, "upstream_to_client").responseSummary?.usage;
+      if (usage !== undefined) recorder.recordUsage(routing, usage);
+    }
+  } catch {
+    // observation is best-effort
+  }
 }
 
 function closeUpstream(socket: WebSocket, code: number, reason: string): void {

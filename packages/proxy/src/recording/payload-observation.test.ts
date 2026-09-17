@@ -20,6 +20,49 @@ describe("payload observation", () => {
     ).toBeUndefined();
   });
 
+  it("extracts error diagnostics from wrapped and Responses failure events", () => {
+    expect(
+      observePayload(
+        JSON.stringify({
+          type: "error",
+          status: 400,
+          error: {
+            code: "invalid_request",
+            message:
+              '{"detail":"The \'gpt-5.6-sol\' model is not supported when using Codex with a ChatGPT account."}',
+          },
+        }),
+        "upstream_to_client",
+      ).errorSummary,
+    ).toEqual({
+      eventType: "error",
+      status: 400,
+      code: "invalid_request",
+      message:
+        '{"detail":"The \'gpt-5.6-sol\' model is not supported when using Codex with a ChatGPT account."}',
+    });
+    expect(
+      observePayload(
+        JSON.stringify({
+          type: "response.failed",
+          response: {
+            model: "gpt-5.6-sol",
+            error: { code: "server_error", message: "upstream rejected" },
+          },
+        }),
+        "upstream_to_client",
+      ).errorSummary,
+    ).toEqual({
+      eventType: "response.failed",
+      code: "server_error",
+      message: "upstream rejected",
+      model: "gpt-5.6-sol",
+    });
+    expect(
+      observePayload(JSON.stringify({ detail: "Unauthorized" }), "upstream_to_client").errorSummary,
+    ).toEqual({ eventType: "error", message: "Unauthorized" });
+  });
+
   it("recognizes harness-injected user messages without treating them as real input", () => {
     const observation = observePayload(
       JSON.stringify({

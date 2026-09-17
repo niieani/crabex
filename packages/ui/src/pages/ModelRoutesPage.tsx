@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
 import {
@@ -349,12 +349,14 @@ function RouteCard({
 
 function RouteStats({ telemetry }: { telemetry: RoutingTelemetry }) {
   const served = telemetry.served ?? 0;
-  const failed = telemetry.failed ?? 0;
-  const total = served + failed;
-  const errorRate = total === 0 ? undefined : Math.round((failed / total) * 100);
+  const errorRate = telemetry.errorRate;
   const targets = Object.entries(telemetry.targets ?? {}).sort(
     (left, right) => right[1].attempts - left[1].attempts,
   );
+  const fallbackCacheDropped =
+    telemetry.fallbackCache !== undefined &&
+    telemetry.fallbackCache.samples > 0 &&
+    (telemetry.fallbackCacheHitRate ?? 0) + 20 < (telemetry.cacheHitRate ?? 0);
   return (
     <div className="mt-3 rounded-md bg-canvas px-3 py-2 font-mono text-[10px] text-muted">
       <div className="flex flex-wrap gap-x-3 gap-y-1">
@@ -363,11 +365,25 @@ function RouteStats({ telemetry }: { telemetry: RoutingTelemetry }) {
         {errorRate === undefined ? null : (
           <span className={errorRate > 0 ? "text-danger" : ""}>errors {errorRate}%</span>
         )}
+        {(telemetry.failovers ?? 0) === 0 ? null : <span>fallbacks {telemetry.failovers}</span>}
         {telemetry.avgLatencyMs === undefined ? null : (
           <span>avg {formatMs(telemetry.avgLatencyMs)}</span>
         )}
+        {cacheLabel(telemetry.cacheHitRate, telemetry.cache)}
+        {telemetry.fallbackCache === undefined ? null : (
+          <span className={fallbackCacheDropped ? "text-danger" : ""}>
+            fallback cache{" "}
+            {formatCacheRate(telemetry.fallbackCacheHitRate, telemetry.fallbackCache)}
+          </span>
+        )}
         <span>last {new Date(telemetry.lastSeenAt).toLocaleString()}</span>
       </div>
+      {fallbackCacheDropped ? (
+        <p className="mt-1 text-[10px] text-danger">
+          Prompt cache looks dropped on tier switch — OpenAI treats a service-tier / model change as
+          a cache miss, so fallbacks typically pay uncached input.
+        </p>
+      ) : null}
       {targets.length === 0 ? null : (
         <div className="mt-2 space-y-1 border-t border-line/60 pt-2">
           {targets.map(([model, stats]) => (
@@ -376,6 +392,13 @@ function RouteStats({ telemetry }: { telemetry: RoutingTelemetry }) {
               <span>
                 served {stats.served}/{stats.attempts}
               </span>
+              {stats.errorRate === undefined ? null : (
+                <span className={stats.errorRate > 0 ? "text-danger" : ""}>
+                  errors {stats.errorRate}%
+                </span>
+              )}
+              {retryLabel(stats)}
+              {cacheLabel(stats.cacheHitRate, stats.cache)}
               {stats.avgLatencyMs === undefined ? null : (
                 <span>avg {formatMs(stats.avgLatencyMs)}</span>
               )}
@@ -390,6 +413,44 @@ function RouteStats({ telemetry }: { telemetry: RoutingTelemetry }) {
       )}
     </div>
   );
+}
+
+function retryLabel(stats: {
+  retriedRequests?: number;
+  retryRecoveries?: number;
+  retrySuccessRate?: number;
+}): ReactNode {
+  const episodes = stats.retriedRequests ?? 0;
+  if (episodes === 0) return null;
+  const recovered = stats.retryRecoveries ?? 0;
+  return (
+    <span>
+      retry {recovered}/{episodes}
+      {stats.retrySuccessRate === undefined ? "" : ` (${stats.retrySuccessRate}%)`}
+    </span>
+  );
+}
+
+function cacheLabel(
+  rate: number | undefined,
+  cache: { samples: number; inputTokens: number; cachedTokens: number } | undefined,
+): ReactNode {
+  if (cache === undefined || cache.samples === 0) return null;
+  return <span>cache {formatCacheRate(rate, cache)}</span>;
+}
+
+function formatCacheRate(
+  rate: number | undefined,
+  cache: { inputTokens: number; cachedTokens: number },
+): string {
+  const pct = rate === undefined ? "—" : `${rate}%`;
+  return `${pct} (${formatTokens(cache.cachedTokens)}/${formatTokens(cache.inputTokens)})`;
+}
+
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1000) return `${Math.round(value / 100) / 10}k`;
+  return String(value);
 }
 
 function formatMs(ms: number): string {

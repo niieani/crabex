@@ -93,6 +93,12 @@ vp check
 vp run build
 ```
 
+## Flex routes
+
+Advertise a `-flex` slug and fail over to the regular model when flex is
+unavailable. Flex is half-price (Batch rates) but slower, and a flex →
+standard fallback drops the prompt cache. See [docs/flex-routes.md](docs/flex-routes.md).
+
 ## Workspace layout
 
 - `packages/proxy`: Bun server and CLI.

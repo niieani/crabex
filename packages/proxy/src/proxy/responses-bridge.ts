@@ -103,6 +103,116 @@ export function wrappedErrorEvent(status: number, detail: string): string {
  * lines, `event:` lines, and the `[DONE]` sentinel are skipped — the data
  * JSON carries the Responses event type itself.
  */
+const STREAM_RETRY_CODES = new Set(["rate_limit_exceeded"]);
+const STREAM_ERROR_TYPES = new Set(["error", "response.failed", "response.error"]);
+
+/** HTTP status used when an SSE error should retry/fail over like that status. */
+export function eventStreamRetryStatus(eventData: string): number | undefined {
+  try {
+    const parsed: unknown = JSON.parse(eventData);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const event = parsed as Record<string, unknown>;
+    if (typeof event.type === "string" && !STREAM_ERROR_TYPES.has(event.type)) return undefined;
+    const nested =
+      (typeof event.error === "object" && event.error !== null
+        ? (event.error as { code?: unknown })
+        : undefined) ??
+      (typeof event.response === "object" &&
+      event.response !== null &&
+      typeof (event.response as { error?: unknown }).error === "object" &&
+      (event.response as { error?: unknown }).error !== null
+        ? (event.response as { error: { code?: unknown } }).error
+        : undefined);
+    const code = typeof nested?.code === "string" ? nested.code : event.code;
+    return typeof code === "string" && STREAM_RETRY_CODES.has(code) ? 429 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasStreamOutput(eventData: string): boolean {
+  try {
+    const type = (JSON.parse(eventData) as { type?: unknown }).type;
+    return (
+      type === "response.completed" ||
+      (typeof type === "string" && type.startsWith("response.output"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function streamEventType(eventData: string): string | undefined {
+  try {
+    const type = (JSON.parse(eventData) as { type?: unknown }).type;
+    return typeof type === "string" ? type : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * After an HTTP 200, look at the SSE stream before committing the attempt.
+ * `rate_limit_exceeded` before any output is a 429-equivalent; otherwise the
+ * original events are replayed so the caller can forward them.
+ */
+export async function resolveEventStreamResponse(
+  response: Response,
+): Promise<{ kind: "ok"; response: Response } | { kind: "retry"; status: number }> {
+  if (response.body === null) return { kind: "ok", response };
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/event-stream")) return { kind: "ok", response };
+
+  const buffered: string[] = [];
+  const iterator = parseSseEvents(response.body);
+  for await (const event of iterator) {
+    buffered.push(event);
+    const retryStatus = eventStreamRetryStatus(event);
+    if (retryStatus !== undefined && !buffered.some((item) => hasStreamOutput(item))) {
+      await iterator.return?.(undefined);
+      return { kind: "retry", status: retryStatus };
+    }
+    if (hasStreamOutput(event)) {
+      return { kind: "ok", response: replaySseResponse(response, buffered, iterator) };
+    }
+    const type = streamEventType(event);
+    if (type !== undefined && STREAM_ERROR_TYPES.has(type)) {
+      return { kind: "ok", response: replaySseResponse(response, buffered, iterator) };
+    }
+  }
+  return { kind: "ok", response: replaySseResponse(response, buffered) };
+}
+
+function replaySseResponse(
+  original: Response,
+  buffered: string[],
+  rest?: AsyncGenerator<string>,
+): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for (const event of buffered) {
+          controller.enqueue(encoder.encode(`data: ${event}\n\n`));
+        }
+        if (rest !== undefined) {
+          for await (const event of rest) {
+            controller.enqueue(encoder.encode(`data: ${event}\n\n`));
+          }
+        }
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+  return new Response(body, {
+    status: original.status,
+    statusText: original.statusText,
+    headers: original.headers,
+  });
+}
+
 export async function* parseSseEvents(
   body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<string, void, undefined> {

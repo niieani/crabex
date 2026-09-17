@@ -120,20 +120,166 @@ describe("stats store", () => {
         lastSeenAt: ts,
         served: 1,
         failed: 1,
+        failovers: 0,
+        errorRate: 50,
         avgLatencyMs: 230,
         targets: {
           "openai.gpt-6-astra-flex": {
             attempts: 3,
             served: 1,
             failed: 2,
+            retries: 1,
+            retriedRequests: 1,
+            retryRecoveries: 1,
+            failovers: 0,
             totalLatencyMs: 460,
             lastStatus: 400,
             lastSeenAt: ts,
             avgLatencyMs: 153,
+            errorRate: 67,
+            retrySuccessRate: 100,
           },
         },
       },
     ]);
+  });
+
+  it("counts flex 429 retries toward target error rate after a standard failover", async () => {
+    const store = await StatsStore.open(await temporaryPath());
+    const ts = new Date(1000).toISOString();
+    store.recordRouting(
+      {
+        action: "routed",
+        routeSlugs: ["gpt-6-astra"],
+        upstreamModel: "openai.gpt-6-astra",
+        attempts: [
+          {
+            upstreamModel: "openai.gpt-6-astra-flex",
+            outcome: "retry",
+            status: 429,
+            durationMs: 40,
+          },
+          {
+            upstreamModel: "openai.gpt-6-astra-flex",
+            outcome: "retry",
+            status: 429,
+            durationMs: 40,
+          },
+          { upstreamModel: "openai.gpt-6-astra", outcome: "served", status: 200, durationMs: 80 },
+        ],
+      },
+      ts,
+    );
+
+    const entry = store.routingTelemetry()[0];
+    expect(entry).toMatchObject({
+      served: 1,
+      failed: 0,
+      failovers: 1,
+      errorRate: 0,
+      targets: {
+        "openai.gpt-6-astra-flex": { attempts: 2, served: 0, failed: 2, errorRate: 100 },
+        "openai.gpt-6-astra": { attempts: 1, served: 1, failed: 0, errorRate: 0 },
+      },
+    });
+  });
+
+  it("tracks fallback serves and prompt-cache usage on first-target vs fallback", async () => {
+    const store = await StatsStore.open(await temporaryPath());
+    const ts = new Date(1000).toISOString();
+    const fallbackRouting = {
+      action: "routed" as const,
+      routeSlugs: ["gpt-5.6-luna-flex"],
+      upstreamModel: "openai.gpt-5.6-luna",
+      attempts: [
+        {
+          upstreamModel: "openai.gpt-5.6-luna-flex",
+          outcome: "failover" as const,
+          status: 429,
+          durationMs: 80,
+        },
+        {
+          upstreamModel: "openai.gpt-5.6-luna",
+          outcome: "served" as const,
+          status: 200,
+          durationMs: 400,
+        },
+      ],
+    };
+    const firstHitRouting = {
+      action: "routed" as const,
+      routeSlugs: ["gpt-5.6-luna-flex"],
+      upstreamModel: "openai.gpt-5.6-luna-flex",
+      attempts: [
+        {
+          upstreamModel: "openai.gpt-5.6-luna-flex",
+          outcome: "served" as const,
+          status: 200,
+          durationMs: 200,
+        },
+      ],
+    };
+
+    store.recordRouting(fallbackRouting, ts);
+    store.recordUsage(fallbackRouting, { inputTokens: 20_000, cachedTokens: 0 }, ts);
+    store.recordRouting(firstHitRouting, ts);
+    store.recordUsage(firstHitRouting, { inputTokens: 20_000, cachedTokens: 16_000 }, ts);
+
+    const entry = store.routingTelemetry().find((item) => item.routeSlug === "gpt-5.6-luna-flex");
+    expect(entry).toMatchObject({
+      served: 2,
+      failed: 0,
+      failovers: 1,
+      errorRate: 0,
+      cacheHitRate: 40,
+      fallbackCacheHitRate: 0,
+      cache: { samples: 2, inputTokens: 40_000, cachedTokens: 16_000 },
+      fallbackCache: { samples: 1, inputTokens: 20_000, cachedTokens: 0 },
+    });
+    expect(entry?.targets?.["openai.gpt-5.6-luna-flex"]).toMatchObject({
+      attempts: 2,
+      served: 1,
+      failed: 1,
+      failovers: 1,
+      errorRate: 50,
+      cacheHitRate: 80,
+      cache: { samples: 1, inputTokens: 20_000, cachedTokens: 16_000 },
+    });
+    expect(entry?.targets?.["openai.gpt-5.6-luna"]).toMatchObject({
+      attempts: 1,
+      served: 1,
+      failed: 0,
+      errorRate: 0,
+      cacheHitRate: 0,
+      cache: { samples: 1, inputTokens: 20_000, cachedTokens: 0 },
+    });
+  });
+
+  it("counts exhausted retries separately from recoveries", async () => {
+    const store = await StatsStore.open(await temporaryPath());
+    const ts = new Date(1000).toISOString();
+    store.recordRouting(
+      {
+        action: "routed",
+        routeSlugs: ["gpt-6-astra"],
+        attempts: [
+          { upstreamModel: "flex", outcome: "retry", status: 429, durationMs: 10 },
+          { upstreamModel: "flex", outcome: "failover", status: 503, durationMs: 10 },
+          { upstreamModel: "regular", outcome: "served", status: 200, durationMs: 50 },
+        ],
+      },
+      ts,
+    );
+
+    const flex = store.routingTelemetry()[0]?.targets?.flex;
+    expect(flex).toMatchObject({
+      retries: 1,
+      retriedRequests: 1,
+      retryRecoveries: 0,
+      failovers: 1,
+      retrySuccessRate: 0,
+      errorRate: 100,
+    });
   });
 
   it("persists across restarts and resets counters", async () => {

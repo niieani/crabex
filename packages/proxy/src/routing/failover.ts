@@ -1,3 +1,4 @@
+import { resolveEventStreamResponse } from "../proxy/responses-bridge.ts";
 import type { ModelRoute, RouteRetryPolicy, RouteTarget } from "./model-routes.ts";
 
 /**
@@ -140,14 +141,23 @@ export async function fetchWithFailover(
         continue;
       }
       if (response.ok) {
-        breakers.recordSuccess(key);
-        attempts.push({
-          upstreamModel,
-          outcome: "served",
-          status: response.status,
-          durationMs: durationMs(),
-        });
-        return { response, attempts, servedBy: upstreamModel };
+        const resolved = await resolveEventStreamResponse(response);
+        if (resolved.kind === "ok") {
+          breakers.recordSuccess(key);
+          attempts.push({
+            upstreamModel,
+            outcome: "served",
+            status: response.status,
+            durationMs: durationMs(),
+          });
+          return { response: resolved.response, attempts, servedBy: upstreamModel };
+        }
+        response = new Response(
+          JSON.stringify({
+            error: { code: "rate_limit_exceeded", message: "rate_limit_exceeded" },
+          }),
+          { status: resolved.status, headers: { "content-type": "application/json" } },
+        );
       }
       const failureClass = classifyHttpFailure(response.status, route.retry.onStatus);
       if (failureClass === "fatal") {
