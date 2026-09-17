@@ -97,6 +97,48 @@ export interface RoutingTelemetry {
   targets?: Record<string, RouteTargetStats>;
 }
 
+export type LiveRequestState =
+  | "routing"
+  | "connecting"
+  | "retrying"
+  | "falling-back"
+  | "streaming"
+  | "completed"
+  | "failed";
+
+export interface LiveRequestEvent {
+  at: string;
+  state: LiveRequestState;
+  targetModel?: string;
+  attempt?: number;
+  status?: number;
+  detail?: string;
+}
+
+export interface LiveRequest {
+  id: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  state: LiveRequestState;
+  transport: "http" | "websocket";
+  requestedModel?: string;
+  routeSlug?: string;
+  upstream: string;
+  targetModel?: string;
+  targetIndex?: number;
+  attempt?: number;
+  maxAttempts?: number;
+  status?: number;
+  detail?: string;
+  events: LiveRequestEvent[];
+}
+
+export interface LiveRequestsSnapshot {
+  active: LiveRequest[];
+  recent: LiveRequest[];
+}
+
 export interface ContextSnapshot {
   id: string;
   sessionId: string;

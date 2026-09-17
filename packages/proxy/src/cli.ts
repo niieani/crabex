@@ -16,6 +16,7 @@ import { modelRouteFromConfig } from "./routing/model-routes.ts";
 import { FileCaptureRepository } from "./recording/capture-repository.ts";
 import { openNdjsonCaptureSink } from "./recording/ndjson-capture-sink.ts";
 import { StatsStore } from "./recording/stats-store.ts";
+import { LiveRequestStore } from "./requests/live-request-store.ts";
 
 const HELP = `Usage:
   agent-context-trimmer proxy [options]
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   );
   await snapshotRepository.load();
   const targetBreakers = new TargetBreakers();
+  const liveRequests = new LiveRequestStore();
   const proxyOrigin = `http://${
     options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host
   }:${options.port}`;
@@ -91,6 +93,7 @@ async function main(): Promise<void> {
     upstreamCache: upstreamCacheStore,
     breakers: targetBreakers,
     stats: statsStore,
+    liveRequests,
     project: options.project,
     localApi: createLocalApi({
       snapshots: snapshotRepository,
@@ -100,6 +103,7 @@ async function main(): Promise<void> {
       upstreamCache: upstreamCacheStore,
       breakers: targetBreakers,
       stats: statsStore,
+      requests: liveRequests,
       codexConfig: createCodexConfigManager({
         configPath: options.codexConfigPath,
         proxyOrigin,

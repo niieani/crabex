@@ -12,6 +12,7 @@ import { parseModelRouteSet } from "../routing/model-routes.ts";
 import { modelsFixture } from "../routing/models-fixture.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
+import type { LiveRequestStore } from "../requests/live-request-store.ts";
 
 const API_PREFIX = "/__agent-context-trimmer/api";
 
@@ -28,6 +29,7 @@ export function createLocalApi(options: {
   upstreamCache: UpstreamCacheStore;
   breakers?: { openBreakers(): Record<string, string> };
   stats?: StatsStore;
+  requests?: LiveRequestStore;
 }): LocalApi {
   return {
     async handle(request) {
@@ -48,6 +50,9 @@ export function createLocalApi(options: {
             telemetry: options.stats?.routingTelemetry() ?? [],
             breakers: options.breakers?.openBreakers() ?? {},
           });
+        }
+        if (url.pathname === `${API_PREFIX}/live-requests` && request.method === "GET") {
+          return json(options.requests?.snapshot() ?? { active: [], recent: [] });
         }
         if (url.pathname === `${API_PREFIX}/stats/reset` && request.method === "POST") {
           await options.stats?.reset();

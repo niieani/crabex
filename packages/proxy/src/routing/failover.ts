@@ -90,7 +90,35 @@ export interface FetchWithFailoverOptions {
   breakers?: TargetBreakers;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  onEvent?: (event: FailoverEvent) => void;
 }
+
+export type FailoverEvent =
+  | { type: "breaker-open"; targetIndex: number; upstreamModel: string }
+  | {
+      type: "backoff";
+      targetIndex: number;
+      upstreamModel: string;
+      attempt: number;
+      maxAttempts: number;
+      delayMs: number;
+    }
+  | {
+      type: "attempt-started";
+      targetIndex: number;
+      upstreamModel: string;
+      attempt: number;
+      maxAttempts: number;
+    }
+  | {
+      type: "attempt-finished";
+      targetIndex: number;
+      upstreamModel: string;
+      attempt: number;
+      maxAttempts: number;
+      outcome: RouteAttempt["outcome"];
+      status?: number;
+    };
 
 export interface FailoverResult {
   response: Response;
@@ -116,18 +144,35 @@ export async function fetchWithFailover(
   const attempts: RouteAttempt[] = [];
   let lastFailure: { response: Response } | { error: unknown } | undefined;
 
-  for (const target of route.targets) {
+  for (const [targetIndex, target] of route.targets.entries()) {
     const upstreamModel = target.upstreamModel ?? route.model.slug;
     const key = breakerKey(route, target);
     if (breakers.isOpen(key)) {
       attempts.push({ upstreamModel, outcome: "breaker-open" });
+      options.onEvent?.({ type: "breaker-open", targetIndex, upstreamModel });
       continue;
     }
     let exhausted = false;
     for (let attempt = 0; attempt < target.attempts; attempt++) {
       if (attempt > 0) {
-        await sleep(backoffDelayMs(route.retry.backoffMs, attempt - 1));
+        const delayMs = backoffDelayMs(route.retry.backoffMs, attempt - 1);
+        options.onEvent?.({
+          type: "backoff",
+          targetIndex,
+          upstreamModel,
+          attempt: attempt + 1,
+          maxAttempts: target.attempts,
+          delayMs,
+        });
+        await sleep(delayMs);
       }
+      options.onEvent?.({
+        type: "attempt-started",
+        targetIndex,
+        upstreamModel,
+        attempt: attempt + 1,
+        maxAttempts: target.attempts,
+      });
       const { url, init } = requestFor(target);
       const startedAt = performance.now();
       const durationMs = () => Math.round(performance.now() - startedAt);
@@ -136,6 +181,14 @@ export async function fetchWithFailover(
         response = await fetchImpl(url, init);
       } catch (error) {
         attempts.push({ upstreamModel, outcome: "network-error", durationMs: durationMs() });
+        options.onEvent?.({
+          type: "attempt-finished",
+          targetIndex,
+          upstreamModel,
+          attempt: attempt + 1,
+          maxAttempts: target.attempts,
+          outcome: "network-error",
+        });
         lastFailure = { error };
         if (attempt + 1 >= target.attempts) exhausted = true;
         continue;
@@ -149,6 +202,15 @@ export async function fetchWithFailover(
             outcome: "served",
             status: response.status,
             durationMs: durationMs(),
+          });
+          options.onEvent?.({
+            type: "attempt-finished",
+            targetIndex,
+            upstreamModel,
+            attempt: attempt + 1,
+            maxAttempts: target.attempts,
+            outcome: "served",
+            status: response.status,
           });
           return { response: resolved.response, attempts, servedBy: upstreamModel };
         }
@@ -167,6 +229,15 @@ export async function fetchWithFailover(
           status: response.status,
           durationMs: durationMs(),
         });
+        options.onEvent?.({
+          type: "attempt-finished",
+          targetIndex,
+          upstreamModel,
+          attempt: attempt + 1,
+          maxAttempts: target.attempts,
+          outcome: failureClass,
+          status: response.status,
+        });
         return { response, attempts };
       }
       if (failureClass === "failover") {
@@ -175,6 +246,15 @@ export async function fetchWithFailover(
           outcome: failureClass,
           status: response.status,
           durationMs: durationMs(),
+        });
+        options.onEvent?.({
+          type: "attempt-finished",
+          targetIndex,
+          upstreamModel,
+          attempt: attempt + 1,
+          maxAttempts: target.attempts,
+          outcome: failureClass,
+          status: response.status,
         });
         lastFailure = { response };
         exhausted = true;
@@ -188,6 +268,15 @@ export async function fetchWithFailover(
         outcome: failureClass,
         status: response.status,
         durationMs: durationMs(),
+      });
+      options.onEvent?.({
+        type: "attempt-finished",
+        targetIndex,
+        upstreamModel,
+        attempt: attempt + 1,
+        maxAttempts: target.attempts,
+        outcome: failureClass,
+        status: response.status,
       });
       lastFailure = {
         response: new Response(body, {

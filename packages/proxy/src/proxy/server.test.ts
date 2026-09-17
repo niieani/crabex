@@ -15,6 +15,7 @@ import type { Transformation } from "../context/transformation.ts";
 import type { ModelAdjustment, ModelRoute } from "../routing/model-routes.ts";
 import { modelRouteFromConfig } from "../routing/model-routes.ts";
 import type { ModelDefinition } from "../routing/model-list.ts";
+import { LiveRequestStore } from "../requests/live-request-store.ts";
 import { sanitizeCloseCode, startReverseProxy, type RunningProxy } from "./server.ts";
 
 class MemoryCaptureSink implements CaptureSink {
@@ -646,7 +647,11 @@ describe("model routing and config bundle override", () => {
       retry: { on_status: [429], backoff_ms: [0], breaker: { failures: 1, cooldown_ms: 300_000 } },
     });
     const captures = new MemoryCaptureSink();
-    const proxy = await startRoutingProxy(gateway.origin, captures, { routes: [route] });
+    const liveRequests = new LiveRequestStore();
+    const proxy = await startRoutingProxy(gateway.origin, captures, {
+      routes: [route],
+      liveRequests,
+    });
 
     const first = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
       method: "POST",
@@ -673,6 +678,15 @@ describe("model routing and config bundle override", () => {
         { upstreamModel: "openai.gpt-6-astra", outcome: "served", status: 200 },
       ],
     });
+    expect(liveRequests.snapshot().recent[0]).toMatchObject({
+      state: "completed",
+      requestedModel: "gpt-6-astra",
+      targetModel: "openai.gpt-6-astra",
+      upstream: expect.stringContaining("/openai/v1/responses"),
+    });
+    expect(liveRequests.snapshot().recent[0]?.events.map((event) => event.state)).toEqual(
+      expect.arrayContaining(["retrying", "falling-back", "streaming", "completed"]),
+    );
 
     // The flex breaker opened after the exhausted episode: the next request
     // goes straight to the regular model.
@@ -1293,6 +1307,7 @@ async function startRoutingProxy(
     bundleOverride?: ConfigBundleOverride;
     upstreamCache?: MemoryUpstreamCache;
     transformations?: Transformation[];
+    liveRequests?: LiveRequestStore;
   } = {},
 ): Promise<RunningProxy> {
   const proxy = await startReverseProxy({
@@ -1313,6 +1328,7 @@ async function startRoutingProxy(
       get: () => options.bundleOverride ?? { version: 1, enabled: false, bundle: null },
     },
     ...(options.upstreamCache === undefined ? {} : { upstreamCache: options.upstreamCache }),
+    ...(options.liveRequests === undefined ? {} : { liveRequests: options.liveRequests }),
   });
   closeables.push(() => proxy.close());
   return proxy;

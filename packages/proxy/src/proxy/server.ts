@@ -23,7 +23,7 @@ import {
   type ModelAdjustment,
   type ModelRoute,
 } from "../routing/model-routes.ts";
-import { fetchWithFailover, TargetBreakers } from "../routing/failover.ts";
+import { fetchWithFailover, TargetBreakers, type FailoverEvent } from "../routing/failover.ts";
 import {
   httpPayloadFor,
   parseSseEvents,
@@ -41,6 +41,7 @@ import { CloudflareCookieJar } from "./cloudflare-cookie-jar.ts";
 import { observePayload } from "../recording/payload-observation.ts";
 import { CaptureFailure, EventRecorder, processClientPayload } from "./event-recorder.ts";
 import type { LocalApi } from "../api/local-api.ts";
+import { LiveRequestStore } from "../requests/live-request-store.ts";
 
 const DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024;
 const HOP_BY_HOP_HEADERS = [
@@ -82,6 +83,7 @@ export interface ReverseProxyOptions {
   stats?: StatsStore;
   project?: string;
   localApi?: LocalApi;
+  liveRequests?: LiveRequestStore;
 }
 
 export interface TransformationSource {
@@ -127,6 +129,8 @@ interface SocketData {
   lastRouting?: CaptureRouting;
   /** Origin of the live ChatGPT/gateway WebSocket peer. */
   upstreamOrigin?: CaptureUpstreamOrigin;
+  liveRequests: LiveRequestStore;
+  activeRequestId?: string;
 }
 
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
@@ -145,6 +149,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
   };
   const fixtureModels = options.fixtureModels ?? modelsFixture();
   const breakers = options.breakers ?? new TargetBreakers();
+  const liveRequests = options.liveRequests ?? new LiveRequestStore();
   const configBundleSource = options.configBundleSource;
   const upstreamCache = options.upstreamCache;
   let lastBundleObservation = 0;
@@ -208,6 +213,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           modelRouteSource,
           options.project,
           breakers,
+          liveRequests,
         );
       }
       return proxyHttpRequest(
@@ -222,6 +228,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         options.project,
         fixtureModels,
         breakers,
+        liveRequests,
       );
     },
     websocket: {
@@ -260,6 +267,26 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                 processed,
               );
               return;
+            }
+            const liveInspected = inspectResponseModel(processed.value);
+            if (liveInspected !== undefined) {
+              const route =
+                data.bridge === undefined
+                  ? undefined
+                  : modelRouteFor(data.bridge.routes, liveInspected.model);
+              data.activeRequestId = data.liveRequests.start({
+                transport: "websocket",
+                requestedModel: liveInspected.model,
+                ...(route === undefined ? {} : { routeSlug: route.model.slug }),
+                upstream:
+                  route === undefined
+                    ? (data.upstreamOrigin?.url ?? "ChatGPT WebSocket upstream")
+                    : responseTargetUrl(route, data.bridge?.search ?? "").toString(),
+                ...(route === undefined
+                  ? {}
+                  : { targetModel: route.upstreamModel ?? route.model.slug }),
+              });
+              data.liveRequests.update(data.activeRequestId, { state: "connecting" });
             }
             if (data.upstream === undefined) {
               if (data.connectUpstream === undefined) {
@@ -312,7 +339,9 @@ async function proxyHttpRequest(
   project: string | undefined,
   fixtureModels: ModelDefinition[],
   breakers: TargetBreakers,
+  liveRequests: LiveRequestStore,
 ): Promise<Response> {
+  let liveRequestId: string | undefined;
   try {
     const declaredLength = Number(request.headers.get("content-length") ?? 0);
     if (declaredLength > maxRequestBytes) throw new RequestTooLarge();
@@ -348,6 +377,22 @@ async function proxyHttpRequest(
       const route = inspected === undefined ? undefined : modelRouteFor(routes, inspected.model);
       return inspected === undefined || route === undefined ? undefined : { inspected, route };
     })();
+    if (isResponsesRequest(request.method, requestUrl.pathname)) {
+      const inspected = inspectResponseModel(processed.value);
+      const route = routedRequest?.route;
+      liveRequestId = liveRequests.start({
+        transport: "http",
+        ...(inspected === undefined ? {} : { requestedModel: inspected.model }),
+        ...(route === undefined ? {} : { routeSlug: route.model.slug }),
+        upstream:
+          route === undefined
+            ? target.toString()
+            : responseTargetUrl(route, requestUrl.search).toString(),
+        ...(route?.targets[0]?.upstreamModel === undefined
+          ? {}
+          : { targetModel: route.targets[0].upstreamModel }),
+      });
+    }
     if (routedRequest !== undefined) {
       const { inspected, route } = routedRequest;
       headers = routedHeaders(headers, authorizationFor(route, process.env));
@@ -401,6 +446,10 @@ async function proxyHttpRequest(
         : await fetchWithFailover({
             route: routedRequest.route,
             breakers,
+            onEvent:
+              liveRequestId === undefined
+                ? undefined
+                : (event) => updateLiveRequestFromFailover(liveRequests, liveRequestId!, event),
             requestFor: (routeTarget) => ({
               url: responseTargetUrl(routedRequest.route, requestUrl.search),
               init: {
@@ -446,6 +495,9 @@ async function proxyHttpRequest(
         origin,
         ...(routing === undefined ? {} : { usageFor: routing }),
       });
+      if (liveRequestId !== undefined) {
+        liveRequests.finish(liveRequestId, { state: "failed", status: response.status });
+      }
       return new Response(errorBody, {
         status: response.status,
         statusText: response.statusText,
@@ -453,10 +505,28 @@ async function proxyHttpRequest(
       });
     }
 
-    const downstreamBody =
+    let downstreamBody =
       routedRequest !== undefined && routing !== undefined && response.ok && response.body !== null
         ? tapRoutedUsage(response.body, routing, recorder)
         : response.body;
+    if (liveRequestId !== undefined) {
+      liveRequests.update(liveRequestId, { state: "streaming", status: response.status });
+      if (downstreamBody === null) {
+        liveRequests.finish(liveRequestId, { state: "completed", status: response.status });
+      } else {
+        downstreamBody = trackResponseBody(
+          downstreamBody,
+          () =>
+            liveRequests.finish(liveRequestId!, { state: "completed", status: response.status }),
+          (error) =>
+            liveRequests.finish(liveRequestId!, {
+              state: "failed",
+              status: response.status,
+              detail: errorMessage(error),
+            }),
+        );
+      }
+    }
     const downstream = new Response(downstreamBody, {
       status: response.status,
       statusText: response.statusText,
@@ -481,12 +551,106 @@ async function proxyHttpRequest(
     }
     return downstream;
   } catch (error) {
+    if (liveRequestId !== undefined) {
+      liveRequests.finish(liveRequestId, { state: "failed", detail: errorMessage(error) });
+    }
     return new Response(error instanceof CaptureFailure ? "capture failed" : errorMessage(error), {
       status:
         error instanceof RequestTooLarge ? 413 : error instanceof RouteUnavailable ? 502 : 500,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
+}
+
+function updateLiveRequestFromFailover(
+  requests: LiveRequestStore,
+  id: string,
+  event: FailoverEvent,
+): void {
+  if (event.type === "breaker-open") {
+    requests.update(id, {
+      state: "falling-back",
+      targetModel: event.upstreamModel,
+      targetIndex: event.targetIndex,
+      detail: "Circuit breaker open; skipping target",
+    });
+    return;
+  }
+  if (event.type === "backoff") {
+    requests.update(id, {
+      state: "retrying",
+      targetModel: event.upstreamModel,
+      targetIndex: event.targetIndex,
+      attempt: event.attempt,
+      maxAttempts: event.maxAttempts,
+      detail: `Backing off for ${event.delayMs}ms`,
+    });
+    return;
+  }
+  if (event.type === "attempt-started") {
+    requests.update(id, {
+      state: event.targetIndex > 0 ? "falling-back" : event.attempt > 1 ? "retrying" : "connecting",
+      targetModel: event.upstreamModel,
+      targetIndex: event.targetIndex,
+      attempt: event.attempt,
+      maxAttempts: event.maxAttempts,
+      detail:
+        event.targetIndex > 0
+          ? "Trying fallback target"
+          : event.attempt > 1
+            ? "Retrying target"
+            : "Connecting to target",
+    });
+    return;
+  }
+  requests.update(id, {
+    state:
+      event.outcome === "served"
+        ? "streaming"
+        : event.outcome === "retry"
+          ? "retrying"
+          : event.outcome === "failover" || event.outcome === "network-error"
+            ? "falling-back"
+            : "failed",
+    targetModel: event.upstreamModel,
+    targetIndex: event.targetIndex,
+    attempt: event.attempt,
+    maxAttempts: event.maxAttempts,
+    ...(event.status === undefined ? {} : { status: event.status }),
+    detail: event.outcome,
+  });
+}
+
+function trackResponseBody(
+  body: ReadableStream<Uint8Array>,
+  onComplete: () => void,
+  onError: (error: unknown) => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          onComplete();
+          controller.close();
+        } else {
+          controller.enqueue(next.value);
+        }
+      } catch (error) {
+        onError(error);
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+        onComplete();
+      } catch (error) {
+        onError(error);
+      }
+    },
+  });
 }
 
 async function upgradeWebSocket(
@@ -499,6 +663,7 @@ async function upgradeWebSocket(
   modelRouteSource: ModelRouteSource,
   project: string | undefined,
   breakers: TargetBreakers,
+  liveRequests: LiveRequestStore,
 ): Promise<Response | undefined> {
   try {
     const requestUrl = new URL(request.url);
@@ -514,6 +679,7 @@ async function upgradeWebSocket(
       harness: classifyHarness(request.headers),
       ...(project === undefined ? {} : { project }),
       transformationSource,
+      liveRequests,
     };
 
     if (lazyRouting) {
@@ -606,6 +772,7 @@ function queueUpstreamMessage(data: SocketData, event: MessageEvent): void {
         throw new Error("client websocket is not open");
       }
       if (client.send(message) === 0) throw new Error("client websocket send failed");
+      observeResponseEvent(data, message);
     })
     .catch(() => closePair(data, 1011, "capture failed"));
 }
@@ -640,6 +807,14 @@ async function runBridgedCreate(
 ): Promise<void> {
   const bridge = data.bridge;
   if (bridge === undefined) return;
+  const liveRequestId = data.liveRequests.start({
+    transport: "websocket",
+    requestedModel: inspected.model,
+    routeSlug: route.model.slug,
+    upstream: responseTargetUrl(route, bridge.search).toString(),
+    targetModel: route.targets[0]?.upstreamModel ?? route.model.slug,
+  });
+  data.activeRequestId = liveRequestId;
   const routingBase: CaptureRouting = {
     action: "routed",
     routeSlugs: [route.model.slug],
@@ -670,6 +845,7 @@ async function runBridgedCreate(
     for (const event of warmupCompletionEvents(inspected.model)) {
       await queueBridgedMessage(data, event, origin);
     }
+    data.liveRequests.finish(liveRequestId, { state: "completed", detail: "Local warmup" });
     return;
   }
 
@@ -679,12 +855,17 @@ async function runBridgedCreate(
   } catch (error) {
     await recordRequest(routingBase);
     await queueBridgedMessage(data, wrappedErrorEvent(502, errorMessage(error)), origin);
+    data.liveRequests.finish(liveRequestId, {
+      state: "failed",
+      detail: errorMessage(error),
+    });
     return;
   }
 
   const result = await fetchWithFailover({
     route,
     breakers: bridge.breakers,
+    onEvent: (event) => updateLiveRequestFromFailover(data.liveRequests, liveRequestId, event),
     requestFor: (target) => ({
       url: responseTargetUrl(route, bridge.search),
       init: {
@@ -714,12 +895,25 @@ async function runBridgedCreate(
   if (!result.response.ok || result.response.body === null) {
     const detail = await result.response.text();
     await queueBridgedMessage(data, wrappedErrorEvent(result.response.status, detail), origin);
+    data.liveRequests.finish(liveRequestId, {
+      state: "failed",
+      status: result.response.status,
+      detail,
+    });
     return;
   }
+  data.liveRequests.update(liveRequestId, {
+    state: "streaming",
+    status: result.response.status,
+  });
   for await (const eventData of parseSseEvents(result.response.body)) {
     if (data.client === undefined || data.client.readyState !== WebSocket.OPEN) break;
     await queueBridgedMessage(data, rewriteBridgedEvent(eventData, route.model.slug), origin);
   }
+  data.liveRequests.finish(liveRequestId, {
+    state: "completed",
+    status: result.response.status,
+  });
 }
 
 function queueBridgedMessage(
@@ -740,6 +934,7 @@ function queueBridgedMessage(
         throw new Error("client websocket is not open");
       }
       if (client.send(message) === 0) throw new Error("client websocket send failed");
+      observeResponseEvent(data, message);
     })
     .catch(() => closePair(data, 1011, "capture failed"));
   return data.upstreamToClient;
@@ -862,8 +1057,41 @@ async function websocketMessage(value: unknown): Promise<string | Uint8Array> {
 }
 
 function closePair(data: SocketData, code: number, reason: string): void {
+  if (data.activeRequestId !== undefined) {
+    data.liveRequests.finish(data.activeRequestId, { state: "failed", detail: reason });
+    data.activeRequestId = undefined;
+  }
   if (data.client !== undefined) closeClient(data.client, code, reason);
   if (data.upstream !== undefined) closeUpstream(data.upstream, code, reason);
+}
+
+function observeResponseEvent(data: SocketData, message: string | ArrayBuffer | Uint8Array): void {
+  if (data.activeRequestId === undefined || typeof message !== "string") return;
+  try {
+    const event = JSON.parse(message) as { type?: unknown; status?: unknown };
+    if (event.type === "response.created") {
+      data.liveRequests.update(data.activeRequestId, { state: "streaming" });
+      return;
+    }
+    if (event.type === "response.completed") {
+      data.liveRequests.finish(data.activeRequestId, { state: "completed" });
+      data.activeRequestId = undefined;
+      return;
+    }
+    if (
+      event.type === "error" ||
+      event.type === "response.failed" ||
+      event.type === "response.error"
+    ) {
+      data.liveRequests.finish(data.activeRequestId, {
+        state: "failed",
+        ...(typeof event.status === "number" ? { status: event.status } : {}),
+      });
+      data.activeRequestId = undefined;
+    }
+  } catch {
+    // Non-JSON WebSocket frames are unrelated to Responses lifecycle state.
+  }
 }
 
 function closeClient(socket: Bun.ServerWebSocket<SocketData>, code: number, reason: string): void {

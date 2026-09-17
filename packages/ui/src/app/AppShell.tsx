@@ -13,7 +13,7 @@ export function AppShell() {
             <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Inference input lab</p>
           </div>
         </div>
-        <nav className="flex items-center gap-1 rounded-lg border border-line bg-canvas p-1 text-xs">
+        <nav className="flex max-w-[70vw] items-center gap-1 overflow-x-auto rounded-lg border border-line bg-canvas p-1 text-xs">
           <Link
             to="/"
             className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
@@ -31,6 +31,12 @@ export function AppShell() {
             className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
           >
             Model routes
+          </Link>
+          <Link
+            to="/requests"
+            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
+          >
+            Live requests
           </Link>
           <Link
             to="/config-bundle"

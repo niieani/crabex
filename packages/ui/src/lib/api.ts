@@ -4,6 +4,7 @@ import type {
   ContextSnapshot,
   ModelRouteSet,
   ModelsFixture,
+  LiveRequestsSnapshot,
   RoutingTelemetry,
   TransformationSet,
   TransformationTelemetry,
@@ -46,6 +47,11 @@ export async function getRoutingTelemetry(): Promise<{
     breakers?: Record<string, string>;
   };
   return { telemetry: body.telemetry, breakers: body.breakers ?? {} };
+}
+
+export async function getLiveRequests(): Promise<LiveRequestsSnapshot> {
+  const response = await request(`${API}/live-requests`);
+  return (await response.json()) as LiveRequestsSnapshot;
 }
 
 export async function resetStats(): Promise<void> {
