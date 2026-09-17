@@ -145,7 +145,26 @@ describe("modelRouteFromConfig", () => {
         breaker: { failures: 3, cooldownMs: 60_000 },
       },
       transport: "ws",
+      forwardAccessPrograms: false,
     });
+  });
+
+  it("opts a route into forwarding access_programs", () => {
+    const parsed = parseModelRouteSet({
+      version: 1,
+      routes: [{ ...routeConfig[0], forward_access_programs: true }],
+    });
+    expect(parsed.routes[0]?.forward_access_programs).toBe(true);
+    expect(modelRouteFromConfig(parsed.routes[0]!).forwardAccessPrograms).toBe(true);
+  });
+
+  it("rejects a non-boolean forward_access_programs flag", () => {
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [{ ...routeConfig[0], forward_access_programs: "yes" }],
+      }),
+    ).toThrow("route[0].forward_access_programs must be a boolean");
   });
 
   it("maps failover targets and retry policy", () => {

@@ -230,6 +230,7 @@ export interface ModelRouteConfig {
   targets?: RouteTargetConfig[];
   retry?: RouteRetryConfig;
   transport?: "http" | "ws";
+  forward_access_programs?: boolean;
 }
 
 export interface ModelAdjustment {

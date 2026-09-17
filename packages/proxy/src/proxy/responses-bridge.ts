@@ -38,9 +38,15 @@ export function warmupCompletionEvents(model: string): string[] {
   ];
 }
 
-export function httpPayloadFor(payload: Record<string, unknown>): Record<string, unknown> {
+export function httpPayloadFor(
+  payload: Record<string, unknown>,
+  options: { forwardAccessPrograms?: boolean } = {},
+): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(payload).filter(([key]) => !WS_ONLY_REQUEST_FIELDS.has(key)),
+    Object.entries(payload).filter(([key]) => {
+      if (WS_ONLY_REQUEST_FIELDS.has(key)) return false;
+      return key !== "access_programs" || options.forwardAccessPrograms === true;
+    }),
   );
 }
 

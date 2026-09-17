@@ -46,6 +46,16 @@ describe("httpPayloadFor", () => {
       }),
     ).toEqual({ model: "gpt-6-astra", input: [], stream: false });
   });
+
+  it("strips access_programs unless the route opts in", () => {
+    const payload = {
+      model: "gpt-5.6-sol",
+      input: [],
+      access_programs: { cyber: "standard" },
+    };
+    expect(httpPayloadFor(payload)).toEqual({ model: "gpt-5.6-sol", input: [] });
+    expect(httpPayloadFor(payload, { forwardAccessPrograms: true })).toEqual(payload);
+  });
 });
 
 describe("rewriteBridgedEvent", () => {

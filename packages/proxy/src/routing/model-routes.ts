@@ -51,6 +51,11 @@ export interface ModelRouteConfig {
   retry?: RouteRetryConfig;
   /** Upstream transport; default "ws" (Responses-over-WebSocket). */
   transport?: "http" | "ws";
+  /**
+   * Forward ChatGPT `access_programs` to this upstream. Default false — custom
+   * API-key gateways reject the field unless the org has it enabled.
+   */
+  forward_access_programs?: boolean;
 }
 
 export interface ModelAdjustment {
@@ -98,6 +103,7 @@ export interface ModelRoute {
   targets: RouteTarget[];
   retry: RouteRetryPolicy;
   transport: "http" | "ws";
+  forwardAccessPrograms: boolean;
 }
 
 export class RouteUnavailable extends Error {}
@@ -142,6 +148,7 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
       },
     },
     transport: config.transport ?? "ws",
+    forwardAccessPrograms: config.forward_access_programs === true,
   };
 }
 
@@ -251,6 +258,10 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   if (transport !== undefined && transport !== "http" && transport !== "ws") {
     throw new Error(`${source}.transport must be "http" or "ws"`);
   }
+  const forwardAccessPrograms = value.forward_access_programs;
+  if (forwardAccessPrograms !== undefined && typeof forwardAccessPrograms !== "boolean") {
+    throw new Error(`${source}.forward_access_programs must be a boolean`);
+  }
   return {
     authorization_env: nonEmptyString(value.authorization_env, `${source}.authorization_env`),
     ...(enabled === undefined ? {} : { enabled }),
@@ -265,6 +276,9 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
       : { targets: targetsConfig(value.targets, `${source}.targets`) }),
     ...(value.retry === undefined ? {} : { retry: retryConfig(value.retry, `${source}.retry`) }),
     ...(transport === undefined ? {} : { transport }),
+    ...(forwardAccessPrograms === undefined
+      ? {}
+      : { forward_access_programs: forwardAccessPrograms }),
   };
 }
 

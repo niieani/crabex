@@ -456,7 +456,9 @@ async function proxyHttpRequest(
                 method: request.method,
                 headers,
                 body: JSON.stringify({
-                  ...routedRequest.inspected.payload,
+                  ...httpPayloadFor(routedRequest.inspected.payload, {
+                    forwardAccessPrograms: routedRequest.route.forwardAccessPrograms,
+                  }),
                   model: routeTarget.upstreamModel ?? routedRequest.route.model.slug,
                 }),
                 redirect: "manual",
@@ -876,7 +878,9 @@ async function runBridgedCreate(
           accept: "text/event-stream",
         },
         body: JSON.stringify({
-          ...httpPayloadFor(inspected.payload),
+          ...httpPayloadFor(inspected.payload, {
+            forwardAccessPrograms: route.forwardAccessPrograms,
+          }),
           model: target.upstreamModel ?? route.model.slug,
           stream: true,
         }),

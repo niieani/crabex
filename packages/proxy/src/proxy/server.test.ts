@@ -380,7 +380,10 @@ describe("model routing and config bundle override", () => {
         expect(request.headers["chatgpt-account-id"]).toBeUndefined();
         expect(request.headers.cookie).toBeUndefined();
         const body = await readBody(request);
-        expect(JSON.parse(body.toString())).toMatchObject({ model: "moonshot-kimi-k3" });
+        expect(JSON.parse(body.toString())).toEqual({
+          model: "moonshot-kimi-k3",
+          input: "hello",
+        });
         response.end("routed");
       });
       const captures = new MemoryCaptureSink();
@@ -396,7 +399,11 @@ describe("model routing and config bundle override", () => {
           "content-type": "application/json",
           cookie: "session=secret",
         },
-        body: JSON.stringify({ model: "kimi-k3", input: "hello" }),
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: "hello",
+          access_programs: { cyber: "standard" },
+        }),
       });
 
       expect(response.status).toBe(200);
@@ -414,6 +421,39 @@ describe("model routing and config bundle override", () => {
           url: `${routed.origin}/v1/responses?trace=1`,
         },
       });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("forwards access_programs on a routed HTTP request when the route opts in", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const routed = await startHttpServer(async (request, response) => {
+        const body = await readBody(request);
+        expect(JSON.parse(body.toString())).toEqual({
+          model: "moonshot-kimi-k3",
+          input: "hello",
+          access_programs: { cyber: "standard" },
+        });
+        response.end("routed");
+      });
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [{ ...testRoute(routed.origin), forwardAccessPrograms: true }],
+      });
+
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: "hello",
+          access_programs: { cyber: "standard" },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("routed");
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
     }
@@ -942,6 +982,7 @@ describe("model routing and config bundle override", () => {
           expect(payload.type).toBeUndefined();
           expect(payload.client_metadata).toBeUndefined();
           expect(payload.generate).toBeUndefined();
+          expect(payload.access_programs).toBeUndefined();
           response.setHeader("content-type", "text/event-stream");
           response.end(
             `event: response.created\ndata: {"type":"response.created","response":{"id":"resp_gw","model":"${String(payload.model)}","status":"in_progress"}}\n\n` +
@@ -985,6 +1026,7 @@ describe("model routing and config bundle override", () => {
           client_metadata: { session_id: "s" },
           model: "gpt-6-astra",
           input: [],
+          access_programs: { cyber: "standard" },
         }),
       );
 
