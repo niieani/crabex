@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
+import { serviceCommand } from "./service/launch-agent.ts";
 import { createLocalApi } from "./api/local-api.ts";
 import { createCodexConfigManager } from "./config/codex-config.ts";
 import { openProxyConfigStore } from "./config/proxy-config-store.ts";
@@ -21,6 +22,11 @@ import { LiveRequestStore } from "./requests/live-request-store.ts";
 
 const HELP = `Usage:
   agent-context-trimmer proxy [options]
+  agent-context-trimmer service install [--env NAME]... [-- proxy options]
+  agent-context-trimmer service uninstall|status|restart|logs
+
+Service commands install a macOS LaunchAgent that starts at login. Install/update
+and restart use an independent worker; inspect service status/logs for completion.
 
 Options:
   --config <file>      Proxy settings (default: .agent-context-trimmer/config.json)
@@ -54,6 +60,10 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === "service") {
+    await serviceCommand(args.slice(1));
+    return;
+  }
   const options = parseCliOptions(args);
   const proxyConfig = await openProxyConfigStore(options.configPath);
   const capturePath = join(options.capturesDirectory, captureFileName());

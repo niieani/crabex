@@ -41,3 +41,13 @@ release. Add a tool name to select part of the graph. For example, run
 - `codex exec` launched from Codex Desktop may inherit Desktop originator identity; trust captured harness metadata, and run outside Desktop when specifically validating TUI scope.
 - Inspect NDJSON with `jq`: confirm WebSocket `response.create`, requested model/effort, `generate:false` warmup, chained `previous_response_id`, and `response.completed`.
 - Stop the proxy after verification.
+
+## Restarting a proxy from Codex
+
+Codex may depend on the proxy being restarted for its own model and tool requests. A stop can prevent the next tool call from ever running.
+
+1. Before stopping anything, inspect the active Codex config (`$CODEX_HOME/config.toml`, falling back to `~/.codex/config.toml`), including selected profiles/provider settings and known command-line overrides. Compare `openai_base_url`, `chatgpt_base_url`, and provider `base_url` endpoints with the target listener; treat localhost aliases as equivalent. If either route uses this instance, or the effective route is uncertain, assume the current Codex session depends on it. Read only relevant settings; keep credentials out of output.
+2. Identify the listener's PID, supervisor/tmux session, exact launch arguments, working directory, and required environment. Build and validate the replacement before stopping the working instance; retain a runnable previous build for recovery.
+3. When running as Codex, prepare a single restart script that stops the identified instance, waits for the port to be released, starts the replacement with the preserved settings, polls readiness with a deadline, and restores the previous build if startup fails. The entire sequence must run without another model response or tool call. Launch it independently of the target process/session (for example, in a separate detached tmux session with logs redirected to a file), and verify that the restart worker is running before it stops the proxy. A single tool call alone does not make the worker independent.
+4. For an installed LaunchAgent, use `service restart`; see `docs/macos-service.md` for worker logs, readiness checks, updates, and migration. For tmux, create the replacement session explicitly: stopping the proxy may also terminate its shell, pane, and the last tmux session. Do not depend on sending a later command to the old pane. For a supervised service, let its supervisor restart it and keep readiness/recovery in the independent script.
+5. After connectivity returns, verify the new PID owns the intended port and `GET /__agent-context-trimmer/api/proxy-config` succeeds with the expected settings. Inspect the restart log before declaring success. Keep the same Codex URLs; switching them is a separate change.

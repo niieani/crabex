@@ -176,3 +176,7 @@ standard fallback drops the prompt cache. See [docs/flex-routes.md](docs/flex-ro
 
 - `packages/proxy`: Bun server and CLI.
 - `packages/ui`: React and Tailwind context inspector.
+
+## Run automatically on macOS
+
+Use `agent-context-trimmer service install` to install a per-user LaunchAgent with a stable runtime and supervised restarts. See [macOS service setup](docs/macos-service.md) for installation, updates, environment settings, and migration from an existing proxy.
