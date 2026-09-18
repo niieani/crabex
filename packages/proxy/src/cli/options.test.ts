@@ -7,6 +7,7 @@ describe("parseCliOptions", () => {
   it("defaults to the ChatGPT backend origin", () => {
     expect(parseCliOptions(["proxy"])).toEqual({
       command: "proxy",
+      configPath: ".agent-context-trimmer/config.json",
       host: "127.0.0.1",
       port: 8765,
       upstreamOrigin: "https://chatgpt.com",
@@ -50,6 +51,7 @@ describe("parseCliOptions", () => {
       ]),
     ).toEqual({
       command: "proxy",
+      configPath: ".agent-context-trimmer/config.json",
       host: "0.0.0.0",
       port: 9000,
       upstreamOrigin: "http://127.0.0.1:8317",
@@ -67,5 +69,17 @@ describe("parseCliOptions", () => {
 
   it("rejects unknown arguments", () => {
     expect(() => parseCliOptions(["proxy", "--mystery"])).toThrow("unknown argument: --mystery");
+  });
+
+  it("enables the single-account Apps authentication relay explicitly", () => {
+    expect(
+      parseCliOptions(["proxy", "--apps-auth-relay", "--listen", "127.0.0.1:9000"]),
+    ).toMatchObject({ appsAuthRelay: true, port: 9000 });
+  });
+
+  it("accepts a proxy config file and an explicit relay opt-out", () => {
+    expect(
+      parseCliOptions(["proxy", "--config", "settings.json", "--no-apps-auth-relay"]),
+    ).toMatchObject({ configPath: "settings.json", appsAuthRelay: false });
   });
 });

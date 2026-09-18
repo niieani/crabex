@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { parseCliOptions } from "./cli/options.ts";
 import { createLocalApi } from "./api/local-api.ts";
 import { createCodexConfigManager } from "./config/codex-config.ts";
+import { openProxyConfigStore } from "./config/proxy-config-store.ts";
 import { openConfigBundleStore } from "./config/config-bundle-store.ts";
 import { openModelRouteStore } from "./config/model-route-store.ts";
 import { openTransformationStore } from "./config/transformation-store.ts";
@@ -22,6 +23,9 @@ const HELP = `Usage:
   agent-context-trimmer proxy [options]
 
 Options:
+  --config <file>      Proxy settings (default: .agent-context-trimmer/config.json)
+  --no-apps-auth-relay Disable Apps credential reuse (enabled by default)
+  --apps-auth-relay    Override config to enable Apps credential reuse
   --listen <host:port>  Listener address (default: 127.0.0.1:8765)
   --upstream <origin>   Upstream origin (default: https://chatgpt.com)
   --captures <dir>      Capture directory (default: .agent-context-trimmer/captures)
@@ -51,6 +55,7 @@ async function main(): Promise<void> {
   }
 
   const options = parseCliOptions(args);
+  const proxyConfig = await openProxyConfigStore(options.configPath);
   const capturePath = join(options.capturesDirectory, captureFileName());
   const captureSink = await openNdjsonCaptureSink(capturePath);
   const transformationStore = await openTransformationStore(options.transformationsPath);
@@ -75,6 +80,8 @@ async function main(): Promise<void> {
   }:${options.port}`;
   const proxy = await startReverseProxy({
     host: options.host,
+    appsAuthRelay: options.appsAuthRelay,
+    proxyConfigSource: proxyConfig,
     port: options.port,
     upstreamOrigin: options.upstreamOrigin,
     captureSink,
@@ -96,6 +103,9 @@ async function main(): Promise<void> {
     liveRequests,
     project: options.project,
     localApi: createLocalApi({
+      proxyConfig,
+      appsAuthRelayOverride: options.appsAuthRelay,
+      allowAppsAuthRelay: ["127.0.0.1", "::1", "localhost"].includes(options.host),
       snapshots: snapshotRepository,
       transformations: transformationStore,
       modelRoutes: modelRouteStore,

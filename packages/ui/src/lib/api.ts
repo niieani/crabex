@@ -1,4 +1,5 @@
 import type {
+  ProxyConfigState,
   CodexConfigState,
   ConfigBundleOverride,
   ContextSnapshot,
@@ -12,6 +13,19 @@ import type {
 } from "./types.ts";
 
 const API = "/__agent-context-trimmer/api";
+
+export async function getProxyConfig(): Promise<ProxyConfigState> {
+  return (await (await request(`${API}/proxy-config`)).json()) as ProxyConfigState;
+}
+
+export async function putProxyConfig(appsAuthRelay: boolean): Promise<ProxyConfigState> {
+  const response = await request(`${API}/proxy-config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ version: 1, appsAuthRelay }),
+  });
+  return (await response.json()) as ProxyConfigState;
+}
 
 export async function getSnapshots(): Promise<ContextSnapshot[]> {
   const response = await request(`${API}/snapshots`);

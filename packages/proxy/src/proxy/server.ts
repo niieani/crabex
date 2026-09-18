@@ -5,6 +5,7 @@ import type { StatsStore } from "../recording/stats-store.ts";
 import { classifyHarness, type HarnessIdentity } from "../context/harness.ts";
 import type { Transformation } from "../context/transformation.ts";
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
+import type { ProxyConfigStore } from "../config/proxy-config-store.ts";
 import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
 import { transformModelDefinitions } from "../context/transform.ts";
 import {
@@ -38,6 +39,7 @@ import {
   isResponsesRequest,
 } from "../routing/paths.ts";
 import { CloudflareCookieJar } from "./cloudflare-cookie-jar.ts";
+import { AppsAuthRelay } from "./apps-auth-relay.ts";
 import { observePayload } from "../recording/payload-observation.ts";
 import { CaptureFailure, EventRecorder, processClientPayload } from "./event-recorder.ts";
 import type { LocalApi } from "../api/local-api.ts";
@@ -64,6 +66,9 @@ const WEBSOCKET_HANDSHAKE_HEADERS = [
 ];
 
 export interface ReverseProxyOptions {
+  /** Reuse observed ChatGPT credentials for unauthenticated Apps MCP requests. Single account only. */
+  appsAuthRelay?: boolean;
+  proxyConfigSource?: Pick<ProxyConfigStore, "get" | "subscribe">;
   host?: string;
   port?: number;
   upstreamOrigin: string;
@@ -136,6 +141,22 @@ interface SocketData {
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
   const host = options.host ?? "127.0.0.1";
   const upstreamOrigin = parseUpstreamOrigin(options.upstreamOrigin);
+  let appsAuthRelay: AppsAuthRelay | undefined;
+  const syncAppsAuthRelay = () => {
+    const enabled = options.appsAuthRelay ?? options.proxyConfigSource?.get().appsAuthRelay ?? true;
+    if (enabled && !["127.0.0.1", "::1", "localhost"].includes(host)) {
+      throw new Error(
+        "Apps authentication relay requires a loopback listener; disable it in config or with --no-apps-auth-relay",
+      );
+    }
+    if (enabled) appsAuthRelay ??= new AppsAuthRelay();
+    else {
+      appsAuthRelay?.close();
+      appsAuthRelay = undefined;
+    }
+  };
+  syncAppsAuthRelay();
+  const unsubscribeProxyConfig = options.proxyConfigSource?.subscribe(syncAppsAuthRelay);
   const recorder = new EventRecorder(
     options.captureSink,
     options.now ?? (() => new Date()),
@@ -184,6 +205,16 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     async fetch(request, bunServer) {
       const localResponse = await options.localApi?.handle(request);
       if (localResponse !== undefined) return localResponse;
+      // Directory lookups can take tens of seconds before returning headers,
+      // and MCP/SSE streams can pause. Do not let Bun's HTTP idle timer reset
+      // the downstream socket while the upstream request is still running.
+      bunServer.timeout(request, 0);
+      appsAuthRelay?.observe(request);
+      if (appsAuthRelay !== undefined) {
+        const authenticated = await appsAuthRelay.authenticate(request);
+        if (authenticated instanceof Response) return authenticated;
+        request = authenticated;
+      }
       const requestPath = new URL(request.url).pathname;
       const bundleOverride = configBundleSource?.get();
       if (bundleOverride?.enabled === true && isConfigBundleRequest(requestPath)) {
@@ -323,7 +354,11 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
 
   return {
     origin: server.url.origin,
-    close: () => server.stop(true),
+    close: () => {
+      unsubscribeProxyConfig?.();
+      appsAuthRelay?.close();
+      return server.stop(true);
+    },
   };
 }
 

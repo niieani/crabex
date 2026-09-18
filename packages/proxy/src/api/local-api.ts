@@ -1,6 +1,7 @@
 import type { TransformationStore } from "../config/transformation-store.ts";
 import { parseTransformationSet } from "../config/transformation-store.ts";
 import type { CodexConfigManager } from "../config/codex-config.ts";
+import { parseProxyConfig, type ProxyConfigStore } from "../config/proxy-config-store.ts";
 import type { ConfigBundleStore } from "../config/config-bundle-store.ts";
 import {
   EMPTY_CONFIG_BUNDLE_OVERRIDE,
@@ -26,6 +27,9 @@ export function createLocalApi(options: {
   modelRoutes: ModelRouteStore;
   configBundle: ConfigBundleStore;
   codexConfig: CodexConfigManager;
+  proxyConfig?: ProxyConfigStore;
+  appsAuthRelayOverride?: boolean;
+  allowAppsAuthRelay?: boolean;
   upstreamCache: UpstreamCacheStore;
   breakers?: { openBreakers(): Record<string, string> };
   stats?: StatsStore;
@@ -36,6 +40,24 @@ export function createLocalApi(options: {
       const url = new URL(request.url);
       if (!url.pathname.startsWith(API_PREFIX)) return undefined;
       try {
+        if (url.pathname === `${API_PREFIX}/proxy-config` && options.proxyConfig !== undefined) {
+          if (request.method === "PUT") {
+            if (options.appsAuthRelayOverride !== undefined)
+              throw new Error(
+                "Apps authentication relay is overridden by the command line; restart without the override to edit it",
+              );
+            const config = parseProxyConfig(await request.json());
+            if (config.appsAuthRelay && options.allowAppsAuthRelay === false)
+              throw new Error("Apps authentication relay requires a loopback listener");
+            await options.proxyConfig.replace(config);
+          } else if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
+          return json({
+            path: options.proxyConfig.path,
+            ...options.proxyConfig.get(),
+            appsAuthRelayOverride: options.appsAuthRelayOverride,
+            allowAppsAuthRelay: options.allowAppsAuthRelay ?? true,
+          });
+        }
         if (url.pathname === `${API_PREFIX}/snapshots` && request.method === "GET") {
           return json({ snapshots: await options.snapshots.list() });
         }

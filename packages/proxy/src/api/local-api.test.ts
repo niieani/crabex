@@ -11,6 +11,7 @@ import type { TransformationSet } from "../context/transformation.ts";
 import type { ModelRouteConfig, ModelRouteSetData } from "../routing/model-routes.ts";
 import { StatsStore } from "../recording/stats-store.ts";
 import { createLocalApi } from "./local-api.ts";
+import { openProxyConfigStore } from "../config/proxy-config-store.ts";
 
 const routeConfigs: ModelRouteConfig[] = [
   {
@@ -81,6 +82,49 @@ function stubCodexConfig(state?: Partial<CodexConfigState>) {
 }
 
 describe("local context API", () => {
+  it("exposes and persists the default-on relay setting while rejecting invalid updates", async () => {
+    const path = join(await mkdtemp(join(tmpdir(), "act-api-config-")), "config.json");
+    const proxyConfig = await openProxyConfigStore(path);
+    const options = {
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1 as const, transformations: [] }),
+        replace: async () => {},
+      },
+      ...stubSources({}),
+      proxyConfig,
+    };
+    const api = createLocalApi(options);
+    const url = "http://localhost/__agent-context-trimmer/api/proxy-config";
+    expect(await (await api.handle(new Request(url)))?.json()).toMatchObject({
+      path,
+      appsAuthRelay: true,
+    });
+    const update = (value: unknown) =>
+      new Request(url, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(value),
+      });
+    expect((await api.handle(update({ version: 1, appsAuthRelay: false })))?.status).toBe(200);
+    expect((await openProxyConfigStore(path)).get().appsAuthRelay).toBe(false);
+    expect((await api.handle(update({ version: 1, appsAuthRelay: "false" })))?.status).toBe(400);
+    expect(
+      (
+        await createLocalApi({ ...options, allowAppsAuthRelay: false }).handle(
+          update({ version: 1, appsAuthRelay: true }),
+        )
+      )?.status,
+    ).toBe(400);
+    expect(
+      (
+        await createLocalApi({ ...options, appsAuthRelayOverride: true }).handle(
+          update({ version: 1, appsAuthRelay: false }),
+        )
+      )?.status,
+    ).toBe(400);
+    expect(proxyConfig.get().appsAuthRelay).toBe(false);
+  });
   it("serves snapshots and updates transformations", async () => {
     let set: TransformationSet = { version: 1, transformations: [] };
     const snapshots: ContextSnapshot[] = [

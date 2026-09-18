@@ -283,3 +283,11 @@ export interface CodexConfigState {
   parseError?: string;
   toggles: CodexConfigToggle[];
 }
+
+export interface ProxyConfigState {
+  path: string;
+  version: 1;
+  appsAuthRelay: boolean;
+  appsAuthRelayOverride?: boolean;
+  allowAppsAuthRelay: boolean;
+}

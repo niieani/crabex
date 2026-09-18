@@ -46,9 +46,9 @@ export function codexConfigToggles(proxyOrigin: string): CodexConfigToggleDefini
     },
     {
       key: "chatgpt_base_url",
-      label: "Config bundle",
+      label: "ChatGPT services",
       description:
-        "Fetch the cloud config bundle through the proxy, so the bundle override applies.",
+        "Route the config bundle and Apps through the proxy. Keep the Apps authentication relay below enabled for native Apps access.",
       managedValue: `${proxyOrigin}/backend-api`,
     },
   ];

@@ -2,6 +2,8 @@ import { defaultCodexConfigPath } from "../config/codex-config.ts";
 
 export interface ProxyCliOptions {
   command: "proxy";
+  appsAuthRelay?: boolean;
+  configPath: string;
   host: string;
   port: number;
   upstreamOrigin: string;
@@ -23,6 +25,7 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
 
   const options: ProxyCliOptions = {
     command: "proxy",
+    configPath: ".agent-context-trimmer/config.json",
     host: "127.0.0.1",
     port: 8765,
     upstreamOrigin: "https://chatgpt.com",
@@ -40,7 +43,15 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     const argument = args[index];
     const value = args[index + 1];
     if (argument === undefined) break;
-    if (argument === "--listen") {
+    if (argument === "--apps-auth-relay") {
+      options.appsAuthRelay = true;
+    } else if (argument === "--no-apps-auth-relay") {
+      options.appsAuthRelay = false;
+    } else if (argument === "--config") {
+      if (value === undefined) throw new Error("missing value for --config");
+      options.configPath = value;
+      index += 1;
+    } else if (argument === "--listen") {
       if (value === undefined) throw new Error("missing value for --listen");
       const listen = parseListen(value);
       options.host = listen.host;
