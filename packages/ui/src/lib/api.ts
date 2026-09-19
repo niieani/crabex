@@ -154,3 +154,15 @@ async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Re
   const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
   throw new Error(body?.error ?? `request failed: ${response.status}`);
 }
+
+export interface TlsStatus {
+  enabled: boolean;
+  expiresAt?: string;
+  caExpiresAt?: string;
+  renewalDue?: boolean;
+  trusted?: boolean;
+  error?: string;
+}
+export async function getTlsStatus(): Promise<TlsStatus> {
+  return (await (await request(`${API}/tls-status`)).json()) as TlsStatus;
+}

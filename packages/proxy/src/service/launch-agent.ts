@@ -13,12 +13,25 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import {
+  resolveCustomCaSource,
+  launchctlEnvironment,
+  prepareCodexCaBundle,
+  prepareTls,
+  removeTls,
+  syncPublishedCodexCa,
+  syncCodexCaTransition,
+  tlsStatus,
+  type PublishedCodexCa,
+} from "./tls.ts";
+import { applyCodexConfigToggle } from "../config/codex-config.ts";
 import { parseCliOptions } from "../cli/options.ts";
 
 const LABEL = "com.agent-context-trimmer.proxy";
 const ROOT = join(homedir(), "Library/Application Support/agent-context-trimmer");
 const PLIST = join(homedir(), "Library/LaunchAgents", `${LABEL}.plist`);
 const LOGS = join(homedir(), "Library/Logs/agent-context-trimmer");
+const TLS_ROOT = join(ROOT, "tls");
 const STATE = join(ROOT, "service.json");
 const LOCK = join(ROOT, "operation.lock");
 const TARGET = `gui/${process.getuid?.()}/${LABEL}`;
@@ -28,6 +41,7 @@ interface ServiceState {
   args: string[];
   environment: Record<string, string>;
   origin: string;
+  desktopCodexCa?: PublishedCodexCa;
 }
 
 export function xml(value: string): string {
@@ -72,6 +86,7 @@ export function installArguments(args: string[], cwd: string, data: string): str
     "--snapshot-cache": parsed.snapshotCachePath,
   };
   const result = ["proxy", ...args];
+  if (parsed.tlsDirectory) result.push("--tls-dir", resolve(cwd, parsed.tlsDirectory));
   for (const [flag, path] of Object.entries(paths)) {
     const explicit = args.includes(flag);
     const absolute =
@@ -83,10 +98,55 @@ export function installArguments(args: string[], cwd: string, data: string): str
   return result;
 }
 
+function withoutOptions(args: string[], names: readonly string[]): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    if (names.includes(args[index]!)) {
+      index += 1;
+      continue;
+    }
+    result.push(args[index]!);
+  }
+  return result;
+}
+
+export class LaunchctlError extends Error {
+  readonly command: string;
+  readonly status: number | null;
+  constructor(command: string, status: number | null, detail: string) {
+    super(`launchctl ${command} failed (${status}): ${detail}`);
+    this.command = command;
+    this.status = status;
+  }
+}
+
+// bootout can return while launchd is still removing the old job. A valid
+// replacement then receives EIO (5); allow teardown to settle before rollback.
+export async function bootstrapWithRetry(
+  bootstrap: () => void,
+  sleep: (ms: number) => Promise<unknown> = (ms) => Bun.sleep(ms),
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      bootstrap();
+      return;
+    } catch (error) {
+      if (
+        !(error instanceof LaunchctlError) ||
+        error.command !== "bootstrap" ||
+        error.status !== 5 ||
+        attempt === 20
+      )
+        throw error;
+      await sleep(250);
+    }
+  }
+}
+
 function ctl(...args: string[]): string {
   const result = spawnSync("/bin/launchctl", args, { encoding: "utf8" });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`launchctl ${args[0]} failed: ${result.stderr.trim()}`);
+  if (result.status !== 0) throw new LaunchctlError(args[0]!, result.status, result.stderr.trim());
   return result.stdout;
 }
 
@@ -109,10 +169,13 @@ async function save(path: string, value: string): Promise<void> {
   }
 }
 
-async function ready(origin: string): Promise<boolean> {
+async function ready(origin: string, tlsDirectory?: string): Promise<boolean> {
   try {
     const response = await fetch(`${origin}/__agent-context-trimmer/api/proxy-config`, {
       signal: AbortSignal.timeout(1000),
+      ...(tlsDirectory
+        ? { tls: { ca: await readFile(join(tlsDirectory, "ca.pem"), "utf8") } }
+        : {}),
     });
     const config = (await response.json()) as { version?: number; appsAuthRelay?: boolean };
     return response.ok && config.version === 1 && typeof config.appsAuthRelay === "boolean";
@@ -121,7 +184,7 @@ async function ready(origin: string): Promise<boolean> {
   }
 }
 
-async function waitReady(origin: string): Promise<void> {
+async function waitReady(origin: string, tlsDirectory?: string): Promise<void> {
   for (let attempt = 0; attempt < 60; attempt++) {
     let ownsPort = false;
     try {
@@ -137,7 +200,7 @@ async function waitReady(origin: string): Promise<void> {
     } catch {
       /* launchd may still be starting the process */
     }
-    if (ownsPort && (await ready(origin))) return;
+    if (ownsPort && (await ready(origin, tlsDirectory))) return;
     await Bun.sleep(500);
   }
   throw new Error("Proxy did not become ready within the startup deadline");
@@ -166,6 +229,7 @@ async function unload(): Promise<void> {
 interface Operation {
   next: ServiceState;
   previous?: ServiceState;
+  configUpdate?: { path: string; before: string | null; after: string };
 }
 
 export async function activateWithRollback(
@@ -183,7 +247,10 @@ export async function activateWithRollback(
     if (operation.previous) {
       await actions.activate(operation.previous);
       await actions.persist(operation.previous);
-      throw new Error("Service update failed; previous service restored", { cause: error });
+      throw new Error(
+        `Service update failed; previous service restored: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
     }
     await actions.remove();
     throw error;
@@ -206,16 +273,28 @@ async function worker(operationPath: string): Promise<void> {
       activate: async (candidate) => {
         await unload();
         await save(PLIST, launchAgentPlist(candidate));
-        ctl("bootstrap", `gui/${process.getuid?.()}`, PLIST);
-        await waitReady(candidate.origin);
+        await bootstrapWithRetry(() => ctl("bootstrap", `gui/${process.getuid?.()}`, PLIST));
+        await waitReady(candidate.origin, parseCliOptions(candidate.args).tlsDirectory);
       },
       persist: async (candidate) => {
+        const managed = operation.next.desktopCodexCa;
+        if (managed !== undefined)
+          syncCodexCaTransition(
+            managed,
+            operation.previous?.desktopCodexCa,
+            candidate === operation.next,
+          );
+        if (operation.configUpdate)
+          await updateServiceCodexConfig(operation.configUpdate, candidate === operation.next);
         const temporary = join(ROOT, `current-${randomUUID()}`);
         await symlink(candidate.release, temporary);
         await rename(temporary, join(ROOT, "current"));
         await save(STATE, JSON.stringify(candidate, null, 2));
       },
       remove: async () => {
+        if (operation.next.desktopCodexCa !== undefined)
+          syncPublishedCodexCa(operation.next.desktopCodexCa, false);
+        if (operation.configUpdate) await updateServiceCodexConfig(operation.configUpdate, false);
         await unload();
         await rm(PLIST, { force: true });
       },
@@ -261,6 +340,35 @@ async function schedule(operation: Operation): Promise<void> {
   throw new Error(`Restart worker did not acknowledge startup; inspect ${path}.log`);
 }
 
+async function optionalText(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export async function updateServiceCodexConfig(
+  update: { path: string; before: string | null; after: string },
+  forward: boolean,
+): Promise<void> {
+  const current = await optionalText(update.path);
+  if (forward) {
+    if (current !== update.before)
+      throw new Error("Codex config changed during installation; service update cancelled");
+    await save(update.path, update.after);
+  } else if (current === update.after) {
+    if (update.before === null) await rm(update.path, { force: true });
+    else await save(update.path, update.before);
+  }
+}
+
+export function serviceOrigin(args: string[]): string {
+  const parsed = parseCliOptions(args);
+  return `${parsed.tlsDirectory ? "https" : "http"}://${parsed.host === "::1" ? "[::1]" : parsed.host}:${parsed.port}`;
+}
+
 export async function serviceCommand(args: string[]): Promise<void> {
   if (process.platform !== "darwin")
     throw new Error("Service commands currently support macOS only");
@@ -269,10 +377,24 @@ export async function serviceCommand(args: string[]): Promise<void> {
     await worker(rest[0]!);
     return;
   }
-  if (!["install", "uninstall", "status", "restart", "logs"].includes(command ?? "")) {
-    throw new Error("Expected service install|uninstall|status|restart|logs");
+  if (!["install", "uninstall", "status", "restart", "logs", "tls"].includes(command ?? "")) {
+    throw new Error("Expected service install|uninstall|status|restart|logs|tls");
   }
-  if (command !== "install" && rest.length) throw new Error(`service ${command} takes no options`);
+  if (command !== "install" && command !== "tls" && rest.length)
+    throw new Error(`service ${command} takes no options`);
+  if (command === "tls" && (rest.length !== 1 || !["status", "renew", "remove"].includes(rest[0]!)))
+    throw new Error("Usage: service tls status|renew|remove");
+  if (command === "tls" && rest[0] === "status") {
+    const installed = await state();
+    console.log(
+      JSON.stringify(
+        await tlsStatus(installed ? parseCliOptions(installed.args).tlsDirectory : undefined),
+        null,
+        2,
+      ),
+    );
+    return;
+  }
   if (command === "status") {
     const installed = await state();
     if (!installed) {
@@ -286,7 +408,9 @@ export async function serviceCommand(args: string[]): Promise<void> {
         .filter((line) => /^\s*(state|pid|last exit code) =/.test(line))
         .join("\n"),
     );
-    console.log(`HTTP readiness: ${(await ready(installed.origin)) ? "ready" : "unavailable"}`);
+    console.log(
+      `HTTP readiness: ${(await ready(installed.origin, parseCliOptions(installed.args).tlsDirectory)) ? "ready" : "unavailable"}`,
+    );
     return;
   }
   if (command === "logs") {
@@ -318,8 +442,27 @@ export async function serviceCommand(args: string[]): Promise<void> {
       }
       await unload();
       await rm(PLIST, { force: true });
+      if (previous.desktopCodexCa !== undefined)
+        syncPublishedCodexCa(previous.desktopCodexCa, false);
+      await removeTls(TLS_ROOT);
       await rm(STATE, { force: true });
       console.log(`Service removed; data and logs retained in ${ROOT} and ${LOGS}`);
+      return;
+    }
+    if (command === "tls") {
+      if (rest[0] === "remove") {
+        if (previous && parseCliOptions(previous.args).tlsDirectory)
+          throw new Error("Uninstall the HTTPS service before removing its certificates");
+        await removeTls(TLS_ROOT);
+        console.log("Managed TLS certificates and login Keychain trust removed");
+        return;
+      }
+      if (!previous || !parseCliOptions(previous.args).tlsDirectory)
+        throw new Error("Install with --https before renewing TLS");
+      const directory = await prepareTls(TLS_ROOT, undefined, true);
+      const args = [...withoutOptions(previous.args, ["--tls-dir"]), "--tls-dir", directory];
+      await schedule({ next: { ...previous, args }, previous });
+      scheduled = true;
       return;
     }
     if (command === "restart") {
@@ -349,27 +492,75 @@ export async function serviceCommand(args: string[]): Promise<void> {
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
       ...previous?.environment,
     };
+    let https = false;
     for (let index = 0; index < flags.length; index += 2) {
+      if (flags[index] === "--https") {
+        https = true;
+        index -= 1;
+        continue;
+      }
       const name = flags[index + 1];
       if (flags[index] !== "--env" || !name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-        throw new Error("Usage: service install [--env NAME]... [-- proxy options]");
+        throw new Error("Usage: service install [--https] [--env NAME]... [-- proxy options]");
       }
       const value = process.env[name];
       if (value === undefined) throw new Error(`Environment variable ${name} is not set`);
       Object.assign(environment, { [name]: value });
     }
     const data = join(ROOT, "data");
-    const launchArgs =
+    let launchArgs =
       previous && separator < 0 ? previous.args : installArguments(proxyArgs, process.cwd(), data);
+    if (proxyArgs.includes("--tls-dir"))
+      throw new Error(
+        "Use service install --https for managed certificates, or proxy --tls-dir for custom certificates",
+      );
+    const existingTls = previous ? parseCliOptions(previous.args).tlsDirectory : undefined;
+    launchArgs = withoutOptions(launchArgs, ["--tls-dir", "--codex-ca-bundle"]);
     const parsed = parseCliOptions(launchArgs);
     if (parsed.port === 0) throw new Error("Service requires a fixed port");
-    const origin = `http://${parsed.host === "::1" ? "[::1]" : parsed.host}:${parsed.port}`;
-    if (!previous || previous.origin !== origin) {
+    const origin = serviceOrigin(
+      https || existingTls ? [...launchArgs, "--tls-dir", existingTls ?? TLS_ROOT] : launchArgs,
+    );
+    if (!previous || new URL(previous.origin).host !== new URL(origin).host) {
       await ensurePortFree(origin).catch(() => {
         throw new Error(
           `Port is occupied at ${origin}. Existing unmanaged proxies are left running; migrate using an independent restart script or choose another --listen port.`,
         );
       });
+    }
+    if (https || existingTls) {
+      const directory = await prepareTls(TLS_ROOT, existingTls);
+      launchArgs = [...launchArgs, "--tls-dir", directory];
+    }
+    const inheritedEnvironment = Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    );
+    const customCaBundle =
+      https || existingTls
+        ? resolveCustomCaSource(
+            TLS_ROOT,
+            [environment, inheritedEnvironment],
+            previous?.desktopCodexCa,
+          )
+        : undefined;
+    const codexCaBundle =
+      (https || existingTls) && customCaBundle !== undefined
+        ? await prepareCodexCaBundle(TLS_ROOT, customCaBundle)
+        : previous?.desktopCodexCa?.path;
+    let desktopCodexCa: PublishedCodexCa | undefined;
+    if (codexCaBundle !== undefined) {
+      launchArgs = [...launchArgs, "--codex-ca-bundle", codexCaBundle];
+      const prior =
+        previous?.desktopCodexCa !== undefined
+          ? previous.desktopCodexCa.previous || undefined
+          : launchctlEnvironment().get("CODEX_CA_CERTIFICATE");
+      desktopCodexCa = {
+        path: codexCaBundle,
+        ...(prior === undefined ? {} : { previous: prior }),
+        ...(customCaBundle === undefined ? {} : { source: customCaBundle }),
+      };
     }
     if (!(await Bun.file(join(data, ".migrated")).exists())) {
       const source = resolve(".agent-context-trimmer");
@@ -409,7 +600,27 @@ export async function serviceCommand(args: string[]): Promise<void> {
       '#!/bin/sh\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 1\nexec "$root/current/bun" "$root/current/cli.mjs" "$@"\n',
     );
     await chmod(launcher, 0o700);
-    await schedule({ next: { release, args: launchArgs, environment, origin }, previous });
+    let configUpdate: Operation["configUpdate"];
+    if (https) {
+      const before = await optionalText(parsed.codexConfigPath);
+      Bun.TOML.parse(before ?? "");
+      let after = before ?? "";
+      after = applyCodexConfigToggle(after, "openai_base_url", `${origin}/backend-api/codex`, true);
+      after = applyCodexConfigToggle(after, "chatgpt_base_url", `${origin}/backend-api`, true);
+      await mkdir(dirname(parsed.codexConfigPath), { recursive: true });
+      configUpdate = { path: parsed.codexConfigPath, before, after };
+    }
+    await schedule({
+      next: {
+        release,
+        args: launchArgs,
+        environment,
+        origin,
+        ...(desktopCodexCa === undefined ? {} : { desktopCodexCa }),
+      },
+      previous,
+      configUpdate,
+    });
     console.log(`Installed command: ${launcher}`);
     scheduled = true;
   } finally {

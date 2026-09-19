@@ -70,6 +70,7 @@ export interface ReverseProxyOptions {
   appsAuthRelay?: boolean;
   proxyConfigSource?: Pick<ProxyConfigStore, "get" | "subscribe">;
   host?: string;
+  tls?: { cert: string; key: string };
   port?: number;
   upstreamOrigin: string;
   captureSink: CaptureSink;
@@ -201,6 +202,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
 
   const server = Bun.serve<SocketData>({
     hostname: host,
+    tls: options.tls,
     port: options.port ?? 8765,
     async fetch(request, bunServer) {
       const localResponse = await options.localApi?.handle(request);

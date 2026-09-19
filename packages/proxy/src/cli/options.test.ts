@@ -82,4 +82,13 @@ describe("parseCliOptions", () => {
       parseCliOptions(["proxy", "--config", "settings.json", "--no-apps-auth-relay"]),
     ).toMatchObject({ configPath: "settings.json", appsAuthRelay: false });
   });
+
+  it("requires TLS when asked to publish a Codex CA bundle", () => {
+    expect(() => parseCliOptions(["proxy", "--codex-ca-bundle", "combined.pem"])).toThrow(
+      "--codex-ca-bundle requires --tls-dir",
+    );
+    expect(
+      parseCliOptions(["proxy", "--tls-dir", "tls", "--codex-ca-bundle", "combined.pem"]),
+    ).toMatchObject({ tlsDirectory: "tls", codexCaBundlePath: "combined.pem" });
+  });
 });

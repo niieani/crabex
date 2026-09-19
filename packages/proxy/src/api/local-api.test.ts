@@ -82,6 +82,31 @@ function stubCodexConfig(state?: Partial<CodexConfigState>) {
 }
 
 describe("local context API", () => {
+  it("reports TLS status without exposing certificate mutation endpoints", async () => {
+    const api = createLocalApi({
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1 as const, transformations: [] }),
+        replace: async () => {},
+      },
+      ...stubSources({}),
+      tlsStatus: async () => ({
+        enabled: true,
+        trusted: true,
+        renewalDue: false,
+        expiresAt: "2027-09-18T00:00:00.000Z",
+      }),
+    });
+    const url = "http://localhost/__agent-context-trimmer/api/tls-status";
+    expect(await (await api.handle(new Request(url)))?.json()).toEqual({
+      enabled: true,
+      trusted: true,
+      renewalDue: false,
+      expiresAt: "2027-09-18T00:00:00.000Z",
+    });
+    expect((await api.handle(new Request(url, { method: "POST" })))?.status).toBe(405);
+  });
+
   it("exposes and persists the default-on relay setting while rejecting invalid updates", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "act-api-config-")), "config.json");
     const proxyConfig = await openProxyConfigStore(path);

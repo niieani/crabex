@@ -16,6 +16,8 @@ export interface ProxyCliOptions {
   statsPath: string;
   snapshotCachePath: string;
   project?: string;
+  tlsDirectory?: string;
+  codexCaBundlePath?: string;
 }
 
 export function parseCliOptions(args: string[]): ProxyCliOptions {
@@ -47,6 +49,14 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
       options.appsAuthRelay = true;
     } else if (argument === "--no-apps-auth-relay") {
       options.appsAuthRelay = false;
+    } else if (argument === "--tls-dir") {
+      if (value === undefined) throw new Error("missing value for --tls-dir");
+      options.tlsDirectory = value;
+      index += 1;
+    } else if (argument === "--codex-ca-bundle") {
+      if (value === undefined) throw new Error("missing value for --codex-ca-bundle");
+      options.codexCaBundlePath = value;
+      index += 1;
     } else if (argument === "--config") {
       if (value === undefined) throw new Error("missing value for --config");
       options.configPath = value;
@@ -101,6 +111,9 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
       throw new Error(`unknown argument: ${argument}`);
     }
   }
+
+  if (options.codexCaBundlePath !== undefined && options.tlsDirectory === undefined)
+    throw new Error("--codex-ca-bundle requires --tls-dir");
 
   return options;
 }

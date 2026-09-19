@@ -1,3 +1,4 @@
+import type { TlsStatus } from "../service/tls.ts";
 import type { TransformationStore } from "../config/transformation-store.ts";
 import { parseTransformationSet } from "../config/transformation-store.ts";
 import type { CodexConfigManager } from "../config/codex-config.ts";
@@ -28,6 +29,7 @@ export function createLocalApi(options: {
   configBundle: ConfigBundleStore;
   codexConfig: CodexConfigManager;
   proxyConfig?: ProxyConfigStore;
+  tlsStatus?: () => Promise<TlsStatus>;
   appsAuthRelayOverride?: boolean;
   allowAppsAuthRelay?: boolean;
   upstreamCache: UpstreamCacheStore;
@@ -40,6 +42,10 @@ export function createLocalApi(options: {
       const url = new URL(request.url);
       if (!url.pathname.startsWith(API_PREFIX)) return undefined;
       try {
+        if (url.pathname === `${API_PREFIX}/tls-status`) {
+          if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
+          return json((await options.tlsStatus?.()) ?? { enabled: false });
+        }
         if (url.pathname === `${API_PREFIX}/proxy-config` && options.proxyConfig !== undefined) {
           if (request.method === "PUT") {
             if (options.appsAuthRelayOverride !== undefined)

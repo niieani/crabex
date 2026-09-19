@@ -1,5 +1,17 @@
+import { syncPublishedCodexCa, syncCodexCaTransition } from "./tls.ts";
 import { describe, expect, it } from "vite-plus/test";
-import { activateWithRollback, installArguments, launchAgentPlist } from "./launch-agent.ts";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  activateWithRollback,
+  installArguments,
+  launchAgentPlist,
+  serviceOrigin,
+  updateServiceCodexConfig,
+  bootstrapWithRetry,
+  LaunchctlError,
+} from "./launch-agent.ts";
 
 const previous = {
   release: "/old",
@@ -103,5 +115,159 @@ describe("LaunchAgent service", () => {
       ),
     ).rejects.toThrow("unhealthy");
     expect(removed).toBe(true);
+  });
+});
+
+describe("HTTPS service migration", () => {
+  it("advertises HTTPS and brackets IPv6 addresses", () => {
+    expect(serviceOrigin(["proxy", "--listen", "[::1]:8765", "--tls-dir", "/tls"])).toBe(
+      "https://[::1]:8765",
+    );
+    expect(serviceOrigin(["proxy"])).toBe("http://127.0.0.1:8765");
+  });
+  it("restores endpoint edits on rollback and preserves concurrent user edits", async () => {
+    const root = await mkdtemp(join(tmpdir(), "act-config-migration-"));
+    const path = join(root, "config.toml");
+    const update = {
+      path,
+      before: 'openai_base_url = "http://localhost:8765"\n',
+      after: 'openai_base_url = "https://localhost:8765"\n',
+    };
+    try {
+      await writeFile(path, update.before);
+      await updateServiceCodexConfig(update, true);
+      expect(await readFile(path, "utf8")).toBe(update.after);
+      await updateServiceCodexConfig(update, false);
+      expect(await readFile(path, "utf8")).toBe(update.before);
+      await writeFile(path, "# edited by user\n");
+      await expect(updateServiceCodexConfig(update, true)).rejects.toThrow("config changed");
+      await updateServiceCodexConfig(update, false);
+      expect(await readFile(path, "utf8")).toBe("# edited by user\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("launchd asynchronous teardown", () => {
+  it("retries transient bootstrap error 5 until the replacement can register", async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    await bootstrapWithRetry(
+      () => {
+        if (++calls < 3) throw new LaunchctlError("bootstrap", 5, "Input/output error");
+      },
+      async (ms) => {
+        waits.push(ms);
+      },
+    );
+    expect(calls).toBe(3);
+    expect(waits).toEqual([250, 250]);
+  });
+  it("keeps retries bounded and exposes the original diagnostic", async () => {
+    let calls = 0;
+    await expect(
+      bootstrapWithRetry(
+        () => {
+          calls++;
+          throw new LaunchctlError("bootstrap", 5, "Input/output error");
+        },
+        async () => {},
+      ),
+    ).rejects.toThrow("Input/output error");
+    expect(calls).toBe(21);
+  });
+  it("does not retry other launchctl errors", async () => {
+    let calls = 0;
+    await expect(
+      bootstrapWithRetry(
+        () => {
+          calls++;
+          throw new LaunchctlError("bootstrap", 122, "permission denied");
+        },
+        async () => {},
+      ),
+    ).rejects.toThrow("permission denied");
+    expect(calls).toBe(1);
+  });
+  it("includes the activation error in the rollback log message", async () => {
+    await expect(
+      activateWithRollback(
+        { next, previous },
+        {
+          activate: async (candidate) => {
+            if (candidate === next) throw new Error("bootstrap diagnostic");
+          },
+          persist: async () => {},
+          remove: async () => {},
+        },
+      ),
+    ).rejects.toThrow("previous service restored: bootstrap diagnostic");
+  });
+});
+
+describe("custom CA publication across service updates", () => {
+  const oldCa = { path: "/old-managed.pem", previous: "/original-user.pem" };
+  const newCa = { path: "/new-managed.pem", previous: "/original-user.pem" };
+  function launchEnvironment(initial?: string) {
+    let value = initial;
+    return {
+      get: (_name: string) => value,
+      set: (_name: string, nextValue: string) => {
+        value = nextValue;
+      },
+      unset: (_name: string) => {
+        value = undefined;
+      },
+    };
+  }
+  it("switches generations after readiness and restores the previous generation on failed persistence", async () => {
+    const env = launchEnvironment(oldCa.path);
+    const oldService = { ...previous, desktopCodexCa: oldCa };
+    const newService = { ...next, desktopCodexCa: newCa };
+    await expect(
+      activateWithRollback(
+        { next: newService, previous: oldService },
+        {
+          activate: async () => {},
+          persist: async (candidate) => {
+            syncCodexCaTransition(newCa, oldCa, candidate === newService, env);
+            if (candidate === newService) {
+              expect(env.get("CODEX_CA_CERTIFICATE")).toBe(newCa.path);
+              throw new Error("failed to persist service state");
+            }
+          },
+          remove: async () => {},
+        },
+      ),
+    ).rejects.toThrow("previous service restored");
+    expect(env.get("CODEX_CA_CERTIFICATE")).toBe(oldCa.path);
+    syncPublishedCodexCa(oldCa, false, env);
+    expect(env.get("CODEX_CA_CERTIFICATE")).toBe(oldCa.previous);
+  });
+  it("keeps the previous bundle when activation failed before publication", () => {
+    const env = launchEnvironment(oldCa.path);
+    syncCodexCaTransition(newCa, oldCa, false, env);
+    expect(env.get("CODEX_CA_CERTIFICATE")).toBe(oldCa.path);
+  });
+  it("keeps the managed bundle when rolling back a restart or leaf renewal", () => {
+    const env = launchEnvironment(oldCa.path);
+    syncCodexCaTransition(oldCa, oldCa, false, env);
+    expect(env.get("CODEX_CA_CERTIFICATE")).toBe(oldCa.path);
+  });
+  it("restores original user state on a failed first installation", () => {
+    for (const initial of [undefined, "/original-user.pem"]) {
+      const env = launchEnvironment(initial);
+      const ca = { path: newCa.path, previous: initial };
+      syncCodexCaTransition(ca, undefined, true, env);
+      syncCodexCaTransition(ca, undefined, false, env);
+      expect(env.get("CODEX_CA_CERTIFICATE")).toBe(initial);
+    }
+  });
+  it("preserves concurrent user choices on both forward migration and rollback", () => {
+    const env = launchEnvironment("/user-changed.pem");
+    expect(() => syncCodexCaTransition(newCa, oldCa, true, env)).toThrow("changed");
+    syncCodexCaTransition(newCa, oldCa, false, env);
+    expect(env.get("CODEX_CA_CERTIFICATE")).toBe("/user-changed.pem");
   });
 });

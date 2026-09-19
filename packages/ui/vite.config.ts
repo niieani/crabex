@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      "/__agent-context-trimmer/api": "http://127.0.0.1:8765",
+      "/__agent-context-trimmer/api": process.env.ACT_PROXY_ORIGIN ?? "http://127.0.0.1:8765",
     },
   },
 });

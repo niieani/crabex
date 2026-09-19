@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
+import { readTls, syncPublishedCodexCa, tlsStatus } from "./service/tls.ts";
 import { serviceCommand } from "./service/launch-agent.ts";
 import { createLocalApi } from "./api/local-api.ts";
 import { createCodexConfigManager } from "./config/codex-config.ts";
@@ -22,13 +23,15 @@ import { LiveRequestStore } from "./requests/live-request-store.ts";
 
 const HELP = `Usage:
   agent-context-trimmer proxy [options]
-  agent-context-trimmer service install [--env NAME]... [-- proxy options]
+  agent-context-trimmer service install [--https] [--env NAME]... [-- proxy options]
   agent-context-trimmer service uninstall|status|restart|logs
+  agent-context-trimmer service tls status|renew|remove
 
 Service commands install a macOS LaunchAgent that starts at login. Install/update
 and restart use an independent worker; inspect service status/logs for completion.
 
 Options:
+  --tls-dir <dir>      HTTPS certificate directory (cert.pem, key.pem, ca.pem)
   --config <file>      Proxy settings (default: .agent-context-trimmer/config.json)
   --no-apps-auth-relay Disable Apps credential reuse (enabled by default)
   --apps-auth-relay    Override config to enable Apps credential reuse
@@ -65,6 +68,17 @@ async function main(): Promise<void> {
     return;
   }
   const options = parseCliOptions(args);
+  if (options.codexCaBundlePath !== undefined) {
+    try {
+      syncPublishedCodexCa({ path: options.codexCaBundlePath }, true);
+    } catch (error) {
+      // A user may deliberately replace this value after installation. Keep the
+      // proxy available and leave that explicit choice untouched.
+      console.error(
+        `Could not publish the managed CODEX_CA_CERTIFICATE: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   const proxyConfig = await openProxyConfigStore(options.configPath);
   const capturePath = join(options.capturesDirectory, captureFileName());
   const captureSink = await openNdjsonCaptureSink(capturePath);
@@ -85,11 +99,11 @@ async function main(): Promise<void> {
   await snapshotRepository.load();
   const targetBreakers = new TargetBreakers();
   const liveRequests = new LiveRequestStore();
-  const proxyOrigin = `http://${
-    options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host
-  }:${options.port}`;
+  const host = options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host;
+  const proxyOrigin = `${options.tlsDirectory ? "https" : "http"}://${host === "::1" ? "[::1]" : host}:${options.port}`;
   const proxy = await startReverseProxy({
     host: options.host,
+    tls: options.tlsDirectory ? await readTls(options.tlsDirectory) : undefined,
     appsAuthRelay: options.appsAuthRelay,
     proxyConfigSource: proxyConfig,
     port: options.port,
@@ -114,6 +128,7 @@ async function main(): Promise<void> {
     project: options.project,
     localApi: createLocalApi({
       proxyConfig,
+      tlsStatus: () => tlsStatus(options.tlsDirectory),
       appsAuthRelayOverride: options.appsAuthRelay,
       allowAppsAuthRelay: ["127.0.0.1", "::1", "localhost"].includes(options.host),
       snapshots: snapshotRepository,

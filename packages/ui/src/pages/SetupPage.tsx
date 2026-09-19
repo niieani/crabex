@@ -1,7 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
-import { getCodexConfig, putCodexConfig, getProxyConfig, putProxyConfig } from "../lib/api.ts";
+import {
+  getCodexConfig,
+  putCodexConfig,
+  getProxyConfig,
+  putProxyConfig,
+  getTlsStatus,
+} from "../lib/api.ts";
 import type { CodexConfigToggle } from "../lib/types.ts";
 
 export function SetupPage() {
@@ -58,6 +64,7 @@ export function SetupPage() {
             The config file does not exist yet; it will be created when you enable a toggle.
           </p>
         )}
+        <TlsCard />
         <AppsAuthRelayCard />
       </section>
     </div>
@@ -178,5 +185,51 @@ function ToggleCard({
         ) : null}
       </div>
     </article>
+  );
+}
+
+function TlsCard() {
+  const query = useQuery({
+    queryKey: ["tls-status"],
+    queryFn: getTlsStatus,
+    refetchInterval: 60_000,
+  });
+  const status = query.data;
+  return (
+    <section className="mt-8 rounded-xl border border-line bg-panel p-4">
+      <h2 className="text-sm font-semibold">Local HTTPS</h2>
+      {query.isError ? <p className="mt-2 text-xs text-danger">{query.error.message}</p> : null}
+      {status ? (
+        <>
+          <p className="mt-2 text-xs text-muted">
+            {status.enabled ? "HTTPS enabled" : "HTTPS is not enabled"}
+            {status.trusted === true
+              ? " · Trusted in Keychain"
+              : status.trusted === false
+                ? " · Keychain validation failed"
+                : ""}
+          </p>
+          {status.expiresAt ? (
+            <p className="mt-2 text-xs text-muted">
+              Certificate expires {new Date(status.expiresAt).toLocaleDateString()}
+            </p>
+          ) : null}
+          {status.error ? <p className="mt-2 text-xs text-danger">{status.error}</p> : null}
+          {status.renewalDue ? (
+            <p className="mt-2 text-xs text-danger">Certificate renewal is due.</p>
+          ) : null}
+          <p className="mt-3 text-xs text-muted">
+            Manage certificates from the CLI. macOS may request authorization to change Keychain
+            trust.
+          </p>
+          <code className="mt-2 block text-xs">
+            agent-context-trimmer{" "}
+            {status.enabled && status.trusted ? "service tls renew" : "service install --https"}
+          </code>
+        </>
+      ) : (
+        <p className="mt-2 text-xs text-muted">Checking certificate…</p>
+      )}
+    </section>
   );
 }
