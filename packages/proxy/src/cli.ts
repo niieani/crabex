@@ -7,6 +7,7 @@ import { parseCliOptions } from "./cli/options.ts";
 import { readTls, syncPublishedCodexCa, tlsStatus } from "./service/tls.ts";
 import { serviceCommand } from "./service/launch-agent.ts";
 import { createLocalApi } from "./api/local-api.ts";
+import { createWebUi, findUiDirectory } from "./api/web-ui.ts";
 import { createCodexConfigManager } from "./config/codex-config.ts";
 import { openProxyConfigStore } from "./config/proxy-config-store.ts";
 import { openConfigBundleStore } from "./config/config-bundle-store.ts";
@@ -102,6 +103,7 @@ async function main(): Promise<void> {
   const host = options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host;
   const proxyOrigin = `${options.tlsDirectory ? "https" : "http"}://${host === "::1" ? "[::1]" : host}:${options.port}`;
   const proxy = await startReverseProxy({
+    webUi: createWebUi(await findUiDirectory(import.meta.dirname)),
     host: options.host,
     tls: options.tlsDirectory ? await readTls(options.tlsDirectory) : undefined,
     appsAuthRelay: options.appsAuthRelay,
@@ -146,7 +148,7 @@ async function main(): Promise<void> {
     }),
   });
 
-  process.stdout.write(`listening ${proxy.origin}\ncapturing ${capturePath}\n`);
+  process.stdout.write(`Relaydeck UI & proxy: ${proxy.origin}\ncapturing ${capturePath}\n`);
   await waitForShutdownSignal();
   await proxy.close();
   await captureSink.close();

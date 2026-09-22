@@ -26,6 +26,7 @@ import {
 } from "./tls.ts";
 import { applyCodexConfigToggle } from "../config/codex-config.ts";
 import { parseCliOptions } from "../cli/options.ts";
+import { findUiDirectory } from "../api/web-ui.ts";
 
 const LABEL = "com.agent-context-trimmer.proxy";
 const ROOT = join(homedir(), "Library/Application Support/agent-context-trimmer");
@@ -575,7 +576,11 @@ export async function serviceCommand(args: string[]): Promise<void> {
       await save(join(data, ".migrated"), "Imported existing default proxy data\n");
     }
     const release = join(ROOT, "releases", randomUUID());
+    const uiDirectory = await findUiDirectory(dirname(resolve(process.argv[1]!)));
+    if (!uiDirectory)
+      throw new Error("Build the Relaydeck UI with vp run build before installing the service");
     await mkdir(release, { recursive: true, mode: 0o700 });
+    await cp(uiDirectory, join(release, "ui"), { recursive: true });
     const build = await Bun.build({
       entrypoints: [resolve(process.argv[1]!)],
       outdir: release,

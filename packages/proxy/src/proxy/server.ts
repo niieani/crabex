@@ -89,6 +89,7 @@ export interface ReverseProxyOptions {
   stats?: StatsStore;
   project?: string;
   localApi?: LocalApi;
+  webUi?: (request: Request) => Promise<Response | undefined>;
   liveRequests?: LiveRequestStore;
 }
 
@@ -207,6 +208,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     async fetch(request, bunServer) {
       const localResponse = await options.localApi?.handle(request);
       if (localResponse !== undefined) return localResponse;
+      const webResponse = await options.webUi?.(request);
+      if (webResponse !== undefined) return webResponse;
       // Directory lookups can take tens of seconds before returning headers,
       // and MCP/SSE streams can pause. Do not let Bun's HTTP idle timer reset
       // the downstream socket while the upstream request is still running.
