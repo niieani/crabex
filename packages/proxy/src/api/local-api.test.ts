@@ -219,6 +219,30 @@ describe("local context API", () => {
     );
     expect(response?.status).toBe(200);
     expect(await response?.json()).toEqual({ snapshots });
+    const index = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/snapshots?view=index"),
+    );
+    expect(await index?.json()).toEqual({
+      snapshots: snapshots.map(({ parts, ...item }) => ({
+        ...item,
+        revision: expect.any(String),
+        partCount: parts.length,
+        characters: 0,
+      })),
+    });
+    const detail = await api.handle(
+      new Request(
+        `http://localhost/__agent-context-trimmer/api/snapshots/${encodeURIComponent(snapshots[0]!.id)}`,
+      ),
+    );
+    expect(await detail?.json()).toEqual({ snapshot: snapshots[0] });
+    expect(
+      (
+        await api.handle(
+          new Request("http://localhost/__agent-context-trimmer/api/snapshots/missing"),
+        )
+      )?.status,
+    ).toBe(404);
 
     const telemetry = await api.handle(
       new Request("http://localhost/__agent-context-trimmer/api/transformation-telemetry"),

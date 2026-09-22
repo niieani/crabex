@@ -9,6 +9,35 @@ import { FileCaptureRepository } from "./capture-repository.ts";
 import type { Transformation } from "../context/transformation.ts";
 
 describe("file capture repository", () => {
+  it("shares concurrent scans and restores the file index across restarts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "relaydeck-cache-"));
+    const path = join(directory, "snapshot-cache.json");
+    const capture = join(directory, "capture.ndjson");
+    await writeFile(capture, `${JSON.stringify(event(1, "client_to_upstream", { type: "response.create", model: "test", input: [message("user", "first")] }))}\n`);
+    const repository = new FileCaptureRepository(directory, {}, { path });
+    const [first, concurrent] = await Promise.all([repository.list(), repository.list()]);
+    expect(first).toBe(concurrent);
+    await repository.flush();
+    const cached = JSON.parse(await readFile(path, "utf8"));
+    expect(cached.files).toEqual([["capture.ndjson", expect.objectContaining({ snapshotIds: ["session:1"] })]]);
+    expect(cached.modelSignature).toEqual(expect.any(String));
+    const restored = new FileCaptureRepository(directory, {}, { path });
+    await restored.load();
+    expect(await restored.list()).toEqual(first);
+    await writeFile(capture, `${JSON.stringify(event(1, "client_to_upstream", { type: "response.create", model: "test", input: [message("user", "updated content")] }))}\n`);
+    expect((await restored.list())[0]?.parts[0]?.text).toBe("updated content");
+    await restored.flush();
+  });
+
+  it("previews only the indexed capture even when another file cannot be parsed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "relaydeck-preview-"));
+    await writeFile(join(directory, "z-target.ndjson"), `${JSON.stringify(event(1, "client_to_upstream", { type: "response.create", model: "test", input: [message("user", "hello")] }))}\n`);
+    const repository = new FileCaptureRepository(directory);
+    await repository.list();
+    await writeFile(join(directory, "a-unrelated.ndjson"), "invalid JSON\n");
+    expect((await repository.preview("session:1", []))?.parts[0]?.text).toBe("hello");
+  });
+
   it("builds snapshots across capture files and tolerates an unfinished trailing line", async () => {
     const directory = await mkdtemp(join(tmpdir(), "act-captures-"));
     const events = [

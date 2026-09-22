@@ -60,6 +60,8 @@ interface SnapshotCacheFile {
   version: 1;
   savedAt: string;
   snapshots: ContextSnapshot[];
+  files?: [string, ScannedFile][];
+  modelSignature?: string;
 }
 
 interface ScannedFile {
@@ -82,6 +84,7 @@ export class FileCaptureRepository implements SnapshotSource {
   readonly #total: number;
   readonly #snapshots = new Map<string, ContextSnapshot>();
   readonly #files = new Map<string, ScannedFile>();
+  #listing: Promise<ContextSnapshot[]> | undefined;
   #modelSignature: string | undefined;
   #dirty = false;
   #saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -113,6 +116,8 @@ export class FileCaptureRepository implements SnapshotSource {
       for (const snapshot of parsed.snapshots ?? []) {
         if (typeof snapshot?.id === "string") this.#snapshots.set(snapshot.id, snapshot);
       }
+      for (const [name, file] of parsed.files ?? []) this.#files.set(name, file);
+      this.#modelSignature = parsed.modelSignature;
       this.#prune();
     } catch {
       // A corrupt cache must not break the catalog; live data rescans anyway.
@@ -120,6 +125,13 @@ export class FileCaptureRepository implements SnapshotSource {
   }
 
   async list(): Promise<ContextSnapshot[]> {
+    this.#listing ??= this.#scan().finally(() => {
+      this.#listing = undefined;
+    });
+    return this.#listing;
+  }
+
+  async #scan(): Promise<ContextSnapshot[]> {
     const models = await this.#modelContext(
       this.#collaborators.transformations?.get().transformations ?? [],
     );
@@ -159,6 +171,9 @@ export class FileCaptureRepository implements SnapshotSource {
         snapshotIds: built.map((snapshot) => snapshot.id),
       });
       this.#dirty = true;
+      // Bound retained content during a cold archive scan, not just at the end.
+      this.#prune();
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
 
     const capped = this.#prune();
@@ -171,9 +186,13 @@ export class FileCaptureRepository implements SnapshotSource {
     transformations: Transformation[],
   ): Promise<ContextSnapshot | undefined> {
     const models = await this.#modelContext(transformations);
+    // The index identifies the owning capture; previewing must not replay the archive.
+    const indexed = [...this.#files].find(([, file]) => file.snapshotIds.includes(snapshotId));
     let names: string[];
     try {
-      names = (await readdir(this.#directory)).filter((name) => name.endsWith(".ndjson")).sort();
+      names = indexed
+        ? [indexed[0]]
+        : (await readdir(this.#directory)).filter((name) => name.endsWith(".ndjson")).sort();
     } catch (error) {
       if (isMissingDirectory(error)) return undefined;
       throw error;
@@ -243,6 +262,8 @@ export class FileCaptureRepository implements SnapshotSource {
     const content: SnapshotCacheFile = {
       version: 1,
       savedAt: new Date().toISOString(),
+      files: [...this.#files],
+      modelSignature: this.#modelSignature,
       snapshots: [...this.#snapshots.values()].sort((left, right) =>
         right.timestamp.localeCompare(left.timestamp),
       ),
@@ -303,7 +324,7 @@ export class FileCaptureRepository implements SnapshotSource {
 }
 
 function comboKey(snapshot: ContextSnapshot): string {
-  return `${snapshot.model}${snapshot.project ?? ""}${snapshot.harness.kind}`;
+  return JSON.stringify([snapshot.model, snapshot.project ?? "", snapshot.harness.kind]);
 }
 
 function modelSignature(models: SnapshotModelContext | undefined): string {

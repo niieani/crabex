@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { TlsStatus } from "../service/tls.ts";
 import type { TransformationStore } from "../config/transformation-store.ts";
 import { parseTransformationSet } from "../config/transformation-store.ts";
@@ -65,7 +66,31 @@ export function createLocalApi(options: {
           });
         }
         if (url.pathname === `${API_PREFIX}/snapshots` && request.method === "GET") {
-          return json({ snapshots: await options.snapshots.list() });
+          const snapshots = await options.snapshots.list();
+          if (url.searchParams.get("view") === "index") {
+            return json({
+              snapshots: snapshots.map(({ parts, ...snapshot }) => ({
+                ...snapshot,
+                revision: createHash("sha256")
+                  .update(
+                    JSON.stringify([
+                      parts.map((part) => [part.digest, part.originalText, part.deleted]),
+                      snapshot.usage,
+                    ]),
+                  )
+                  .digest("hex")
+                  .slice(0, 16),
+                partCount: parts.length,
+                characters: parts.reduce((sum, part) => sum + part.characters, 0),
+              })),
+            });
+          }
+          return json({ snapshots });
+        }
+        if (url.pathname.startsWith(`${API_PREFIX}/snapshots/`) && request.method === "GET") {
+          const id = decodeURIComponent(url.pathname.slice(`${API_PREFIX}/snapshots/`.length));
+          const snapshot = (await options.snapshots.list()).find((item) => item.id === id);
+          return snapshot ? json({ snapshot }) : json({ error: "snapshot not found" }, 404);
         }
         if (url.pathname === `${API_PREFIX}/transformations` && request.method === "GET") {
           return json(options.transformations.get());
