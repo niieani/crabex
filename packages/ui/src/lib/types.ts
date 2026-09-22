@@ -1,5 +1,11 @@
 export type HarnessKind = "desktop" | "tui" | "unknown" | "conflicted";
 
+export type SnapshotSummary = Omit<ContextSnapshot, "parts"> & {
+  revision: string;
+  partCount: number;
+  characters: number;
+};
+
 export interface HarnessIdentity {
   kind: HarnessKind;
   version?: string;

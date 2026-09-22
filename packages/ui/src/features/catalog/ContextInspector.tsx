@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useDeferredValue, useMemo, useState } from "react";
+import { SlidersHorizontal, X } from "lucide-react";
 
 import type {
   ContextPart,
@@ -8,8 +9,12 @@ import type {
 } from "../../lib/types.ts";
 import { TransformationEditor } from "../transformations/TransformationEditor.tsx";
 import { collapseModelTwins } from "./collapse-model-twins.ts";
-import { ContextDiff, type TransformSelection } from "./ContextDiff.tsx";
+import type { TransformSelection } from "./ContextDiff.tsx";
 import { resolveJsonStringSelection, type TextRange } from "./json-selection.ts";
+
+const ContextDiff = lazy(() =>
+  import("./ContextDiff.tsx").then((module) => ({ default: module.ContextDiff })),
+);
 
 export function ContextInspector({
   snapshot,
@@ -26,6 +31,8 @@ export function ContextInspector({
   const [view, setView] = useState<"original" | "effective">("effective");
   const [toolView, setToolView] = useState<"description" | "json">("description");
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const [editing, setEditing] = useState(false);
   const [selection, setSelection] = useState<TransformSelection>();
   const [highlightRange, setHighlightRange] = useState<TextRange>();
   const { parts: displayParts, twins } = useMemo(
@@ -40,10 +47,10 @@ export function ContextInspector({
     [displayParts, sort],
   );
   const visible = useMemo(() => {
-    const needle = search.trim().toLocaleLowerCase();
+    const needle = deferredSearch.trim().toLocaleLowerCase();
     if (needle === "") return ordered;
     return ordered.filter((part) => searchableText(part).toLocaleLowerCase().includes(needle));
-  }, [ordered, search]);
+  }, [ordered, deferredSearch]);
   const [selectedKey, setSelectedKey] = useState(
     displayParts[0] === undefined ? undefined : partKey(displayParts[0]),
   );
@@ -63,9 +70,9 @@ export function ContextInspector({
     selected.json !== undefined && (selected.description === undefined || toolView === "json");
 
   return (
-    <div className="grid min-h-[calc(100vh-8.75rem)] flex-1 grid-cols-1 xl:h-full xl:min-h-0 xl:grid-cols-[19rem_minmax(28rem,1fr)_22rem] xl:overflow-hidden">
-      <aside className="border-r border-line bg-panel xl:flex xl:min-h-0 xl:flex-col xl:overflow-hidden">
-        <div className="flex items-center justify-between border-b border-line px-4 py-3">
+    <div className={`context-workspace ${editing ? "editing" : ""}`}>
+      <aside className="context-parts border-r border-line bg-panel">
+        <div className="flex flex-col gap-3 border-b border-line px-4 py-3">
           <div>
             <p className="section-label">Input composition</p>
             <p className="mt-1 text-xs text-muted">{formatNumber(totalCharacters)} characters</p>
@@ -100,7 +107,10 @@ export function ContextInspector({
             <p className="mt-1 px-1 text-[10px] text-muted">{visible.length} matching parts</p>
           )}
         </div>
-        <div className="overflow-y-auto p-2 xl:min-h-0 xl:flex-1">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {visible.length === 0 ? (
+            <p className="px-3 py-8 text-center text-xs text-muted">No matching context parts</p>
+          ) : null}
           {visible.map((part) => (
             <PartButton
               key={partKey(part)}
@@ -128,8 +138,8 @@ export function ContextInspector({
         </div>
       </aside>
 
-      <section className="min-w-0 bg-canvas xl:flex xl:min-h-0 xl:flex-col xl:overflow-hidden">
-        <div className="flex items-start justify-between border-b border-line px-6 py-4">
+      <section className="context-content min-w-0 bg-canvas">
+        <div className="context-content-heading flex flex-wrap items-start justify-between gap-3 border-b border-line px-5 py-4">
           <div className="min-w-0">
             <div className="mb-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.16em] text-muted">
               <span className={phaseBadge(selected.phase)}>{selected.phase}</span>
@@ -148,7 +158,16 @@ export function ContextInspector({
               </p>
             )}
           </div>
-          <div className="ml-5 flex items-center gap-5">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              className="icon-button"
+              title="Transform this part"
+              aria-label="Transform this part"
+              aria-expanded={editing}
+              onClick={() => setEditing(!editing)}
+            >
+              <SlidersHorizontal size={16} />
+            </button>
             {hasTransformations ? (
               <div className="flex rounded-lg border border-line bg-panel p-1 text-[10px]">
                 <button
@@ -217,26 +236,37 @@ export function ContextInspector({
             )}
           </div>
         )}
-        <div className="h-[calc(100vh-15.5rem)] overflow-auto p-6 xl:min-h-0 xl:flex-1">
-          <ContextDiff
-            key={`${selected.id}:${view}:${toolView}`}
-            original={diffOriginal(selected, view, toolView)}
-            effective={selectedContent(selected, view, toolView)}
-            filename={selectedJsonView ? "context.json" : "context.md"}
-            search={search}
-            highlightRange={highlightRange}
-            onTransformSelection={setSelection}
-            resolveTransformSelection={
-              selectedJsonView
-                ? ({ range }) =>
-                    resolveJsonStringSelection(
-                      selectedContent(selected, view, toolView),
-                      selectedText(selected, view),
-                      range,
-                    )
-                : undefined
+        <div className="context-viewer min-h-0 flex-1 overflow-auto p-4">
+          <Suspense
+            fallback={
+              <p className="p-4 text-xs text-muted" role="status">
+                Loading context viewer...
+              </p>
             }
-          />
+          >
+            <ContextDiff
+              key={`${selected.id}:${view}:${toolView}`}
+              original={diffOriginal(selected, view, toolView)}
+              effective={selectedContent(selected, view, toolView)}
+              filename={selectedJsonView ? "context.json" : "context.md"}
+              search={deferredSearch}
+              highlightRange={highlightRange}
+              onTransformSelection={(value) => {
+                setSelection(value);
+                setEditing(true);
+              }}
+              resolveTransformSelection={
+                selectedJsonView
+                  ? ({ range }) =>
+                      resolveJsonStringSelection(
+                        selectedContent(selected, view, toolView),
+                        selectedText(selected, view),
+                        range,
+                      )
+                  : undefined
+              }
+            />
+          </Suspense>
         </div>
         <div className="flex items-center justify-between border-t border-line px-6 py-2 font-mono text-[10px] text-muted">
           <span>sha256 {selected.digest.slice(0, 16)}…</span>
@@ -244,19 +274,28 @@ export function ContextInspector({
         </div>
       </section>
 
-      <aside className="border-l border-line bg-panel p-4 xl:min-h-0 xl:overflow-y-auto">
-        <p className="section-label">Transform this part</p>
-        <p className="mt-2 text-xs leading-5 text-muted">
-          Mechanical matching only. The original capture remains immutable.
-        </p>
-        <TransformationEditor
-          key={`${selected.id}:${JSON.stringify(selection)}`}
-          selectedPart={selected}
-          initialFind={selection?.find}
-          initialJsonPath={selection?.jsonPath}
-          onCreate={onCreateTransformation ?? (() => {})}
-        />
-      </aside>
+      {editing ? (
+        <aside className="context-editor border-l border-line bg-panel p-4">
+          <div className="flex items-center justify-between">
+            <p className="section-label">New transformation</p>
+            <button
+              className="icon-button"
+              aria-label="Close transformation editor"
+              title="Close transformation editor"
+              onClick={() => setEditing(false)}
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <TransformationEditor
+            key={`${selected.id}:${JSON.stringify(selection)}`}
+            selectedPart={selected}
+            initialFind={selection?.find}
+            initialJsonPath={selection?.jsonPath}
+            onCreate={onCreateTransformation ?? (() => {})}
+          />
+        </aside>
+      ) : null}
     </div>
   );
 }
@@ -291,7 +330,13 @@ function PartButton({
       } ${part.deleted ? "opacity-60" : ""}`}
     >
       <div className="flex items-start gap-1 px-2 py-2">
-        <button type="button" onClick={onClick} className="min-w-0 flex-1 px-1 text-left">
+        <button
+          type="button"
+          onClick={onClick}
+          title={part.name}
+          aria-pressed={selected}
+          className="min-w-0 flex-1 px-1 text-left"
+        >
           <div className="flex items-center justify-between gap-3">
             <span className="truncate text-xs font-medium">{part.name}</span>
             <span className="shrink-0 font-mono text-[10px] text-muted">

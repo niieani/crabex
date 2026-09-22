@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDown, ArrowUp, Trash2 } from "lucide-react";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
 import { TransformationEditor } from "../features/transformations/TransformationEditor.tsx";
@@ -26,23 +27,25 @@ export function TransformationsPage() {
 
   const replace = (next: TransformationSet) => mutation.mutate(next);
   const add = (rule: Transformation) =>
-    replace({ version: 1, transformations: [...set.transformations, rule] });
+    mutation.mutateAsync({ version: 1, transformations: [...set.transformations, rule] });
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 overflow-y-auto lg:grid-cols-[1fr_24rem] lg:overflow-hidden">
+    <div className="management-layout">
       <section className="border-r border-line p-6 lg:min-h-0 lg:overflow-y-auto lg:p-8">
-        <div className="mb-6 flex items-end justify-between">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="section-label">Ordered pipeline</p>
             <h1 className="mt-2 text-2xl font-semibold tracking-tight">Transformations</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-muted">
-              Exact mechanical rewrites. Rules run top to bottom; captures remain immutable.
-            </p>
           </div>
           <span className="rounded-full border border-line px-3 py-1 text-xs text-muted">
             {set.transformations.length} rules
           </span>
         </div>
+        {mutation.isError ? (
+          <p role="alert" className="mb-4 rounded-md bg-danger-dim p-3 text-xs text-danger">
+            {mutation.error.message}
+          </p>
+        ) : null}
         <div className="space-y-2">
           {set.transformations.length === 0 ? (
             <div className="rounded-xl border border-dashed border-line p-10 text-center text-sm text-muted">
@@ -54,6 +57,16 @@ export function TransformationsPage() {
                 key={rule.id}
                 rule={rule}
                 index={index}
+                pending={mutation.isPending}
+                last={index === set.transformations.length - 1}
+                onMove={(offset) => {
+                  const reordered = [...set.transformations];
+                  [reordered[index], reordered[index + offset]] = [
+                    reordered[index + offset]!,
+                    reordered[index]!,
+                  ];
+                  replace({ ...set, transformations: reordered });
+                }}
                 telemetry={telemetryQuery.data?.find((item) => item.transformationId === rule.id)}
                 onToggle={() =>
                   replace(updateRule(set, rule.id, { ...rule, enabled: !rule.enabled }))
@@ -71,9 +84,6 @@ export function TransformationsPage() {
       </section>
       <aside className="bg-panel p-5 lg:min-h-0 lg:overflow-y-auto">
         <p className="section-label">New transformation</p>
-        <p className="mt-2 text-xs leading-5 text-muted">
-          Global by default. Open scope controls for harness, model, or project overrides.
-        </p>
         <TransformationEditor onCreate={add} />
       </aside>
     </div>
@@ -86,38 +96,69 @@ function RuleCard({
   onToggle,
   onDelete,
   telemetry,
+  onMove,
+  pending,
+  last,
 }: {
   rule: Transformation;
   index: number;
   onToggle: () => void;
   onDelete: () => void;
   telemetry?: TransformationTelemetry;
+  onMove: (offset: number) => void;
+  pending: boolean;
+  last: boolean;
 }) {
   return (
     <article
-      className={`rounded-xl border p-4 ${rule.enabled ? "border-line bg-panel" : "border-line/60 bg-panel/40 opacity-60"}`}
+      className={`rounded-lg border p-4 ${rule.enabled ? "border-line bg-panel" : "border-line/60 bg-panel/40 opacity-60"}`}
     >
       <div className="flex items-start gap-4">
         <span className="grid size-7 shrink-0 place-items-center rounded-md bg-canvas font-mono text-[10px] text-muted">
           {index + 1}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="truncate text-sm font-semibold">{rule.name}</h2>
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                role="switch"
+                aria-label={`Enable ${rule.name}`}
+                aria-checked={rule.enabled}
+                disabled={pending}
                 onClick={onToggle}
-                className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${rule.enabled ? "bg-accent-dim text-accent" : "bg-canvas text-muted"}`}
+                className={`toggle-switch ${rule.enabled ? "on" : ""}`}
               >
-                {rule.enabled ? "Enabled" : "Disabled"}
+                <span />
+              </button>
+              <button
+                className="icon-button"
+                title="Move rule up"
+                aria-label={`Move ${rule.name} up`}
+                disabled={pending || index === 0}
+                onClick={() => onMove(-1)}
+              >
+                <ArrowUp size={14} />
+              </button>
+              <button
+                className="icon-button"
+                title="Move rule down"
+                aria-label={`Move ${rule.name} down`}
+                disabled={pending || last}
+                onClick={() => onMove(1)}
+              >
+                <ArrowDown size={14} />
               </button>
               <button
                 type="button"
+                title="Delete rule"
+                aria-label={`Delete ${rule.name}`}
+                disabled={pending}
                 onClick={onDelete}
-                className="rounded px-2 py-1 text-[10px] text-muted hover:bg-danger-dim hover:text-danger"
+                className="icon-button hover:text-danger"
               >
-                Delete
+                <Trash2 size={14} />
               </button>
             </div>
           </div>

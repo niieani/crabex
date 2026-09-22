@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Radio } from "lucide-react";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
 import { getLiveRequests } from "../lib/api.ts";
@@ -26,11 +27,7 @@ export function LiveRequestsPage() {
         <div className="mb-7 flex items-end justify-between gap-4">
           <div>
             <p className="section-label">Live proxy activity</p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Requests in flight</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">
-              Follow each inference through its upstream, target model, retries, and fallback path.
-              Request and response content is never included here.
-            </p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Live traffic</h1>
           </div>
           <span
             className={`shrink-0 rounded-full border px-3 py-1 text-xs ${
@@ -44,11 +41,10 @@ export function LiveRequestsPage() {
         </div>
 
         {active.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-line px-6 py-12 text-center">
-            <p className="text-sm font-medium">No inference requests are running.</p>
-            <p className="mt-2 text-xs text-muted">
-              New Responses requests appear here within half a second.
-            </p>
+          <div className="border-y border-line px-6 py-16 text-center">
+            <Radio size={30} strokeWidth={1.3} className="mx-auto mb-4 text-accent" />
+            <p className="text-sm font-medium">Listening for requests</p>
+            <p className="mt-2 text-xs text-muted">No active inference traffic.</p>
           </div>
         ) : (
           <div className="space-y-3">

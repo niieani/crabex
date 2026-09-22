@@ -89,16 +89,12 @@ export function ModelRoutesPage() {
     });
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 overflow-y-auto lg:grid-cols-[1fr_24rem] lg:overflow-hidden">
+    <div className="management-layout">
       <section className="border-r border-line p-6 lg:min-h-0 lg:overflow-y-auto lg:p-8">
-        <div className="mb-6 flex items-end justify-between">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="section-label">Alternate upstreams</p>
             <h1 className="mt-2 text-2xl font-semibold tracking-tight">Model routes</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-muted">
-              Advertise extra models and reroute their Responses traffic — HTTP and WebSocket — to
-              another upstream with its own credentials. Tokens stay in the proxy environment.
-            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -232,10 +228,6 @@ export function ModelRoutesPage() {
       </section>
       <aside className="bg-panel p-5 lg:min-h-0 lg:overflow-y-auto">
         <p className="section-label">New route</p>
-        <p className="mt-2 text-xs leading-5 text-muted">
-          The advertised model clones an upstream template. Requests naming the slug are rewritten
-          to the upstream model and sent with the named env var as bearer token.
-        </p>
         <RouteEditor
           onCreate={add}
           templateSlugs={[

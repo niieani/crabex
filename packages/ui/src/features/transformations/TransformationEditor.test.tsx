@@ -10,6 +10,23 @@ import type { ContextPart } from "../../lib/types.ts";
 afterEach(cleanup);
 
 describe("TransformationEditor", () => {
+  it("preserves the draft and reports a rejected save", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransformationEditor
+        onCreate={async () => {
+          throw new Error("Proxy unavailable");
+        }}
+      />,
+    );
+    await user.type(screen.getByLabelText("Name"), "Keep my draft");
+    await user.type(screen.getByLabelText("Find"), "original");
+    await user.click(screen.getByRole("button", { name: "Add transformation" }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Proxy unavailable");
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "Keep my draft");
+    expect(screen.getByLabelText("Find")).toHaveProperty("value", "original");
+  });
+
   it("creates a globally scoped literal replacement", async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn();

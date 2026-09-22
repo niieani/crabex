@@ -56,7 +56,7 @@ export function ConfigBundlePage() {
     return <EmptyState title="Proxy API unavailable" detail={query.error.message} />;
 
   function submit() {
-    let bundle: unknown = null;
+    let bundle: unknown = query.data?.bundle ?? null;
     if (enabled) {
       try {
         bundle = text.trim() === "" ? null : JSON.parse(text);
@@ -75,22 +75,20 @@ export function ConfigBundlePage() {
   return (
     <div className="h-full overflow-y-auto">
       <section className="mx-auto max-w-3xl p-6 lg:p-8">
-        <div className="mb-6 flex items-end justify-between">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="section-label">Managed policy</p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Config bundle</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-muted">
-              When enabled, GET /wham/config/bundle is answered locally with this JSON body instead
-              of the ChatGPT backend — for example to test various enterprise-managed config and
-              requirements.
-            </p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Configuration</h1>
           </div>
           <button
             type="button"
+            role="switch"
+            aria-label="Enable configuration override"
+            aria-checked={enabled}
             onClick={() => setEnabled(!enabled)}
-            className={`rounded-full px-3 py-1 text-xs font-semibold ${enabled ? "bg-accent-dim text-accent" : "bg-panel text-muted"}`}
+            className={`toggle-switch ${enabled ? "on" : ""}`}
           >
-            {enabled ? "Enabled" : "Disabled"}
+            <span />
           </button>
         </div>
         {save.isError ? (

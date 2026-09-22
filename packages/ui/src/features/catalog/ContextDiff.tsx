@@ -31,7 +31,13 @@ const contextDiffHighlighterReady = preloadHighlighter({
 
 export function ContextDiff(props: ContextDiffProps) {
   return (
-    <Suspense fallback={null}>
+    <Suspense
+      fallback={
+        <p className="p-4 text-xs text-muted" role="status">
+          Preparing syntax highlighting...
+        </p>
+      }
+    >
       <ReadyContextDiff {...props} />
     </Suspense>
   );

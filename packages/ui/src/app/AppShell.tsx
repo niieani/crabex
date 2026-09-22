@@ -1,58 +1,73 @@
 import { Link, Outlet } from "@tanstack/react-router";
+import {
+  Activity,
+  ArrowRightLeft,
+  Boxes,
+  Cable,
+  Layers3,
+  Radio,
+  SlidersHorizontal,
+} from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { getProxyConfig } from "../lib/api.ts";
+
+const navigation = [
+  { to: "/", label: "Captures", icon: Layers3 },
+  { to: "/requests", label: "Live traffic", icon: Activity },
+  { to: "/routes", label: "Model routes", icon: ArrowRightLeft },
+  { to: "/transformations", label: "Transformations", icon: SlidersHorizontal },
+  { to: "/config-bundle", label: "Configuration", icon: Boxes },
+  { to: "/setup", label: "Connection", icon: Cable },
+] as const;
 
 export function AppShell() {
+  const connection = useQuery({
+    queryKey: ["proxy-config"],
+    queryFn: getProxyConfig,
+    refetchInterval: 15000,
+  });
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-canvas text-ink">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-line bg-panel px-5">
-        <div className="flex items-center gap-3">
-          <div className="grid size-8 place-items-center rounded-lg bg-accent text-sm font-black text-canvas">
-            CT
-          </div>
+    <div className="app-shell">
+      <aside className="app-navigation">
+        <Link to="/" className="brand" aria-label="Relaydeck home">
+          <span className="brand-mark">
+            <Radio size={23} strokeWidth={1.8} />
+          </span>
+          <span className="brand-copy">
+            <strong>Relaydeck</strong>
+            <small>AGENT CONTROL ROOM</small>
+          </span>
+        </Link>
+        <div className="nav-label">Workspace</div>
+        <nav aria-label="Main navigation">
+          {navigation.map(({ to, label, icon: Icon }) => (
+            <Link
+              key={to}
+              to={to}
+              activeOptions={{ exact: to === "/" }}
+              title={label}
+              className="nav-link"
+            >
+              <Icon size={18} strokeWidth={1.7} />
+              <span>{label}</span>
+            </Link>
+          ))}
+        </nav>
+        <div className="connection-status" role="status">
+          <span className={`status-dot ${connection.isError ? "offline" : ""}`} />
           <div>
-            <p className="text-sm font-semibold tracking-tight">Agent Context Trimmer</p>
-            <p className="text-[10px] uppercase tracking-[0.2em] text-muted">Inference input lab</p>
+            <strong>
+              {connection.isError
+                ? "Proxy unavailable"
+                : connection.isPending
+                  ? "Connecting"
+                  : "Proxy connected"}
+            </strong>
+            <small>{window.location.host}</small>
           </div>
         </div>
-        <nav className="flex max-w-[70vw] items-center gap-1 overflow-x-auto rounded-lg border border-line bg-canvas p-1 text-xs">
-          <Link
-            to="/"
-            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
-          >
-            Context catalog
-          </Link>
-          <Link
-            to="/transformations"
-            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
-          >
-            Transformations
-          </Link>
-          <Link
-            to="/routes"
-            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
-          >
-            Model routes
-          </Link>
-          <Link
-            to="/requests"
-            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
-          >
-            Live requests
-          </Link>
-          <Link
-            to="/config-bundle"
-            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
-          >
-            Config bundle
-          </Link>
-          <Link
-            to="/setup"
-            className="rounded-md px-3 py-1.5 text-muted transition hover:text-ink [&.active]:bg-panel-raised [&.active]:text-ink"
-          >
-            Codex setup
-          </Link>
-        </nav>
-      </header>
-      <main className="min-h-0 flex-1 overflow-hidden">
+      </aside>
+      <main className="app-main">
         <Outlet />
       </main>
     </div>

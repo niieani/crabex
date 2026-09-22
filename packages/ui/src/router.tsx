@@ -12,6 +12,9 @@ const rootRoute = createRootRoute({ component: AppShell });
 const catalogRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  validateSearch: (search: Record<string, unknown>): { capture?: string } => ({
+    capture: typeof search.capture === "string" ? search.capture : undefined,
+  }),
   component: CatalogPage,
 });
 const transformationsRoute = createRoute({

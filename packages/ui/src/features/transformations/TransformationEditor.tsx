@@ -8,12 +8,14 @@ export function TransformationEditor({
   initialFind = "",
   initialJsonPath,
 }: {
-  onCreate: (transformation: Transformation) => void;
+  onCreate: (transformation: Transformation) => void | Promise<unknown>;
   selectedPart?: ContextPart;
   initialFind?: string;
   initialJsonPath?: JsonPathSegment[];
 }) {
   const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string>();
   const [field, setField] = useState<Transformation["target"]["field"]>(
     initialJsonPath !== undefined
       ? "json_value"
@@ -41,8 +43,9 @@ export function TransformationEditor({
       : "",
   );
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
+    if (saving) return;
     let parsedJsonPath: JsonPathSegment[] | undefined;
     if (field === "json_value") {
       try {
@@ -53,37 +56,50 @@ export function TransformationEditor({
         return;
       }
     }
-    onCreate({
-      id: `rule-${Date.now()}`,
-      name: name.trim(),
-      enabled: true,
-      scope: {
-        ...(harness === "all" ? {} : { harnesses: [harness] }),
-        ...(model.trim() === "" ? {} : { models: [model.trim()] }),
-        ...(project.trim() === "" ? {} : { projects: [project.trim()] }),
-        ...(segment === "all" ? {} : { segments: [segment] }),
-        ...(toolDefinition.trim() === "" ? {} : { tools: [toolDefinition.trim()] }),
-      },
-      target: {
-        field,
-        ...(parsedJsonPath === undefined ? {} : { jsonPath: parsedJsonPath }),
-        ...(selectedPart?.identifier === undefined
-          ? selectedPart === undefined
-            ? {}
-            : { path: selectedPart.path }
-          : operation === "delete_part" && field !== "json_value"
-            ? { identifier: selectedPart.identifier }
-            : {}),
-      },
-      operation: operationValue(operation, find, replacement, flags),
-    });
-    setName("");
-    setFind("");
-    setReplacement("");
+    setSaving(true);
+    setSaveError(undefined);
+    try {
+      await onCreate({
+        id: `rule-${Date.now()}`,
+        name: name.trim(),
+        enabled: true,
+        scope: {
+          ...(harness === "all" ? {} : { harnesses: [harness] }),
+          ...(model.trim() === "" ? {} : { models: [model.trim()] }),
+          ...(project.trim() === "" ? {} : { projects: [project.trim()] }),
+          ...(segment === "all" ? {} : { segments: [segment] }),
+          ...(toolDefinition.trim() === "" ? {} : { tools: [toolDefinition.trim()] }),
+        },
+        target: {
+          field,
+          ...(parsedJsonPath === undefined ? {} : { jsonPath: parsedJsonPath }),
+          ...(selectedPart?.identifier === undefined
+            ? selectedPart === undefined
+              ? {}
+              : { path: selectedPart.path }
+            : operation === "delete_part" && field !== "json_value"
+              ? { identifier: selectedPart.identifier }
+              : {}),
+        },
+        operation: operationValue(operation, find, replacement, flags),
+      });
+      setName("");
+      setFind("");
+      setReplacement("");
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not save transformation");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <form className="mt-4 space-y-3" onSubmit={submit}>
+      {saveError ? (
+        <p role="alert" className="text-xs text-danger">
+          {saveError}
+        </p>
+      ) : null}
       <Field label="Name">
         <input
           required
@@ -231,9 +247,10 @@ export function TransformationEditor({
       </div>
       <button
         type="submit"
+        disabled={saving}
         className="w-full rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-canvas transition hover:bg-accent-bright focus:outline-none focus:ring-2 focus:ring-accent/40"
       >
-        Add transformation
+        {saving ? "Saving..." : "Add transformation"}
       </button>
     </form>
   );

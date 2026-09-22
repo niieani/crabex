@@ -1,5 +1,6 @@
 import type {
   ProxyConfigState,
+  SnapshotSummary,
   CodexConfigState,
   ConfigBundleOverride,
   ContextSnapshot,
@@ -30,6 +31,16 @@ export async function putProxyConfig(appsAuthRelay: boolean): Promise<ProxyConfi
 export async function getSnapshots(): Promise<ContextSnapshot[]> {
   const response = await request(`${API}/snapshots`);
   return ((await response.json()) as { snapshots: ContextSnapshot[] }).snapshots;
+}
+
+export async function getSnapshotIndex(signal?: AbortSignal): Promise<SnapshotSummary[]> {
+  const response = await request(`${API}/snapshots?view=index`, { signal });
+  return ((await response.json()) as { snapshots: SnapshotSummary[] }).snapshots;
+}
+
+export async function getSnapshot(id: string, signal?: AbortSignal): Promise<ContextSnapshot> {
+  const response = await request(`${API}/snapshots/${encodeURIComponent(id)}`, { signal });
+  return ((await response.json()) as { snapshot: ContextSnapshot }).snapshot;
 }
 
 export async function getTransformations(): Promise<TransformationSet> {
