@@ -1,21 +1,36 @@
-# Agent Context Trimmer
+# Relaydeck
 
-Local, OAuth-preserving recorder for Codex Responses traffic. It replaces only
-the destination origin; request paths, payloads, OAuth/account headers, streaming
-responses, and WebSocket messages pass through to the ChatGPT Codex backend.
+Your agent control room: inspect captured context, follow live requests, route
+models, and manage transformations and configuration. Relaydeck preserves the
+existing Codex OAuth login and supports HTTP streaming and WebSocket traffic.
+
+Previously Agent Context Trimmer. Existing command names, data directories,
+service identifiers, and API paths remain compatible.
 
 ## Run
 
 ```sh
 vp install
-vp run dev:proxy
-vp run dev:ui
+vp run build
+./packages/proxy/dist/cli.mjs proxy
 ```
 
 The default listener is `http://127.0.0.1:8765`. Captures are append-only NDJSON
 files under `.agent-context-trimmer/captures` with mode `0600`. Headers are never
-included in captures. The UI is served by Vite at `http://127.0.0.1:5173` and
-refreshes automatically as completed Probes arrive.
+included in captures. Open `http://127.0.0.1:8765` for the UI: Bun serves the
+application, local API, and proxy on the same port, including in installed
+services. No separate UI service is needed.
+
+For development, `vp run dev` builds both packages and watches the UI and proxy
+sources with one listener. Vite+ still supplies the frontend build, formatting,
+linting, type checking, and Vitest. `vp run dev:ui` remains an optional standalone
+Vite development server for frontend-only work.
+
+Captures uses a lightweight live index and fetches full content only when opened.
+Search by model, project, or session; filter by harness; pause live updates; or
+step between captures. **Preview rules** applies the current transformation set
+on demand. The retained catalog keeps the newest three snapshots per
+model/project/harness combination, up to 50 overall; raw captures are unaffected.
 
 The proxy must be running before starting Codex with the audit profile.
 
@@ -51,7 +66,7 @@ openai_base_url = "http://127.0.0.1:8765/backend-api/codex"
 chatgpt_base_url = "http://127.0.0.1:8765/backend-api"
 ```
 
-Use **Codex setup → Proxy settings → Apps authentication relay** to toggle it.
+Use **Connection → Proxy settings → Apps authentication relay** to toggle it.
 Changes take effect immediately, clear cached credentials when disabling, and
 persist in `.agent-context-trimmer/config.json`:
 
@@ -127,7 +142,7 @@ codex exec \
   'Reply with exactly: audit-ok'
 ```
 
-Expected model output: `audit-ok`. Open `http://127.0.0.1:5173` to inspect the
+Expected model output: `audit-ok`. Open `http://127.0.0.1:8765` to inspect the
 linked prewarm and inference requests, context parts, tools, token estimates,
 and original/effective transformation results.
 

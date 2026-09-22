@@ -2,7 +2,7 @@
 
 The CLI can install a per-user LaunchAgent. It starts at login after reboot and launchd restarts it if it exits. It uses the existing user account; no root access or new ChatGPT login is required.
 
-Build the CLI, then install:
+Build the CLI and UI, then install:
 
 ```sh
 vp run build
@@ -125,7 +125,7 @@ For a manually launched proxy, `proxy --tls-dir <directory>` accepts `cert.pem`,
 `key.pem`, and `ca.pem`. It does not install trust. The service installer owns its
 certificates and uses `--https` instead of accepting custom `--tls-dir` options.
 
-The UI development server still defaults to the HTTP proxy. To point it at HTTPS,
-set `ACT_PROXY_ORIGIN=https://127.0.0.1:8765`. If the Node runtime does not use
-Keychain trust, also set `NODE_EXTRA_CA_CERTS` to the installation's `tls/ca.pem`
-before starting `vp run dev:ui`.
+The Relaydeck UI is included in each service release and served on the proxy's
+own origin (for example `https://127.0.0.1:8765`). No separate UI server, port,
+or proxy-origin environment variable is required. Rebuild both packages with
+`vp run build` before installing an updated release.

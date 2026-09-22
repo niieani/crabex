@@ -605,6 +605,9 @@ export async function serviceCommand(args: string[]): Promise<void> {
       '#!/bin/sh\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 1\nexec "$root/current/bun" "$root/current/cli.mjs" "$@"\n',
     );
     await chmod(launcher, 0o700);
+    const brandedLauncher = join(bin, "relaydeck");
+    await copyFile(launcher, brandedLauncher);
+    await chmod(brandedLauncher, 0o700);
     let configUpdate: Operation["configUpdate"];
     if (https) {
       const before = await optionalText(parsed.codexConfigPath);
@@ -626,7 +629,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
       previous,
       configUpdate,
     });
-    console.log(`Installed command: ${launcher}`);
+    console.log(`Installed command: ${brandedLauncher}\nCompatible alias: ${launcher}`);
     scheduled = true;
   } finally {
     if (!scheduled) await rm(LOCK, { recursive: true, force: true });

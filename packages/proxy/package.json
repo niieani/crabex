@@ -3,7 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "bin": {
-    "agent-context-trimmer": "./dist/cli.mjs"
+    "agent-context-trimmer": "./dist/cli.mjs",
+    "relaydeck": "./dist/cli.mjs"
   },
   "type": "module",
   "scripts": {

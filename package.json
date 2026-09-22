@@ -7,7 +7,7 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "vp run build && bun --watch packages/proxy/src/cli.ts proxy",
+    "dev": "bun packages/proxy/src/dev.ts",
     "dev:proxy": "bun packages/proxy/src/cli.ts proxy",
     "dev:ui": "vp -C packages/ui dev",
     "build": "vp run -r build",

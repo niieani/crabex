@@ -22,7 +22,14 @@ import { openNdjsonCaptureSink } from "./recording/ndjson-capture-sink.ts";
 import { StatsStore } from "./recording/stats-store.ts";
 import { LiveRequestStore } from "./requests/live-request-store.ts";
 
-const HELP = `Usage:
+const HELP = `Relaydeck - agent control room
+
+Usage (agent-context-trimmer remains a compatible alias):
+  relaydeck proxy [options]
+  relaydeck service install [--https] [--env NAME]... [-- proxy options]
+  relaydeck service uninstall|status|restart|logs
+
+Legacy invocation:
   agent-context-trimmer proxy [options]
   agent-context-trimmer service install [--https] [--env NAME]... [-- proxy options]
   agent-context-trimmer service uninstall|status|restart|logs

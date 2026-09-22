@@ -29,7 +29,13 @@ export function createWebUi(directory: string | undefined) {
         "Relaydeck UI has not been built. Run vp run build, then restart the proxy.",
         { status: 503 },
       );
-    const path = resolve(directory, page ? "index.html" : `.${decodeURIComponent(pathname)}`);
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch {
+      return new Response("Invalid path", { status: 400 });
+    }
+    const path = resolve(directory, page ? "index.html" : `.${decoded}`);
     if (!path.startsWith(resolve(directory) + sep))
       return new Response("Not found", { status: 404 });
     const file = Bun.file(path);
@@ -37,7 +43,8 @@ export function createWebUi(directory: string | undefined) {
     return new Response(request.method === "HEAD" ? null : file, {
       headers: {
         "content-type": file.type,
-        "cache-control": page ? "no-cache" : "public, max-age=31536000, immutable",
+        "cache-control":
+          page || pathname === "/favicon.svg" ? "no-cache" : "public, max-age=31536000, immutable",
         "x-content-type-options": "nosniff",
       },
     });

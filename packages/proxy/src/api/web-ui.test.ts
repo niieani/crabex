@@ -17,11 +17,16 @@ describe("single-port web UI", () => {
     const asset = await handle(new Request("http://localhost/assets/app-123.js"));
     expect(asset?.headers.get("cache-control")).toContain("immutable");
     expect((await handle(new Request("http://localhost/assets/missing.js")))?.status).toBe(404);
+    expect((await handle(new Request("http://localhost/assets/%invalid")))?.status).toBe(400);
     expect(await handle(new Request("http://localhost/backend-api/codex/models"))).toBeUndefined();
     expect(await handle(new Request("http://localhost/api/auth/session"))).toBeUndefined();
     expect((await handle(new Request("http://localhost/", { method: "POST" })))?.status).toBe(405);
-    expect(await (await handle(new Request("http://localhost/", { method: "HEAD" })))?.text()).toBe("");
-    expect((await handle(new Request("http://localhost/assets/..%2f..%2fsecret")))?.status).toBe(404);
+    expect(await (await handle(new Request("http://localhost/", { method: "HEAD" })))?.text()).toBe(
+      "",
+    );
+    expect((await handle(new Request("http://localhost/assets/..%2f..%2fsecret")))?.status).toBe(
+      404,
+    );
   });
 
   it("explains a missing build instead of forwarding UI requests upstream", async () => {
