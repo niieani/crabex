@@ -1,12 +1,15 @@
 export const TOOL_TYPES = ["function", "namespace", "custom", "web_search", "tool_search"] as const;
 
 export type ToolType = (typeof TOOL_TYPES)[number];
-export type ToolAction = "pass" | "translate" | "broker" | "reject";
-export type ToolPolicy = Record<ToolType, ToolAction>;
+export type ToolPolicyKey = ToolType | "other";
+export type ToolAction = "pass" | "translate" | "broker" | "omit" | "reject";
+export type ToolPolicy = Record<ToolPolicyKey, ToolAction>;
 export type ToolPolicyConfig = Partial<ToolPolicy>;
 export type ToolPolicyApi = "responses" | "anthropic-messages";
 
 export class ToolPolicyError extends Error {}
+
+const warnedOmissions = new Set<string>();
 
 const RESPONSE_DEFAULTS: ToolPolicy = {
   function: "pass",
@@ -14,6 +17,7 @@ const RESPONSE_DEFAULTS: ToolPolicy = {
   custom: "pass",
   web_search: "pass",
   tool_search: "pass",
+  other: "pass",
 };
 const ANTHROPIC_DEFAULTS: ToolPolicy = {
   function: "translate",
@@ -21,6 +25,7 @@ const ANTHROPIC_DEFAULTS: ToolPolicy = {
   custom: "translate",
   web_search: "reject",
   tool_search: "reject",
+  other: "reject",
 };
 
 export function parseToolConfiguration(
@@ -37,11 +42,13 @@ export function parseToolConfiguration(
     if (!isRecord(policyValue)) throw new Error(`${source}.tool_policy must be an object`);
     tool_policy = {};
     for (const [type, action] of Object.entries(policyValue)) {
-      if (!isToolType(type)) {
+      if (!isToolPolicyKey(type)) {
         throw new Error(`${source}.tool_policy.${type} is not a supported tool type`);
       }
       if (!isToolAction(action)) {
-        throw new Error(`${source}.tool_policy.${type} must be pass, translate, broker, or reject`);
+        throw new Error(
+          `${source}.tool_policy.${type} must be pass, translate, broker, omit, or reject`,
+        );
       }
       assertImplemented(api, type, action, `${source}.tool_policy.${type}`);
       tool_policy[type] = action;
@@ -90,69 +97,153 @@ export function effectiveToolPolicy(config: {
   const defaults = defaultsFor(api);
   const allowed = validated.allowed_tool_types;
   if (allowed !== undefined) {
-    return Object.fromEntries(
-      TOOL_TYPES.map((type) => [type, allowed.includes(type) ? defaults[type] : "reject"]),
-    ) as ToolPolicy;
+    return {
+      ...Object.fromEntries(
+        TOOL_TYPES.map((type) => [type, allowed.includes(type) ? defaults[type] : "omit"]),
+      ),
+      other: "omit",
+    } as ToolPolicy;
   }
   return { ...defaults, ...validated.tool_policy };
 }
 
-export function assertRouteTools(
+export function applyRouteToolPolicy(
   route: { model: { slug: string }; toolPolicy: ToolPolicy },
   payload: Record<string, unknown>,
-): void {
+): { payload: Record<string, unknown>; omittedTypes: string[] } {
+  const omittedTypes: string[] = [];
   const declarations = payload.tools;
+  let tools: unknown[] | undefined;
   if (declarations !== undefined) {
     if (!Array.isArray(declarations)) {
       throw new ToolPolicyError(`model route "${route.model.slug}" requires tools to be an array`);
     }
-    for (const declaration of declarations) {
-      assertDeclaration(route, declaration);
-    }
+    tools = declarations
+      .map((declaration) => applyDeclaration(route, declaration, omittedTypes))
+      .filter((declaration) => declaration !== undefined);
   }
   const choice = payload.tool_choice;
-  if (isRecord(choice) && isToolType(choice.type)) {
-    assertToolTypeAllowed(route, choice.type);
+  let omitChoice = false;
+  if (isRecord(choice)) {
+    const type = declarationType(route, choice);
+    const action = actionFor(route.toolPolicy, type);
+    if (action === "reject") reject(route, type);
+    omitChoice = action === "omit";
+    if (declarations !== undefined && tools !== undefined) {
+      omitChoice ||= choiceMatches(choice, declarations) && !choiceMatches(choice, tools);
+    }
+    if (omitChoice) addOmission(omittedTypes, type);
+  }
+  if (omittedTypes.length === 0) return { payload, omittedTypes };
+  const filtered = { ...payload };
+  if (tools !== undefined) filtered.tools = tools;
+  if (omitChoice) delete filtered.tool_choice;
+  return { payload: filtered, omittedTypes };
+}
+
+export function warnOmittedToolTypes(routeSlug: string, omittedTypes: readonly string[]): void {
+  for (const type of omittedTypes) {
+    const key = JSON.stringify([routeSlug, type]);
+    if (warnedOmissions.has(key)) continue;
+    warnedOmissions.add(key);
+    console.warn(`model route "${routeSlug}" omitted tool type "${type}"`);
   }
 }
 
-function assertDeclaration(
+function applyDeclaration(
   route: { model: { slug: string }; toolPolicy: ToolPolicy },
   declaration: unknown,
-): void {
-  const type = isRecord(declaration) ? declaration.type : undefined;
-  assertToolTypeAllowed(route, type);
-  if (type !== "namespace") return;
-  const children = (declaration as Record<string, unknown>).tools;
+  omittedTypes: string[],
+): Record<string, unknown> | undefined {
+  if (!isRecord(declaration)) {
+    throw new ToolPolicyError(
+      `model route "${route.model.slug}" received invalid tool declaration type`,
+    );
+  }
+  const type = declarationType(route, declaration);
+  const action = actionFor(route.toolPolicy, type);
+  if (action === "reject") reject(route, type);
+  if (action === "omit") {
+    addOmission(omittedTypes, type);
+    return undefined;
+  }
+  if (type !== "namespace") return declaration;
+  const children = declaration.tools;
   if (!Array.isArray(children)) {
     throw new ToolPolicyError(
       `model route "${route.model.slug}" requires namespace.tools to be an array`,
     );
   }
-  for (const child of children) assertDeclaration(route, child);
+  const retained = children
+    .map((child) => applyDeclaration(route, child, omittedTypes))
+    .filter((child) => child !== undefined);
+  if (retained.length === children.length) return declaration;
+  if (retained.length === 0) {
+    addOmission(omittedTypes, "namespace");
+    return undefined;
+  }
+  return { ...declaration, tools: retained };
 }
 
-function assertToolTypeAllowed(
+function declarationType(
   route: { model: { slug: string }; toolPolicy: ToolPolicy },
-  type: unknown,
-): void {
-  if (!isToolType(type)) {
+  declaration: unknown,
+): string {
+  const type = isRecord(declaration) ? declaration.type : undefined;
+  if (typeof type !== "string" || type.length === 0) {
     throw new ToolPolicyError(
-      `model route "${route.model.slug}" received unknown tool type "${String(type)}"`,
+      `model route "${route.model.slug}" received invalid tool declaration type`,
     );
   }
-  if (route.toolPolicy[type] === "reject") {
-    throw new ToolPolicyError(`model route "${route.model.slug}" rejects tool type "${type}"`);
+  return type;
+}
+
+function actionFor(policy: ToolPolicy, type: string): ToolAction {
+  return isToolType(type) ? policy[type] : policy.other;
+}
+
+function reject(route: { model: { slug: string } }, type: string): never {
+  throw new ToolPolicyError(`model route "${route.model.slug}" rejects tool type "${type}"`);
+}
+
+function addOmission(omittedTypes: string[], type: string): void {
+  if (!omittedTypes.includes(type)) omittedTypes.push(type);
+}
+
+function choiceMatches(
+  choice: Record<string, unknown>,
+  declarations: readonly unknown[],
+  namespace?: string,
+): boolean {
+  for (const declaration of declarations) {
+    if (!isRecord(declaration)) continue;
+    if (declaration.type === "namespace") {
+      if (typeof declaration.name !== "string" || !Array.isArray(declaration.tools)) continue;
+      if (choiceMatches(choice, declaration.tools, declaration.name)) return true;
+      continue;
+    }
+    if (choice.type !== declaration.type) continue;
+    if (choice.name !== undefined && choice.name !== declaration.name) continue;
+    const choiceNamespace = choice.namespace === "functions" ? undefined : choice.namespace;
+    if (choiceNamespace !== namespace) continue;
+    return true;
   }
+  return false;
 }
 
 function defaultsFor(api: ToolPolicyApi): ToolPolicy {
   return api === "anthropic-messages" ? ANTHROPIC_DEFAULTS : RESPONSE_DEFAULTS;
 }
 
-function assertImplemented(api: ToolPolicyApi, type: ToolType, action: ToolAction, source: string) {
+function assertImplemented(
+  api: ToolPolicyApi,
+  type: ToolPolicyKey,
+  action: ToolAction,
+  source: string,
+) {
   if (
     action === "reject" ||
+    action === "omit" ||
     (api === "responses" && action === "pass") ||
     (api === "anthropic-messages" &&
       action === "translate" &&
@@ -167,8 +258,18 @@ function isToolType(value: unknown): value is ToolType {
   return typeof value === "string" && TOOL_TYPES.some((type) => type === value);
 }
 
+function isToolPolicyKey(value: unknown): value is ToolPolicyKey {
+  return value === "other" || isToolType(value);
+}
+
 function isToolAction(value: unknown): value is ToolAction {
-  return value === "pass" || value === "translate" || value === "broker" || value === "reject";
+  return (
+    value === "pass" ||
+    value === "translate" ||
+    value === "broker" ||
+    value === "omit" ||
+    value === "reject"
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

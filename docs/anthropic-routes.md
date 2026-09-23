@@ -71,7 +71,9 @@ return as native Codex custom calls. Grammar-constrained generation is not
 available through this wrapping. Claude routes default to regular Codex tools;
 `model.overrides.tool_mode: "code_mode_only"` explicitly opts into code mode.
 No tool executes in Relaydeck: Codex remains responsible for execution and
-approvals. Broken call/result pairs and unsupported hosted tools fail explicitly.
+approvals. Broken call/result pairs fail explicitly. Hosted tools follow the
+route policy: the default rejects them, while legacy allowlists omit them with
+a recorded warning.
 See [model route tool policy](model-route-tool-policy.md) for per-route rejection
 and the defaults for all five Codex tool types.
 

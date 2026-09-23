@@ -63,6 +63,8 @@ export interface CaptureRoutingAttempt {
 export interface CaptureRouting {
   action: "routed" | "bundle-override" | "models-advertised";
   routeSlugs?: string[];
+  /** Tool declaration types omitted by the route policy before forwarding. */
+  omittedToolTypes?: string[];
   upstream?: string;
   requestedModel?: string;
   upstreamModel?: string;

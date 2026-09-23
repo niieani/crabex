@@ -78,7 +78,7 @@ export interface ModelRouteConfig {
   bridge_response_state?: "replay" | "stored";
   /** Per-type route behavior. Omitted entries use the provider defaults. */
   tool_policy?: ToolPolicyConfig;
-  /** @deprecated Use tool_policy. Listed types use their provider defaults; others reject. */
+  /** @deprecated Use tool_policy. Listed types use provider defaults; others are omitted. */
   allowed_tool_types?: string[];
   /**
    * Forward ChatGPT `access_programs` to this upstream. Default false — custom

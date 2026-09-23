@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import WebSocket, { type RawData, WebSocketServer } from "ws";
 
 import type { CaptureEvent, CaptureSink } from "../recording/capture.ts";
@@ -1018,7 +1018,7 @@ describe("model routing and config bundle override", () => {
       const route = modelRouteFromConfig({
         ...routeConfigForTest(gateway.origin),
         transport: "http",
-        allowed_tool_types: ["function"],
+        tool_policy: { web_search: "reject" },
       });
       const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
         routes: [route],
@@ -1046,6 +1046,115 @@ describe("model routing and config bundle override", () => {
       expect(choice.status).toBe(400);
       expect(await choice.text()).toContain('model route "kimi-k3" rejects tool type "web_search"');
       expect(deliveries).toBe(0);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("omits legacy-disallowed tools on HTTP and records each omission", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const seen: Record<string, unknown>[] = [];
+      const gateway = await startHttpServer(async (request, response) => {
+        seen.push(JSON.parse((await readBody(request)).toString()) as Record<string, unknown>);
+        response.end("routed");
+      });
+      const config = routeConfigForTest(gateway.origin);
+      const route = modelRouteFromConfig({
+        ...config,
+        model: { ...config.model, slug: "legacy-http" },
+        transport: "http",
+        allowed_tool_types: ["function"],
+      });
+      const captures = new MemoryCaptureSink();
+      const liveRequests = new LiveRequestStore();
+      const proxy = await startRoutingProxy(gateway.origin, captures, {
+        routes: [route],
+        liveRequests,
+      });
+      const payload = {
+        model: "legacy-http",
+        input: [],
+        tools: [
+          { type: "function", name: "read" },
+          { type: "namespace", name: "mcp", tools: [{ type: "function", name: "search" }] },
+          { type: "web_search" },
+          { type: "future_tool", name: "future" },
+        ],
+        tool_choice: { type: "web_search" },
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(
+            index === 0
+              ? payload
+              : { ...payload, type: "response.create", input: [message("user", "hi")] },
+          ),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe("routed");
+      }
+
+      expect(seen).toHaveLength(3);
+      expect(seen[0]).toMatchObject({ tools: [{ type: "function", name: "read" }] });
+      expect(seen[0]).not.toHaveProperty("tool_choice");
+      const requests = captures.events.filter((event) => event.direction === "client_to_upstream");
+      expect(requests[0]?.routing).toMatchObject({
+        omittedToolTypes: ["namespace", "web_search", "future_tool"],
+      });
+      expect(requests[0]).toHaveProperty("effectivePayload");
+      expect(requests[2]).toMatchObject({
+        payloadMode: "metadata",
+        routing: { omittedToolTypes: ["namespace", "web_search", "future_tool"] },
+      });
+      expect(liveRequests.snapshot().recent[0]?.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            detail: "Omitted tool types: namespace, web_search, future_tool",
+          }),
+        ]),
+      );
+      expect(
+        warning.mock.calls.filter(([message]) => String(message).includes('"legacy-http"')),
+      ).toHaveLength(3);
+    } finally {
+      warning.mockRestore();
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("passes a future tool type through a default Responses route", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let forwarded: Record<string, unknown> | undefined;
+      const gateway = await startHttpServer(async (request, response) => {
+        forwarded = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+        response.end("routed");
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: [],
+          tools: [{ type: "future_tool", name: "future" }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(forwarded?.tools).toEqual([{ type: "future_tool", name: "future" }]);
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
     }
@@ -1123,7 +1232,120 @@ describe("model routing and config bundle override", () => {
         status: 400,
         error: { message: 'model route "kimi-k3" rejects tool type "web_search"' },
       });
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "kimi-k3",
+          generate: false,
+          input: [],
+          tools: [{ type: "web_search" }],
+        }),
+      );
+      expect(JSON.parse(await nextMessage(client))).toMatchObject({ type: "error", status: 400 });
       expect(deliveries).toBe(0);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("omits legacy-disallowed tools on the WebSocket-to-HTTP bridge", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let forwarded: Record<string, unknown> | undefined;
+      const gateway = await startHttpServer(async (request, response) => {
+        forwarded = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+        response.setHeader("content-type", "text/event-stream");
+        response.end(
+          'data: {"type":"response.completed","response":{"id":"resp_1","model":"upstream","status":"completed"}}\n\n',
+        );
+      });
+      const config = routeConfigForTest(gateway.origin);
+      const route = modelRouteFromConfig({
+        ...config,
+        model: { ...config.model, slug: "legacy-bridge" },
+        transport: "http",
+        allowed_tool_types: ["function"],
+      });
+      const captures = new MemoryCaptureSink();
+      const liveRequests = new LiveRequestStore();
+      const proxy = await startRoutingProxy(gateway.origin, captures, {
+        routes: [route],
+        liveRequests,
+      });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "legacy-bridge",
+          input: [],
+          tools: [{ type: "function", name: "read" }, { type: "web_search" }],
+          tool_choice: { type: "web_search" },
+        }),
+      );
+      expect(JSON.parse(await nextMessage(client))).toMatchObject({ type: "response.completed" });
+      expect(forwarded?.tools).toEqual([{ type: "function", name: "read" }]);
+      expect(forwarded).not.toHaveProperty("tool_choice");
+      expect(
+        captures.events.find((event) => event.direction === "client_to_upstream")?.routing,
+      ).toMatchObject({ omittedToolTypes: ["web_search"] });
+      expect(liveRequests.snapshot().recent[0]?.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ detail: "Omitted tool types: web_search" }),
+        ]),
+      );
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("omits tools on a native routed WebSocket before forwarding", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let forwarded: Record<string, unknown> | undefined;
+      const gateway = await startWebSocketServer((socket) => {
+        socket.on("message", (message) => {
+          forwarded = JSON.parse(rawDataText(message)) as Record<string, unknown>;
+          socket.send("routed");
+        });
+      });
+      const config = routeConfigForTest(gateway.origin);
+      const route = modelRouteFromConfig({
+        ...config,
+        model: { ...config.model, slug: "native-omit" },
+        tool_policy: { web_search: "omit", other: "omit" },
+      });
+      const captures = new MemoryCaptureSink();
+      const proxy = await startRoutingProxy(gateway.origin, captures, { routes: [route] });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "native-omit",
+          input: [],
+          tools: [
+            { type: "function", name: "read" },
+            { type: "web_search" },
+            { type: "future_tool", name: "future" },
+          ],
+          tool_choice: { type: "web_search" },
+        }),
+      );
+      expect(await nextMessage(client)).toBe("routed");
+      expect(forwarded?.tools).toEqual([{ type: "function", name: "read" }]);
+      expect(forwarded).not.toHaveProperty("tool_choice");
+      expect(
+        captures.events.find((event) => event.direction === "client_to_upstream")?.routing,
+      ).toMatchObject({ omittedToolTypes: ["web_search", "future_tool"] });
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
     }

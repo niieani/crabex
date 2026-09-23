@@ -376,6 +376,7 @@ describe("local context API", () => {
             custom: "pass",
             web_search: "pass",
             tool_search: "pass",
+            other: "pass",
           },
         },
       ],
@@ -420,10 +421,11 @@ describe("local context API", () => {
       allowed_tool_types: ["function"],
       effective_tool_policy: {
         function: "pass",
-        namespace: "reject",
-        custom: "reject",
-        web_search: "reject",
-        tool_search: "reject",
+        namespace: "omit",
+        custom: "omit",
+        web_search: "omit",
+        tool_search: "omit",
+        other: "omit",
       },
     });
 
@@ -447,6 +449,7 @@ describe("local context API", () => {
         custom: "pass",
         web_search: "reject",
         tool_search: "pass",
+        other: "pass",
       },
     });
     expect(sources.currentRoutes()[0]).not.toHaveProperty("effective_tool_policy");

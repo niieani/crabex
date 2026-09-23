@@ -153,6 +153,7 @@ describe("modelRouteFromConfig", () => {
         custom: "pass",
         web_search: "pass",
         tool_search: "pass",
+        other: "pass",
       },
       forwardAccessPrograms: false,
     });
@@ -179,14 +180,35 @@ describe("modelRouteFromConfig", () => {
     expect(route.bridgeResponseState).toBe("stored");
     expect(route.toolPolicy).toEqual({
       function: "pass",
-      namespace: "reject",
-      custom: "reject",
-      web_search: "reject",
-      tool_search: "reject",
+      namespace: "omit",
+      custom: "omit",
+      web_search: "omit",
+      tool_search: "omit",
+      other: "omit",
     });
     expect(route.model.templateReplacements).toEqual([
       { find: "based on GPT-5", replace: "powered by Kimi K3" },
     ]);
+
+    const [anthropic] = parseModelRouteSet({
+      version: 1,
+      routes: [
+        {
+          ...routeConfig[0],
+          api: "anthropic-messages",
+          transport: "http",
+          allowed_tool_types: ["function", "custom", "namespace"],
+        },
+      ],
+    }).routes;
+    expect(modelRouteFromConfig(anthropic!).toolPolicy).toEqual({
+      function: "translate",
+      namespace: "translate",
+      custom: "translate",
+      web_search: "omit",
+      tool_search: "omit",
+      other: "omit",
+    });
   });
 
   it("accepts an explicit partial policy and fills provider defaults", () => {
@@ -200,6 +222,7 @@ describe("modelRouteFromConfig", () => {
       custom: "pass",
       web_search: "reject",
       tool_search: "pass",
+      other: "pass",
     });
 
     const [anthropic] = parseModelRouteSet({
@@ -212,6 +235,7 @@ describe("modelRouteFromConfig", () => {
       custom: "translate",
       web_search: "reject",
       tool_search: "reject",
+      other: "reject",
     });
   });
 
@@ -225,7 +249,7 @@ describe("modelRouteFromConfig", () => {
       'route[0].tool_policy.web_search action "broker" is not implemented',
     );
     expect(() => parse({ namespace: "maybe" })).toThrow(
-      "route[0].tool_policy.namespace must be pass, translate, broker, or reject",
+      "route[0].tool_policy.namespace must be pass, translate, broker, omit, or reject",
     );
     expect(() => parse({ alien: "pass" })).toThrow(
       "route[0].tool_policy.alien is not a supported tool type",
@@ -255,6 +279,13 @@ describe("modelRouteFromConfig", () => {
         ],
       }),
     ).toThrow('route[0].tool_policy.function action "pass" is not implemented');
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [{ ...routeConfig[0], api: "anthropic-messages", tool_policy: { other: "pass" } }],
+      }),
+    ).toThrow('route[0].tool_policy.other action "pass" is not implemented');
+    expect(() => parse({ other: "omit", namespace: "omit" })).not.toThrow();
     expect(() =>
       modelRouteFromConfig({ ...routeConfig[0]!, tool_policy: { web_search: "broker" } }),
     ).toThrow('tool_policy.web_search action "broker" is not implemented');

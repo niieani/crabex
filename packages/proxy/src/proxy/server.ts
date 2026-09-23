@@ -26,7 +26,11 @@ import {
   type ModelRoute,
 } from "../routing/model-routes.ts";
 import { fetchWithFailover, TargetBreakers, type FailoverEvent } from "../routing/failover.ts";
-import { assertRouteTools, ToolPolicyError } from "../routing/tool-policy.ts";
+import {
+  applyRouteToolPolicy,
+  ToolPolicyError,
+  warnOmittedToolTypes,
+} from "../routing/tool-policy.ts";
 import {
   httpPayloadFor,
   parseSseEvents,
@@ -328,6 +332,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             );
             let outbound = processed.value;
             let routing: CaptureRouting | undefined;
+            let captureEffectivePayload = processed.effectivePayload;
+            let omittedTypes: string[] = [];
             const bridged = matchBridgeRoute(data.bridge, processed.value);
             if (bridged !== undefined) {
               try {
@@ -372,19 +378,46 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
               });
               data.liveRequests.update(data.activeRequestId, { state: "connecting" });
               const policyRoute = data.connectedRoute ?? route;
-              if (policyRoute !== undefined) assertRouteTools(policyRoute, liveInspected.payload);
+              if (policyRoute !== undefined) {
+                const policy = applyRouteToolPolicy(policyRoute, liveInspected.payload);
+                omittedTypes = policy.omittedTypes;
+                noteToolOmissions(
+                  policyRoute,
+                  omittedTypes,
+                  data.liveRequests,
+                  data.activeRequestId,
+                );
+                if (omittedTypes.length > 0) {
+                  outbound = JSON.stringify(policy.payload);
+                  captureEffectivePayload = outbound;
+                  routing = {
+                    action: "routed",
+                    routeSlugs: [policyRoute.model.slug],
+                    upstream: policyRoute.upstream.origin,
+                    requestedModel: liveInspected.model,
+                    upstreamModel: policyRoute.upstreamModel ?? policyRoute.model.slug,
+                    omittedToolTypes: omittedTypes,
+                  };
+                }
+              }
             }
             if (data.upstream === undefined) {
               if (data.connectUpstream === undefined) {
                 throw new Error("upstream websocket is not open");
               }
-              const connected = await data.connectUpstream(processed.value);
+              const connected = await data.connectUpstream(outbound);
               outbound = connected.value;
-              routing = connected.routing;
+              routing =
+                connected.routing === undefined
+                  ? routing
+                  : {
+                      ...connected.routing,
+                      ...(omittedTypes.length === 0 ? {} : { omittedToolTypes: omittedTypes }),
+                    };
             }
             if (routing !== undefined) data.lastRouting = routing;
             await data.recorder.record("websocket", "client_to_upstream", message, encoding, {
-              effectivePayload: processed.effectivePayload,
+              effectivePayload: captureEffectivePayload,
               requestSummary: processed.requestSummary,
               transformationChanged: processed.transformationChanged,
               transformationExecutions: processed.transformationExecutions,
@@ -478,6 +511,7 @@ async function proxyHttpRequest(
     const outbound = processed.value;
     let routing: CaptureRouting | undefined;
     let routedPayload: Record<string, unknown> | undefined;
+    let captureEffectivePayload = processed.effectivePayload;
     let preparedStoredRequest: PreparedStoredRequest | undefined;
     let responseStateKey: string | undefined;
     const routedRequest = (() => {
@@ -506,10 +540,14 @@ async function proxyHttpRequest(
     }
     if (routedRequest !== undefined) {
       const { inspected, route } = routedRequest;
-      assertRouteTools(route, inspected.payload);
+      const policy = applyRouteToolPolicy(route, inspected.payload);
+      noteToolOmissions(route, policy.omittedTypes, liveRequests, liveRequestId);
+      if (policy.omittedTypes.length > 0) {
+        captureEffectivePayload = JSON.stringify(policy.payload);
+      }
       const authorization = authorizationFor(route, process.env);
       headers = routedHeaders(headers, authorization);
-      routedPayload = httpPayloadFor(inspected.payload, {
+      routedPayload = httpPayloadFor(policy.payload, {
         forwardAccessPrograms: route.forwardAccessPrograms,
         storeResponses: route.bridgeResponseState === "stored",
       });
@@ -533,6 +571,7 @@ async function proxyHttpRequest(
         upstream: route.upstream.origin,
         requestedModel: inspected.model,
         upstreamModel: route.targets[0]?.upstreamModel ?? route.model.slug,
+        ...(policy.omittedTypes.length === 0 ? {} : { omittedToolTypes: policy.omittedTypes }),
       };
     } else if (routes.length > 0 && isModelsRequest(request.method, requestUrl.pathname)) {
       routing = {
@@ -554,7 +593,7 @@ async function proxyHttpRequest(
     // the event carries the attempt trail.
     if (routedRequest === undefined) {
       await recorder.record("http", "client_to_upstream", body, "utf8", {
-        effectivePayload: processed.effectivePayload,
+        effectivePayload: captureEffectivePayload,
         requestSummary: processed.requestSummary,
         transformationChanged: processed.transformationChanged,
         transformationExecutions: processed.transformationExecutions,
@@ -617,7 +656,7 @@ async function proxyHttpRequest(
 
     if (routedRequest !== undefined) {
       await recorder.record("http", "client_to_upstream", body, "utf8", {
-        effectivePayload: processed.effectivePayload,
+        effectivePayload: captureEffectivePayload,
         requestSummary: processed.requestSummary,
         transformationChanged: processed.transformationChanged,
         transformationExecutions: processed.transformationExecutions,
@@ -739,6 +778,21 @@ async function proxyHttpRequest(
               ? 502
               : 500,
       headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+}
+
+function noteToolOmissions(
+  route: ModelRoute,
+  omittedTypes: readonly string[],
+  liveRequests: LiveRequestStore,
+  liveRequestId: string | undefined,
+): void {
+  if (omittedTypes.length === 0) return;
+  warnOmittedToolTypes(route.model.slug, omittedTypes);
+  if (liveRequestId !== undefined) {
+    liveRequests.update(liveRequestId, {
+      detail: `Omitted tool types: ${omittedTypes.join(", ")}`,
     });
   }
 }
@@ -1013,9 +1067,10 @@ async function runBridgedCreate(
     kind: "gateway-http",
     url: responseTargetUrl(route, bridge.search).toString(),
   };
+  let captureEffectivePayload = processed.effectivePayload;
   const recordRequest = (routing: CaptureRouting) =>
     data.recorder.record("websocket", "client_to_upstream", rawMessage, encoding, {
-      effectivePayload: processed.effectivePayload,
+      effectivePayload: captureEffectivePayload,
       requestSummary: processed.requestSummary,
       transformationChanged: processed.transformationChanged,
       transformationExecutions: processed.transformationExecutions,
@@ -1025,7 +1080,7 @@ async function runBridgedCreate(
       origin,
     });
 
-  assertRouteTools(route, inspected.payload);
+  const policy = applyRouteToolPolicy(route, inspected.payload);
 
   // Warmup creates (generate: false) are answered locally: forwarding them
   // would bill a real generation for a response the client ignores.
@@ -1036,6 +1091,12 @@ async function runBridgedCreate(
     }
     data.liveRequests.finish(liveRequestId, { state: "completed", detail: "Local warmup" });
     return;
+  }
+
+  noteToolOmissions(route, policy.omittedTypes, data.liveRequests, liveRequestId);
+  if (policy.omittedTypes.length > 0) {
+    routingBase.omittedToolTypes = policy.omittedTypes;
+    captureEffectivePayload = JSON.stringify(policy.payload);
   }
 
   let authorization: string;
@@ -1051,7 +1112,7 @@ async function runBridgedCreate(
     return;
   }
 
-  const forwardedPayload = httpPayloadFor(inspected.payload, {
+  const forwardedPayload = httpPayloadFor(policy.payload, {
     forwardAccessPrograms: route.forwardAccessPrograms,
     storeResponses: route.bridgeResponseState === "stored",
   });

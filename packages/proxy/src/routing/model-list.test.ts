@@ -101,6 +101,35 @@ describe("transformModels", () => {
     });
   });
 
+  it("gates Codex search and apply_patch advertising for omitted tools", () => {
+    const omitted = modelRouteFromConfig({
+      authorization_env: "TEST_KEY",
+      model: {
+        description: "Legacy route",
+        display_name: "Legacy route",
+        priority: 1,
+        slug: "legacy-route",
+        template_slug: "gpt-5.6-terra",
+      },
+      upstream: "https://gateway.example/v1",
+      allowed_tool_types: ["function"],
+    });
+
+    const result = transformModels(
+      {
+        models: [{ ...template, supports_search_tool: true, apply_patch_tool_type: "freeform" }],
+      },
+      [omitted],
+    );
+
+    expect(result.models[0]).toMatchObject({
+      slug: "legacy-route",
+      supports_search_tool: false,
+      apply_patch_tool_type: null,
+      tool_mode: "direct",
+    });
+  });
+
   it("replaces one exact instruction span and updates the legacy field", () => {
     const instructions = "You are Codex, an agent based on GPT-5. Use the listed tools.";
     const routed: ModelRoute = {

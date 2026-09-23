@@ -230,12 +230,14 @@ export async function transformModelsResponse(
 }
 
 function gateModelCapabilities(model: ModelDefinition, route: ModelRoute): ModelDefinition {
+  const searchUnavailable =
+    route.toolPolicy.tool_search === "reject" || route.toolPolicy.tool_search === "omit";
+  const customUnavailable =
+    route.toolPolicy.custom === "reject" || route.toolPolicy.custom === "omit";
   return {
     ...model,
-    ...(route.toolPolicy.tool_search === "reject" ? { supports_search_tool: false } : {}),
-    ...(route.toolPolicy.custom === "reject"
-      ? { apply_patch_tool_type: null, tool_mode: "direct" }
-      : {}),
+    ...(searchUnavailable ? { supports_search_tool: false } : {}),
+    ...(customUnavailable ? { apply_patch_tool_type: null, tool_mode: "direct" } : {}),
   };
 }
 
