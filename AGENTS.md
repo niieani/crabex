@@ -33,6 +33,10 @@ release. Add a tool name to select part of the graph. For example, run
 - Tests need Bun-native APIs: run `vp run test`, not bare `vp test`.
 - Monorepo packages: `packages/proxy` (Bun CLI/server) and `packages/ui` (React/Tailwind UI).
 
+## Local infrastructure
+
+Keep machine-specific route configuration, private upstream URLs, internal hostnames, and their related notes or examples in the gitignored `.agent-context-trimmer/` directory alongside local configuration. Use reserved example domains in tracked tests and documentation. Before committing or pushing, check staged files for private infrastructure details; if one entered Git history, remove it from the affected history before publishing.
+
 ## Live OAuth test
 
 - Build with `vp run build`; put logs/captures under `temp.local/$(date +%F)/`.

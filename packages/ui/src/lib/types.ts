@@ -214,6 +214,7 @@ export interface AdvertisedModelConfig {
   priority: number;
   slug: string;
   template_slug: string;
+  template_replacements?: { find: string; replace: string }[];
 }
 
 export interface RouteTargetConfig {
@@ -236,6 +237,8 @@ export interface ModelRouteConfig {
   targets?: RouteTargetConfig[];
   retry?: RouteRetryConfig;
   transport?: "http" | "ws";
+  bridge_response_state?: "replay" | "stored";
+  allowed_tool_types?: string[];
   forward_access_programs?: boolean;
 }
 

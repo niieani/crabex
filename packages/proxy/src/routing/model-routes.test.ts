@@ -135,6 +135,7 @@ describe("modelRouteFromConfig", () => {
         priority: 1,
         slug: "kimi-k3",
         templateSlug: "gpt-5.4",
+        templateReplacements: [],
       },
       upstream: new URL("http://127.0.0.1:8317/v1"),
       upstreamModel: "kimi-k3",
@@ -145,8 +146,80 @@ describe("modelRouteFromConfig", () => {
         breaker: { failures: 3, cooldownMs: 60_000 },
       },
       transport: "ws",
+      bridgeResponseState: "replay",
       forwardAccessPrograms: false,
     });
+  });
+
+  it("configures a single-target stored HTTP bridge and tool filter", () => {
+    const parsed = parseModelRouteSet({
+      version: 1,
+      routes: [
+        {
+          ...routeConfig[0],
+          upstream: "https://gateway.example.test/v1",
+          transport: "http",
+          bridge_response_state: "stored",
+          allowed_tool_types: ["function"],
+          model: {
+            ...routeConfig[0]!.model,
+            template_replacements: [{ find: "based on GPT-5", replace: "powered by Kimi K3" }],
+          },
+        },
+      ],
+    });
+    const route = modelRouteFromConfig(parsed.routes[0]!);
+    expect(route.bridgeResponseState).toBe("stored");
+    expect(route.allowedToolTypes).toEqual(["function"]);
+    expect(route.model.templateReplacements).toEqual([
+      { find: "based on GPT-5", replace: "powered by Kimi K3" },
+    ]);
+  });
+
+  it("rejects stored bridges that could change upstream targets", () => {
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [{ ...routeConfig[0], bridge_response_state: "stored" }],
+      }),
+    ).toThrow('route[0].bridge_response_state "stored" requires http transport');
+    const { upstream_model: _upstreamModel, ...base } = routeConfig[0]!;
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [
+          {
+            ...base,
+            transport: "http",
+            bridge_response_state: "stored",
+            targets: [{ upstream_model: "kimi-k3" }, { upstream_model: "kimi-k3-fast" }],
+          },
+        ],
+      }),
+    ).toThrow('route[0].bridge_response_state "stored" requires one target');
+  });
+
+  it("rejects malformed tool filters and template replacements", () => {
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [{ ...routeConfig[0], allowed_tool_types: ["function", "function"] }],
+      }),
+    ).toThrow("route[0].allowed_tool_types must be an array of unique non-empty strings");
+    expect(() =>
+      parseModelRouteSet({
+        version: 1,
+        routes: [
+          {
+            ...routeConfig[0],
+            model: {
+              ...routeConfig[0]!.model,
+              template_replacements: [{ find: "", replace: "Kimi K3" }],
+            },
+          },
+        ],
+      }),
+    ).toThrow("route[0].model.template_replacements must contain find/replace strings");
   });
 
   it("opts a route into forwarding access_programs", () => {
@@ -177,7 +250,7 @@ describe("modelRouteFromConfig", () => {
         slug: "gpt-6-astra",
         template_slug: "gpt-6-astra",
       },
-      upstream: "https://gateway.example.test/openai/v1",
+      upstream: "https://gateway.example.test/v1",
       transport: "http",
       targets: [
         { upstream_model: "openai.gpt-6-astra-flex", attempts: 3 },

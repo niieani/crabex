@@ -50,6 +50,60 @@ describe("transformModels", () => {
     ]);
   });
 
+  it("replaces one exact instruction span and updates the legacy field", () => {
+    const instructions = "You are Codex, an agent based on GPT-5. Use the listed tools.";
+    const routed: ModelRoute = {
+      ...route,
+      model: {
+        ...route.model,
+        templateReplacements: [{ find: "based on GPT-5", replace: "powered by Kimi K3" }],
+      },
+    };
+    const result = transformModels(
+      {
+        models: [
+          {
+            ...template,
+            base_instructions: instructions,
+            model_messages: {
+              instructions_template: instructions,
+              token_budget: { enabled: false },
+            },
+          },
+        ],
+      },
+      [routed],
+    );
+
+    expect(result.models[0]?.model_messages).toEqual({
+      instructions_template: "You are Codex, an agent powered by Kimi K3. Use the listed tools.",
+      token_budget: { enabled: false },
+    });
+    expect(result.models[0]?.base_instructions).toBe(
+      "You are Codex, an agent powered by Kimi K3. Use the listed tools.",
+    );
+  });
+
+  it("rejects instruction replacements that are absent or ambiguous", () => {
+    const model = { ...template, model_messages: { instructions_template: "GPT-5 and GPT-5" } };
+    const routed: ModelRoute = {
+      ...route,
+      model: {
+        ...route.model,
+        templateReplacements: [{ find: "GPT-5", replace: "Kimi K3" }],
+      },
+    };
+    expect(() => transformModels({ models: [model] }, [routed])).toThrow(
+      "requires exactly one instruction match",
+    );
+    expect(() =>
+      transformModels(
+        { models: [{ ...model, model_messages: { instructions_template: "Other" } }] },
+        [routed],
+      ),
+    ).toThrow("requires exactly one instruction match");
+  });
+
   it("rejects a capability override absent from the template", () => {
     const invalidRoute: ModelRoute = {
       ...route,

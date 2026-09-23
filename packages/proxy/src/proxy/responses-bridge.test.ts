@@ -56,6 +56,32 @@ describe("httpPayloadFor", () => {
     expect(httpPayloadFor(payload)).toEqual({ model: "gpt-5.6-sol", input: [] });
     expect(httpPayloadFor(payload, { forwardAccessPrograms: true })).toEqual(payload);
   });
+
+  it("opts into stored responses and forwards only allowed tool types", () => {
+    const payload = {
+      model: "kimi-k3",
+      input: [],
+      store: false,
+      tools: [
+        { type: "function", name: "exec_command" },
+        { type: "web_search" },
+        { type: "namespace", name: "image_gen" },
+      ],
+    };
+    expect(
+      httpPayloadFor(payload, {
+        allowedToolTypes: ["function"],
+        storeResponses: true,
+      }),
+    ).toEqual({
+      model: "kimi-k3",
+      input: [],
+      store: true,
+      tools: [{ type: "function", name: "exec_command" }],
+    });
+    expect(payload.store).toBe(false);
+    expect(payload.tools).toHaveLength(3);
+  });
 });
 
 describe("rewriteBridgedEvent", () => {
@@ -72,6 +98,12 @@ describe("rewriteBridgedEvent", () => {
     // Empty id stops Codex from chaining via previous_response_id, which ZDR
     // upstreams reject; it replays the full input on the next create instead.
     expect(rewritten.response.id).toBe("");
+    const stored = JSON.parse(
+      rewriteBridgedEvent(event, "kimi-k3", {
+        preserveResponseId: true,
+      }),
+    ) as { response: { id: string; model: string } };
+    expect(stored.response).toMatchObject({ id: "resp_1", model: "kimi-k3" });
   });
 
   it("leaves events without a response object and non-JSON data untouched", () => {

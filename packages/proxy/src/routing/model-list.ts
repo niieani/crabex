@@ -62,6 +62,25 @@ export function transformModels(
       priority: route.model.priority,
       slug: route.model.slug,
     };
+    if (route.model.templateReplacements.length > 0) {
+      const messages = model.model_messages;
+      if (!isRecord(messages) || typeof messages.instructions_template !== "string") {
+        throw new Error(`routed model ${route.model.slug} requires an instruction template`);
+      }
+      let instructions = messages.instructions_template;
+      for (const { find, replace } of route.model.templateReplacements) {
+        const first = instructions.indexOf(find);
+        if (first < 0 || instructions.indexOf(find, first + find.length) >= 0) {
+          throw new Error(
+            `routed model ${route.model.slug} requires exactly one instruction match: ${find}`,
+          );
+        }
+        instructions =
+          instructions.slice(0, first) + replace + instructions.slice(first + find.length);
+      }
+      model.model_messages = { ...messages, instructions_template: instructions };
+      model.base_instructions = instructions;
+    }
     delete model.upgrade;
     return model;
   });

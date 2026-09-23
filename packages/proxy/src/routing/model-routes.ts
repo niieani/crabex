@@ -16,6 +16,8 @@ export interface AdvertisedModelConfig {
   priority: number;
   slug: string;
   template_slug: string;
+  /** Exact, single-occurrence edits to the template model's instructions. */
+  template_replacements?: { find: string; replace: string }[];
 }
 
 export interface RouteTargetConfig {
@@ -51,6 +53,10 @@ export interface ModelRouteConfig {
   retry?: RouteRetryConfig;
   /** Upstream transport; default "ws" (Responses-over-WebSocket). */
   transport?: "http" | "ws";
+  /** Keep upstream response IDs so the HTTP bridge can continue stored responses. */
+  bridge_response_state?: "replay" | "stored";
+  /** Tool types forwarded to this upstream; omitted means all types. */
+  allowed_tool_types?: string[];
   /**
    * Forward ChatGPT `access_programs` to this upstream. Default false — custom
    * API-key gateways reject the field unless the org has it enabled.
@@ -77,6 +83,7 @@ export interface AdvertisedModel {
   priority: number;
   slug: string;
   templateSlug: string;
+  templateReplacements: readonly { find: string; replace: string }[];
 }
 
 export interface RouteTarget {
@@ -103,6 +110,8 @@ export interface ModelRoute {
   targets: RouteTarget[];
   retry: RouteRetryPolicy;
   transport: "http" | "ws";
+  bridgeResponseState: "replay" | "stored";
+  allowedToolTypes?: readonly string[];
   forwardAccessPrograms: boolean;
 }
 
@@ -132,6 +141,7 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
       priority: config.model.priority,
       slug: config.model.slug,
       templateSlug: config.model.template_slug,
+      templateReplacements: config.model.template_replacements ?? [],
     },
     upstream: new URL(config.upstream),
     ...(config.upstream_model === undefined ? {} : { upstreamModel: config.upstream_model }),
@@ -148,6 +158,10 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
       },
     },
     transport: config.transport ?? "ws",
+    bridgeResponseState: config.bridge_response_state ?? "replay",
+    ...(config.allowed_tool_types === undefined
+      ? {}
+      : { allowedToolTypes: config.allowed_tool_types }),
     forwardAccessPrograms: config.forward_access_programs === true,
   };
 }
@@ -258,6 +272,33 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   if (transport !== undefined && transport !== "http" && transport !== "ws") {
     throw new Error(`${source}.transport must be "http" or "ws"`);
   }
+  const bridgeResponseState = value.bridge_response_state;
+  if (
+    bridgeResponseState !== undefined &&
+    bridgeResponseState !== "replay" &&
+    bridgeResponseState !== "stored"
+  ) {
+    throw new Error(`${source}.bridge_response_state must be "replay" or "stored"`);
+  }
+  if (bridgeResponseState === "stored" && transport !== "http") {
+    throw new Error(`${source}.bridge_response_state "stored" requires http transport`);
+  }
+  if (
+    bridgeResponseState === "stored" &&
+    Array.isArray(value.targets) &&
+    value.targets.length !== 1
+  ) {
+    throw new Error(`${source}.bridge_response_state "stored" requires one target`);
+  }
+  const allowedToolTypes = value.allowed_tool_types;
+  if (
+    allowedToolTypes !== undefined &&
+    (!Array.isArray(allowedToolTypes) ||
+      allowedToolTypes.some((type) => typeof type !== "string" || type.trim().length === 0) ||
+      new Set(allowedToolTypes).size !== allowedToolTypes.length)
+  ) {
+    throw new Error(`${source}.allowed_tool_types must be an array of unique non-empty strings`);
+  }
   const forwardAccessPrograms = value.forward_access_programs;
   if (forwardAccessPrograms !== undefined && typeof forwardAccessPrograms !== "boolean") {
     throw new Error(`${source}.forward_access_programs must be a boolean`);
@@ -276,6 +317,8 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
       : { targets: targetsConfig(value.targets, `${source}.targets`) }),
     ...(value.retry === undefined ? {} : { retry: retryConfig(value.retry, `${source}.retry`) }),
     ...(transport === undefined ? {} : { transport }),
+    ...(bridgeResponseState === undefined ? {} : { bridge_response_state: bridgeResponseState }),
+    ...(allowedToolTypes === undefined ? {} : { allowed_tool_types: allowedToolTypes }),
     ...(forwardAccessPrograms === undefined
       ? {}
       : { forward_access_programs: forwardAccessPrograms }),
@@ -369,6 +412,20 @@ function advertisedModelConfig(value: unknown, source: string): AdvertisedModelC
   if (typeof value.priority !== "number" || !Number.isFinite(value.priority)) {
     throw new Error(`${source}.priority must be a finite number`);
   }
+  const templateReplacements = value.template_replacements;
+  if (
+    templateReplacements !== undefined &&
+    (!Array.isArray(templateReplacements) ||
+      templateReplacements.some(
+        (replacement) =>
+          !isRecord(replacement) ||
+          typeof replacement.find !== "string" ||
+          replacement.find.length === 0 ||
+          typeof replacement.replace !== "string",
+      ))
+  ) {
+    throw new Error(`${source}.template_replacements must contain find/replace strings`);
+  }
   return {
     description: nonEmptyString(value.description, `${source}.description`),
     display_name: nonEmptyString(value.display_name, `${source}.display_name`),
@@ -376,6 +433,7 @@ function advertisedModelConfig(value: unknown, source: string): AdvertisedModelC
     priority: value.priority,
     slug: nonEmptyString(value.slug, `${source}.slug`),
     template_slug: nonEmptyString(value.template_slug, `${source}.template_slug`),
+    ...(templateReplacements === undefined ? {} : { template_replacements: templateReplacements }),
   };
 }
 

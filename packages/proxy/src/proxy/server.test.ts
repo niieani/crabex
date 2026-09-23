@@ -459,6 +459,46 @@ describe("model routing and config bundle override", () => {
     }
   });
 
+  it("stores responses for a routed HTTP request when the route opts in", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const routed = await startHttpServer(async (request, response) => {
+        expect(JSON.parse((await readBody(request)).toString())).toEqual({
+          model: "moonshot-kimi-k3",
+          input: "hello",
+          store: true,
+          tools: [{ type: "function", name: "exec_command" }],
+        });
+        response.end("routed");
+      });
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [
+          {
+            ...testRoute(routed.origin),
+            bridgeResponseState: "stored",
+            allowedToolTypes: ["function"],
+          },
+        ],
+      });
+
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: "hello",
+          store: false,
+          tools: [{ type: "function", name: "exec_command" }, { type: "web_search" }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("routed");
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
   it("decompresses a zstd Responses body before routing it to the gateway", async () => {
     process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
     try {
@@ -597,6 +637,7 @@ describe("model routing and config bundle override", () => {
         priority: 1,
         slug: "my-astra",
         templateSlug: "gpt-6-astra",
+        templateReplacements: [],
       },
     };
     const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
@@ -1060,6 +1101,232 @@ describe("model routing and config bundle override", () => {
       });
     } finally {
       delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it("converts a matching tool-call replay into a stored upstream continuation", async () => {
+    process.env.OPENAI_API_KEY = "test-gateway-key";
+    try {
+      const seen: Record<string, unknown>[] = [];
+      const gateway = await startHttpServer((request, response) => {
+        let body = "";
+        request.on("data", (chunk) => (body += chunk));
+        request.on("end", () => {
+          expect(request.url).toBe("/v1/responses");
+          const payload = JSON.parse(body) as Record<string, unknown>;
+          seen.push(payload);
+          const id = `resp_${seen.length}`;
+          const output =
+            seen.length === 1
+              ? [
+                  { type: "reasoning", id: "rs_1", summary: [] },
+                  {
+                    type: "function_call",
+                    id: "fc_1",
+                    call_id: "sum_numbers_0",
+                    name: "sum_numbers",
+                    arguments: "{}",
+                  },
+                ]
+              : [];
+          response.setHeader("content-type", "text/event-stream");
+          response.end(
+            `data: {"type":"response.created","response":{"id":"${id}","model":"${String(payload.model)}","status":"in_progress"}}\n\n` +
+              `data: ${JSON.stringify({ type: "response.completed", response: { id, model: payload.model, status: "completed", output } })}\n\n`,
+          );
+        });
+      });
+      const route = modelRouteFromConfig({
+        authorization_env: "OPENAI_API_KEY",
+        model: {
+          description: "Kimi K3 via a compatible gateway",
+          display_name: "Kimi K3",
+          priority: 1,
+          slug: "kimi-k3",
+          template_slug: "gpt-5.6-luna",
+        },
+        upstream: `${gateway.origin}/v1`,
+        upstream_model: "provider/kimi-k3",
+        transport: "http",
+        bridge_response_state: "stored",
+        allowed_tool_types: ["function"],
+      });
+      const captures = new MemoryCaptureSink();
+      const chatgpt = await startWebSocketServer((socket) => {
+        socket.on("message", () => socket.send("chatgpt"));
+      });
+      const proxy = await startRoutingProxy(chatgpt.origin, captures, { routes: [route] });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: { authorization: "Bearer oauth-secret" } },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "kimi-k3",
+          input: [{ role: "user", content: "Add 19 and 23" }],
+          store: false,
+          tools: [{ type: "function", name: "sum_numbers" }, { type: "web_search" }],
+        }),
+      );
+      const firstCreated = JSON.parse(await nextMessage(client)) as {
+        response: { id: string; model: string };
+      };
+      expect(firstCreated.response).toMatchObject({ id: "resp_1", model: "kimi-k3" });
+      await nextMessage(client);
+
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "kimi-k3",
+          input: [
+            { role: "user", content: "Add 19 and 23" },
+            { type: "reasoning", id: "rs_1" },
+            { type: "function_call", id: "fc_1", call_id: "sum_numbers_0" },
+            { type: "function_call_output", call_id: "sum_numbers_0", output: "42" },
+          ],
+          store: false,
+        }),
+      );
+      const secondCreated = JSON.parse(await nextMessage(client)) as {
+        response: { id: string; model: string };
+      };
+      expect(secondCreated.response).toMatchObject({ id: "resp_2", model: "kimi-k3" });
+      await nextMessage(client);
+
+      expect(seen).toHaveLength(2);
+      expect(seen[0]).toMatchObject({
+        model: "provider/kimi-k3",
+        store: true,
+        tools: [{ type: "function", name: "sum_numbers" }],
+      });
+      expect(seen[1]).toMatchObject({
+        model: "provider/kimi-k3",
+        store: true,
+        previous_response_id: "resp_1",
+        input: [{ type: "function_call_output", call_id: "sum_numbers_0", output: "42" }],
+      });
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it("continues stored responses across WebSocket and direct HTTP in both directions", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const seen: Record<string, unknown>[] = [];
+      const firstOutput = [
+        { type: "reasoning", id: "rs_1", summary: [] },
+        { type: "function_call", id: "fc_1", call_id: "call_1", name: "compute", arguments: "{}" },
+      ];
+      const secondOutput = [
+        { type: "reasoning", id: "rs_2", summary: [] },
+        { type: "function_call", id: "fc_2", call_id: "call_2", name: "compute", arguments: "{}" },
+      ];
+      const gateway = await startHttpServer(async (request, response) => {
+        const payload = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+        seen.push(payload);
+        const id = `resp_${seen.length}`;
+        const output = seen.length === 1 ? firstOutput : seen.length === 2 ? secondOutput : [];
+        response.setHeader("content-type", "text/event-stream");
+        response.write(
+          `data: ${JSON.stringify({ type: "response.created", response: { id } })}\n\n`,
+        );
+        response.end(
+          `data: ${JSON.stringify({ type: "response.completed", response: { id, output } })}\n\n`,
+        );
+      });
+      const route = {
+        ...testRoute(gateway.origin),
+        transport: "http" as const,
+        bridgeResponseState: "stored" as const,
+      };
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const identity = {
+        authorization: "Bearer oauth-secret",
+        "chatgpt-account-id": "account-1",
+        "session-id": "session-1",
+        "thread-id": "thread-1",
+      };
+      const user = { role: "user", content: "Compute a value" };
+      const firstResult = { type: "function_call_output", call_id: "call_1", output: "42" };
+      const secondResult = { type: "function_call_output", call_id: "call_2", output: "84" };
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: identity },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      client.send(JSON.stringify({ type: "response.create", model: "kimi-k3", input: [user] }));
+      await nextMessage(client);
+      await nextMessage(client);
+      client.close();
+
+      const firstReplay = {
+        model: "kimi-k3",
+        input: [
+          user,
+          { type: "reasoning", id: "rs_1" },
+          { type: "function_call", id: "fc_1", call_id: "call_1" },
+          firstResult,
+        ],
+        store: false,
+        stream: true,
+      };
+      const fallback = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { ...identity, "content-type": "application/json" },
+        body: JSON.stringify(firstReplay),
+      });
+      expect(fallback.status).toBe(200);
+      expect(await fallback.text()).toContain('"id":"resp_2"');
+      expect(seen[1]).toMatchObject({
+        previous_response_id: "resp_1",
+        input: [firstResult],
+        store: true,
+      });
+
+      const unrelated = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { ...identity, "thread-id": "thread-2", "content-type": "application/json" },
+        body: JSON.stringify(firstReplay),
+      });
+      await unrelated.text();
+      expect(seen[2]).toMatchObject({ input: firstReplay.input });
+      expect(seen[2]).not.toHaveProperty("previous_response_id");
+
+      const resumed = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: identity },
+      );
+      closeables.push(async () => resumed.close());
+      await opened(resumed);
+      resumed.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "kimi-k3",
+          input: [
+            ...firstReplay.input,
+            { type: "reasoning", id: "rs_2" },
+            { type: "function_call", id: "fc_2", call_id: "call_2" },
+            secondResult,
+          ],
+        }),
+      );
+      await nextMessage(resumed);
+      await nextMessage(resumed);
+      expect(seen[3]).toMatchObject({
+        previous_response_id: "resp_2",
+        input: [secondResult],
+        store: true,
+      });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
     }
   });
 

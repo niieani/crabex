@@ -29,9 +29,19 @@ import {
   httpPayloadFor,
   parseSseEvents,
   rewriteBridgedEvent,
+  SseEventScanner,
   warmupCompletionEvents,
   wrappedErrorEvent,
 } from "./responses-bridge.ts";
+import {
+  completedStoredResponse,
+  continuationSessionKey,
+  prepareStoredRequest,
+  StoredResponseRegistry,
+  storedResponseKey,
+  type PreparedStoredRequest,
+  type StoredResponseState,
+} from "./stored-response-continuation.ts";
 import {
   isConfigBundleRequest,
   isModelsRequest,
@@ -138,6 +148,9 @@ interface SocketData {
   upstreamOrigin?: CaptureUpstreamOrigin;
   liveRequests: LiveRequestStore;
   activeRequestId?: string;
+  continuationSession?: string;
+  storedResponses: StoredResponseRegistry;
+  storedResponse?: StoredResponseState;
 }
 
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
@@ -173,6 +186,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
   const fixtureModels = options.fixtureModels ?? modelsFixture();
   const breakers = options.breakers ?? new TargetBreakers();
   const liveRequests = options.liveRequests ?? new LiveRequestStore();
+  const storedResponses = new StoredResponseRegistry();
   const configBundleSource = options.configBundleSource;
   const upstreamCache = options.upstreamCache;
   let lastBundleObservation = 0;
@@ -250,6 +264,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           options.project,
           breakers,
           liveRequests,
+          storedResponses,
         );
       }
       return proxyHttpRequest(
@@ -265,6 +280,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         fixtureModels,
         breakers,
         liveRequests,
+        storedResponses,
       );
     },
     websocket: {
@@ -380,6 +396,7 @@ async function proxyHttpRequest(
   fixtureModels: ModelDefinition[],
   breakers: TargetBreakers,
   liveRequests: LiveRequestStore,
+  storedResponses: StoredResponseRegistry,
 ): Promise<Response> {
   let liveRequestId: string | undefined;
   try {
@@ -409,6 +426,9 @@ async function proxyHttpRequest(
     }
     const outbound = processed.value;
     let routing: CaptureRouting | undefined;
+    let routedPayload: Record<string, unknown> | undefined;
+    let preparedStoredRequest: PreparedStoredRequest | undefined;
+    let responseStateKey: string | undefined;
     const routedRequest = (() => {
       if (routes.length === 0 || !isResponsesRequest(request.method, requestUrl.pathname)) {
         return undefined;
@@ -435,7 +455,27 @@ async function proxyHttpRequest(
     }
     if (routedRequest !== undefined) {
       const { inspected, route } = routedRequest;
-      headers = routedHeaders(headers, authorizationFor(route, process.env));
+      const authorization = authorizationFor(route, process.env);
+      headers = routedHeaders(headers, authorization);
+      routedPayload = httpPayloadFor(inspected.payload, {
+        forwardAccessPrograms: route.forwardAccessPrograms,
+        allowedToolTypes: route.allowedToolTypes,
+        storeResponses: route.bridgeResponseState === "stored",
+      });
+      if (route.bridgeResponseState === "stored") {
+        responseStateKey = storedResponseKey(
+          continuationSessionKey(request.headers),
+          route.model.slug,
+          responseTargetUrl(route, requestUrl.search).toString(),
+          route.targets[0]?.upstreamModel ?? route.model.slug,
+          authorization,
+        );
+        preparedStoredRequest = prepareStoredRequest(
+          routedPayload,
+          route.model.slug,
+          storedResponses.get(responseStateKey),
+        );
+      }
       routing = {
         action: "routed",
         routeSlugs: [route.model.slug],
@@ -496,9 +536,7 @@ async function proxyHttpRequest(
                 method: request.method,
                 headers,
                 body: JSON.stringify({
-                  ...httpPayloadFor(routedRequest.inspected.payload, {
-                    forwardAccessPrograms: routedRequest.route.forwardAccessPrograms,
-                  }),
+                  ...(preparedStoredRequest?.payload ?? routedPayload),
                   model: routeTarget.upstreamModel ?? routedRequest.route.model.slug,
                 }),
                 redirect: "manual",
@@ -549,7 +587,15 @@ async function proxyHttpRequest(
 
     let downstreamBody =
       routedRequest !== undefined && routing !== undefined && response.ok && response.body !== null
-        ? tapRoutedUsage(response.body, routing, recorder)
+        ? tapRoutedUsage(response.body, routing, recorder, (eventData) => {
+            if (responseStateKey === undefined || preparedStoredRequest === undefined) return;
+            const completed = completedStoredResponse(
+              eventData,
+              routedRequest.route.model.slug,
+              preparedStoredRequest.inputMarkers,
+            );
+            if (completed !== undefined) storedResponses.set(responseStateKey, completed);
+          })
         : response.body;
     if (liveRequestId !== undefined) {
       liveRequests.update(liveRequestId, { state: "streaming", status: response.status });
@@ -706,6 +752,7 @@ async function upgradeWebSocket(
   project: string | undefined,
   breakers: TargetBreakers,
   liveRequests: LiveRequestStore,
+  storedResponses: StoredResponseRegistry,
 ): Promise<Response | undefined> {
   try {
     const requestUrl = new URL(request.url);
@@ -722,6 +769,8 @@ async function upgradeWebSocket(
       ...(project === undefined ? {} : { project }),
       transformationSource,
       liveRequests,
+      continuationSession: continuationSessionKey(request.headers),
+      storedResponses,
     };
 
     if (lazyRouting) {
@@ -904,6 +953,28 @@ async function runBridgedCreate(
     return;
   }
 
+  const forwardedPayload = httpPayloadFor(inspected.payload, {
+    forwardAccessPrograms: route.forwardAccessPrograms,
+    allowedToolTypes: route.allowedToolTypes,
+    storeResponses: route.bridgeResponseState === "stored",
+  });
+  const responseStateKey = storedResponseKey(
+    data.continuationSession,
+    route.model.slug,
+    responseTargetUrl(route, bridge.search).toString(),
+    route.targets[0]?.upstreamModel ?? route.model.slug,
+    authorization,
+  );
+  const storedRequest =
+    route.bridgeResponseState === "stored"
+      ? prepareStoredRequest(
+          forwardedPayload,
+          route.model.slug,
+          responseStateKey === undefined
+            ? data.storedResponse
+            : data.storedResponses.get(responseStateKey),
+        )
+      : undefined;
   const result = await fetchWithFailover({
     route,
     breakers: bridge.breakers,
@@ -918,9 +989,7 @@ async function runBridgedCreate(
           accept: "text/event-stream",
         },
         body: JSON.stringify({
-          ...httpPayloadFor(inspected.payload, {
-            forwardAccessPrograms: route.forwardAccessPrograms,
-          }),
+          ...(storedRequest?.payload ?? forwardedPayload),
           model: target.upstreamModel ?? route.model.slug,
           stream: true,
         }),
@@ -952,7 +1021,22 @@ async function runBridgedCreate(
   });
   for await (const eventData of parseSseEvents(result.response.body)) {
     if (data.client === undefined || data.client.readyState !== WebSocket.OPEN) break;
-    await queueBridgedMessage(data, rewriteBridgedEvent(eventData, route.model.slug), origin);
+    const completed = completedStoredResponse(
+      eventData,
+      route.model.slug,
+      storedRequest?.inputMarkers,
+    );
+    if (completed !== undefined) {
+      if (responseStateKey === undefined) data.storedResponse = completed;
+      else data.storedResponses.set(responseStateKey, completed);
+    }
+    await queueBridgedMessage(
+      data,
+      rewriteBridgedEvent(eventData, route.model.slug, {
+        preserveResponseId: route.bridgeResponseState === "stored",
+      }),
+      origin,
+    );
   }
   data.liveRequests.finish(liveRequestId, {
     state: "completed",
@@ -1145,33 +1229,49 @@ function closeClient(socket: Bun.ServerWebSocket<SocketData>, code: number, reas
   else socket.close(valid, reason);
 }
 
-/**
- * Tees a routed HTTP body so we can scrape `response.completed` usage without
- * delaying the client. The observe side is fully drained to avoid backpressure.
- */
+/** Observe each complete SSE event before its bytes reach the HTTP client. */
 function tapRoutedUsage(
   body: ReadableStream<Uint8Array>,
   routing: CaptureRouting,
   recorder: EventRecorder,
+  onEvent?: (eventData: string) => void,
 ): ReadableStream<Uint8Array> {
-  const [toClient, toObserve] = body.tee();
-  void collectRoutedUsage(toObserve, routing, recorder);
-  return toClient;
-}
-
-async function collectRoutedUsage(
-  body: ReadableStream<Uint8Array>,
-  routing: CaptureRouting,
-  recorder: EventRecorder,
-): Promise<void> {
-  try {
-    for await (const eventData of parseSseEvents(body)) {
+  const reader = body.getReader();
+  const scanner = new SseEventScanner();
+  const observe = (eventData: string) => {
+    try {
+      onEvent?.(eventData);
+    } catch {
+      // Continuation metadata is best-effort.
+    }
+    try {
       const usage = observePayload(eventData, "upstream_to_client").responseSummary?.usage;
       if (usage !== undefined) recorder.recordUsage(routing, usage);
+    } catch {
+      // Usage observation must not interrupt the upstream stream.
     }
-  } catch {
-    // observation is best-effort
-  }
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          for (const eventData of scanner.finish()) observe(eventData);
+          reader.releaseLock();
+          controller.close();
+          return;
+        }
+        for (const eventData of scanner.push(value)) observe(eventData);
+        controller.enqueue(value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason);
+      reader.releaseLock();
+    },
+  });
 }
 
 function closeUpstream(socket: WebSocket, code: number, reason: string): void {

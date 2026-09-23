@@ -123,7 +123,7 @@ describe("EventRecorder usage attribution", () => {
       {
         origin: {
           kind: "gateway-http",
-          url: "https://gateway.example.test/openai/v1/responses",
+          url: "https://gateway.example.test/v1/responses",
         },
       },
     );
@@ -140,7 +140,7 @@ describe("EventRecorder usage attribution", () => {
       },
       origin: {
         kind: "gateway-http",
-        url: "https://gateway.example.test/openai/v1/responses",
+        url: "https://gateway.example.test/v1/responses",
       },
     });
     expect(events[1]).not.toHaveProperty("payload");

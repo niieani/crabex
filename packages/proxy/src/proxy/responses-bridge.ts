@@ -40,14 +40,30 @@ export function warmupCompletionEvents(model: string): string[] {
 
 export function httpPayloadFor(
   payload: Record<string, unknown>,
-  options: { forwardAccessPrograms?: boolean } = {},
+  options: {
+    forwardAccessPrograms?: boolean;
+    allowedToolTypes?: readonly string[];
+    storeResponses?: boolean;
+  } = {},
 ): Record<string, unknown> {
-  return Object.fromEntries(
+  const request = Object.fromEntries(
     Object.entries(payload).filter(([key]) => {
       if (WS_ONLY_REQUEST_FIELDS.has(key)) return false;
       return key !== "access_programs" || options.forwardAccessPrograms === true;
     }),
   );
+  const allowedToolTypes = options.allowedToolTypes;
+  if (allowedToolTypes !== undefined && Array.isArray(request.tools)) {
+    request.tools = request.tools.filter(
+      (tool) =>
+        typeof tool === "object" &&
+        tool !== null &&
+        typeof (tool as { type?: unknown }).type === "string" &&
+        allowedToolTypes.includes((tool as { type: string }).type),
+    );
+  }
+  if (options.storeResponses === true) request.store = true;
+  return request;
 }
 
 /**
@@ -56,18 +72,22 @@ export function httpPayloadFor(
  *
  * - `model` becomes the advertised slug, so the client keeps seeing the model
  *   it asked for rather than the upstream's name.
- * - `id` is blanked. Bridged upstreams are stateless for our purposes — ZDR
+ * - `id` is blanked by default. Bridged upstreams are stateless for our purposes — ZDR
  *   orgs reject `previous_response_id` outright ("Previous response cannot be
  *   used for this organization due to Zero Data Retention"), and gateways
  *   generally don't persist responses. Codex only chains tool-call
  *   continuations via `previous_response_id` when the last response id is
  *   non-empty; an empty id makes it replay the full input instead
  *   (core/src/client.rs `prepare_websocket_request`; opencodex does the same
- *   with `forceEmptyResponseId`).
+ *   with `forceEmptyResponseId`). Stored-response routes preserve the ID.
  *
  * Unparseable events pass through untouched.
  */
-export function rewriteBridgedEvent(eventData: string, advertisedSlug: string): string {
+export function rewriteBridgedEvent(
+  eventData: string,
+  advertisedSlug: string,
+  options: { preserveResponseId?: boolean } = {},
+): string {
   try {
     const parsed: unknown = JSON.parse(eventData);
     if (typeof parsed !== "object" || parsed === null) return eventData;
@@ -76,7 +96,7 @@ export function rewriteBridgedEvent(eventData: string, advertisedSlug: string): 
     if (typeof response === "object" && response !== null) {
       const r = response as { model?: unknown; id?: unknown };
       if (typeof r.model === "string") r.model = advertisedSlug;
-      if (typeof r.id === "string") r.id = "";
+      if (typeof r.id === "string" && options.preserveResponseId !== true) r.id = "";
     }
     return JSON.stringify(event);
   } catch {
@@ -228,43 +248,63 @@ export async function* parseSseEvents(
   body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<string, void, undefined> {
   const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let dataLines: string[] = [];
-
-  function* flush(): Generator<string, void, undefined> {
-    if (dataLines.length === 0) return;
-    const data = dataLines.join("\n");
-    dataLines = [];
-    if (data === "[DONE]") return;
-    yield data;
-  }
+  const scanner = new SseEventScanner();
 
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      for (;;) {
-        const newline = buffer.indexOf("\n");
-        if (newline === -1) break;
-        const line = buffer.slice(0, newline).replace(/\r$/, "");
-        buffer = buffer.slice(newline + 1);
-        if (line === "") {
-          yield* flush();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5).replace(/^ /, ""));
-        }
-        // event:, id:, retry: and comment lines carry nothing we need
-      }
+      yield* scanner.push(value);
     }
-    buffer += decoder.decode();
-    if (buffer.length > 0) {
-      const line = buffer.replace(/\r$/, "");
-      if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
-    }
-    yield* flush();
+    yield* scanner.finish();
   } finally {
     reader.releaseLock();
+  }
+}
+
+/** Parses SSE events while callers retain the original response bytes. */
+export class SseEventScanner {
+  private readonly decoder = new TextDecoder();
+  private buffer = "";
+  private dataLines: string[] = [];
+
+  push(chunk: Uint8Array): string[] {
+    this.buffer += this.decoder.decode(chunk, { stream: true });
+    return this.readLines();
+  }
+
+  finish(): string[] {
+    this.buffer += this.decoder.decode();
+    const events = this.readLines();
+    if (this.buffer.length > 0) {
+      this.acceptLine(this.buffer.replace(/\r$/, ""));
+      this.buffer = "";
+    }
+    this.flush(events);
+    return events;
+  }
+
+  private readLines(): string[] {
+    const events: string[] = [];
+    for (;;) {
+      const newline = this.buffer.indexOf("\n");
+      if (newline < 0) return events;
+      const line = this.buffer.slice(0, newline).replace(/\r$/, "");
+      this.buffer = this.buffer.slice(newline + 1);
+      if (line === "") this.flush(events);
+      else this.acceptLine(line);
+    }
+  }
+
+  private acceptLine(line: string): void {
+    if (line.startsWith("data:")) this.dataLines.push(line.slice(5).replace(/^ /, ""));
+    // event:, id:, retry: and comment lines carry nothing we need.
+  }
+
+  private flush(events: string[]): void {
+    if (this.dataLines.length === 0) return;
+    const data = this.dataLines.join("\n");
+    this.dataLines = [];
+    if (data !== "[DONE]") events.push(data);
   }
 }
