@@ -26,6 +26,7 @@ import {
   type ModelRoute,
 } from "../routing/model-routes.ts";
 import { fetchWithFailover, TargetBreakers, type FailoverEvent } from "../routing/failover.ts";
+import { assertRouteTools, ToolPolicyError } from "../routing/tool-policy.ts";
 import {
   httpPayloadFor,
   parseSseEvents,
@@ -143,6 +144,7 @@ interface SocketData {
   project?: string;
   transformationSource: TransformationSource;
   bridge?: BridgeContext;
+  connectedRoute?: ModelRoute;
   connectUpstream?: (firstValue: string | ArrayBuffer | Uint8Array) => Promise<{
     value: string | ArrayBuffer | Uint8Array;
     routing?: CaptureRouting;
@@ -369,6 +371,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                   : { targetModel: route.upstreamModel ?? route.model.slug }),
               });
               data.liveRequests.update(data.activeRequestId, { state: "connecting" });
+              const policyRoute = data.connectedRoute ?? route;
+              if (policyRoute !== undefined) assertRouteTools(policyRoute, liveInspected.payload);
             }
             if (data.upstream === undefined) {
               if (data.connectUpstream === undefined) {
@@ -395,7 +399,22 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             }
             upstream.send(outbound);
           })
-          .catch(() => closePair(data, 1011, "capture failed"));
+          .catch((error) => {
+            if (error instanceof ToolPolicyError) {
+              if (data.activeRequestId !== undefined) {
+                data.liveRequests.finish(data.activeRequestId, {
+                  state: "failed",
+                  status: 400,
+                  detail: error.message,
+                });
+              }
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(wrappedErrorEvent(400, error.message));
+              }
+              return;
+            }
+            closePair(data, 1011, "capture failed");
+          });
       },
       close(client, code, reason) {
         client.data.bridgeAbort?.abort();
@@ -487,11 +506,11 @@ async function proxyHttpRequest(
     }
     if (routedRequest !== undefined) {
       const { inspected, route } = routedRequest;
+      assertRouteTools(route, inspected.payload);
       const authorization = authorizationFor(route, process.env);
       headers = routedHeaders(headers, authorization);
       routedPayload = httpPayloadFor(inspected.payload, {
         forwardAccessPrograms: route.forwardAccessPrograms,
-        allowedToolTypes: route.allowedToolTypes,
         storeResponses: route.bridgeResponseState === "stored",
       });
       if (route.bridgeResponseState === "stored") {
@@ -712,7 +731,13 @@ async function proxyHttpRequest(
     }
     return new Response(error instanceof CaptureFailure ? "capture failed" : errorMessage(error), {
       status:
-        error instanceof RequestTooLarge ? 413 : error instanceof RouteUnavailable ? 502 : 500,
+        error instanceof RequestTooLarge
+          ? 413
+          : error instanceof ToolPolicyError
+            ? 400
+            : error instanceof RouteUnavailable
+              ? 502
+              : 500,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
@@ -864,6 +889,7 @@ async function upgradeWebSocket(
         };
         attachUpstream(data, upstream);
         data.upstream = upstream;
+        data.connectedRoute = route;
         if (route === undefined || inspected === undefined) return { value: firstValue };
         return {
           value: JSON.stringify({
@@ -999,6 +1025,8 @@ async function runBridgedCreate(
       origin,
     });
 
+  assertRouteTools(route, inspected.payload);
+
   // Warmup creates (generate: false) are answered locally: forwarding them
   // would bill a real generation for a response the client ignores.
   if (inspected.payload.generate === false) {
@@ -1025,7 +1053,6 @@ async function runBridgedCreate(
 
   const forwardedPayload = httpPayloadFor(inspected.payload, {
     forwardAccessPrograms: route.forwardAccessPrograms,
-    allowedToolTypes: route.allowedToolTypes,
     storeResponses: route.bridgeResponseState === "stored",
   });
   const responseStateKey = storedResponseKey(

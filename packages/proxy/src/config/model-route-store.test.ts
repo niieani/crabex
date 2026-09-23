@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { ModelRouteConfig } from "../routing/model-routes.ts";
 import { openModelRouteStore } from "./model-route-store.ts";
@@ -80,5 +80,24 @@ describe("model route store", () => {
     await expect(openModelRouteStore(path)).rejects.toThrow(
       "route[0].authorization_env must be a non-empty string",
     );
+  });
+
+  it("warns when loading or saving legacy allowed_tool_types", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-routes-"));
+    const path = join(directory, "routes.json");
+    const legacy = [{ ...routes[0]!, allowed_tool_types: ["function"] }];
+    await Bun.write(path, JSON.stringify({ version: 1, routes: legacy }));
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = await openModelRouteStore(path);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining('model route "kimi-k3": allowed_tool_types is deprecated'),
+      );
+      warning.mockClear();
+      await store.replace({ routes: legacy, adjustments: [], fixture_pins: [] });
+      expect(warning).toHaveBeenCalledOnce();
+    } finally {
+      warning.mockRestore();
+    }
   });
 });

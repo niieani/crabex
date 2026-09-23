@@ -1,3 +1,10 @@
+import {
+  effectiveToolPolicy,
+  parseToolConfiguration,
+  type ToolPolicy,
+  type ToolPolicyConfig,
+} from "./tool-policy.ts";
+
 export type ModelOverrides = Readonly<Record<string, unknown>>;
 type Environment = Readonly<Record<string, string | undefined>>;
 
@@ -69,7 +76,9 @@ export interface ModelRouteConfig {
   transport?: "http" | "ws";
   /** Keep upstream response IDs so the HTTP bridge can continue stored responses. */
   bridge_response_state?: "replay" | "stored";
-  /** Tool types forwarded to this upstream; omitted means all types. */
+  /** Per-type route behavior. Omitted entries use the provider defaults. */
+  tool_policy?: ToolPolicyConfig;
+  /** @deprecated Use tool_policy. Listed types use their provider defaults; others reject. */
   allowed_tool_types?: string[];
   /**
    * Forward ChatGPT `access_programs` to this upstream. Default false — custom
@@ -127,7 +136,7 @@ export interface ModelRoute {
   retry: RouteRetryPolicy;
   transport: "http" | "ws";
   bridgeResponseState: "replay" | "stored";
-  allowedToolTypes?: readonly string[];
+  toolPolicy: ToolPolicy;
   forwardAccessPrograms: boolean;
 }
 
@@ -177,9 +186,7 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
     },
     transport: config.transport ?? (config.api === "anthropic-messages" ? "http" : "ws"),
     bridgeResponseState: config.bridge_response_state ?? "replay",
-    ...(config.allowed_tool_types === undefined
-      ? {}
-      : { allowedToolTypes: config.allowed_tool_types }),
+    toolPolicy: effectiveToolPolicy(config),
     forwardAccessPrograms: config.forward_access_programs === true,
   };
 }
@@ -329,15 +336,12 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   ) {
     throw new Error(`${source}.bridge_response_state "stored" requires one target`);
   }
-  const allowedToolTypes = value.allowed_tool_types;
-  if (
-    allowedToolTypes !== undefined &&
-    (!Array.isArray(allowedToolTypes) ||
-      allowedToolTypes.some((type) => typeof type !== "string" || type.trim().length === 0) ||
-      new Set(allowedToolTypes).size !== allowedToolTypes.length)
-  ) {
-    throw new Error(`${source}.allowed_tool_types must be an array of unique non-empty strings`);
-  }
+  const toolConfiguration = parseToolConfiguration(
+    value.tool_policy,
+    value.allowed_tool_types,
+    api ?? "responses",
+    source,
+  );
   const forwardAccessPrograms = value.forward_access_programs;
   if (forwardAccessPrograms !== undefined && typeof forwardAccessPrograms !== "boolean") {
     throw new Error(`${source}.forward_access_programs must be a boolean`);
@@ -359,7 +363,7 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
     ...(value.retry === undefined ? {} : { retry: retryConfig(value.retry, `${source}.retry`) }),
     ...(transport === undefined ? {} : { transport }),
     ...(bridgeResponseState === undefined ? {} : { bridge_response_state: bridgeResponseState }),
-    ...(allowedToolTypes === undefined ? {} : { allowed_tool_types: allowedToolTypes }),
+    ...toolConfiguration,
     ...(forwardAccessPrograms === undefined
       ? {}
       : { forward_access_programs: forwardAccessPrograms }),

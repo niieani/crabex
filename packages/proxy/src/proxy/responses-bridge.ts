@@ -42,7 +42,6 @@ export function httpPayloadFor(
   payload: Record<string, unknown>,
   options: {
     forwardAccessPrograms?: boolean;
-    allowedToolTypes?: readonly string[];
     storeResponses?: boolean;
   } = {},
 ): Record<string, unknown> {
@@ -52,16 +51,6 @@ export function httpPayloadFor(
       return key !== "access_programs" || options.forwardAccessPrograms === true;
     }),
   );
-  const allowedToolTypes = options.allowedToolTypes;
-  if (allowedToolTypes !== undefined && Array.isArray(request.tools)) {
-    request.tools = request.tools.filter(
-      (tool) =>
-        typeof tool === "object" &&
-        tool !== null &&
-        typeof (tool as { type?: unknown }).type === "string" &&
-        allowedToolTypes.includes((tool as { type: string }).type),
-    );
-  }
   if (options.storeResponses === true) request.store = true;
   return request;
 }

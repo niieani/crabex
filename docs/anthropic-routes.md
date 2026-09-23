@@ -72,6 +72,8 @@ available through this wrapping. Claude routes default to regular Codex tools;
 `model.overrides.tool_mode: "code_mode_only"` explicitly opts into code mode.
 No tool executes in Relaydeck: Codex remains responsible for execution and
 approvals. Broken call/result pairs and unsupported hosted tools fail explicitly.
+See [model route tool policy](model-route-tool-policy.md) for per-route rejection
+and the defaults for all five Codex tool types.
 
 Base64 PNG/JPEG/GIF/WebP images work in user messages and tool results, including
 `view_image`. HTTPS image URLs are passed as native URL sources rather than
@@ -121,8 +123,9 @@ apply; upstream overload HTTP 529 can be added to `retry.on_status` if needed.
 Hosted OpenAI tools and OpenAI-encrypted reasoning/compaction cannot be translated.
 Disable hosted web search for these tasks (`web_search = "disabled"`). Claude
 routes disable deferred tool search and Responses-lite, and advertise no OpenAI
-speed/access programs. Hosted web search still needs the task setting above. Structured response schemas are currently rejected because the targeted
-Mantle surface does not support them. Client-executed MCP/function tools remain
+speed/access programs. Hosted web search still needs the task setting above.
+Structured response schemas are currently rejected because the targeted Mantle
+surface does not support them. Client-executed MCP/function tools remain
 available. This adapter does not implement direct AWS SigV4 authentication.
 
 ## Verification and sources
@@ -147,7 +150,6 @@ Set `anthropic.drop_mismatched_thinking: true` to enable Anthropic's
 thinking-binding controls beta and discard only thinking blocks whose conversation
 prefix has changed (for example after Codex changes its tool inventory). Unchanged
 signed thinking continues to replay. Forced tool use remains unsupported on these models.
-
 
 Desktop tools with a top-level JSON Schema `oneOf`, `anyOf`, or `allOf`
 are wrapped in a required `arguments` object for Anthropic. Local references

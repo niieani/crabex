@@ -367,7 +367,18 @@ describe("local context API", () => {
     );
     expect(await listed?.json()).toEqual({
       version: 1,
-      routes: routeConfigs,
+      routes: [
+        {
+          ...routeConfigs[0],
+          effective_tool_policy: {
+            function: "pass",
+            namespace: "pass",
+            custom: "pass",
+            web_search: "pass",
+            tool_search: "pass",
+          },
+        },
+      ],
       adjustments: [],
       fixture_pins: [],
     });
@@ -387,6 +398,58 @@ describe("local context API", () => {
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
     }
+  });
+
+  it("exposes the effective policy for legacy and explicit route settings", async () => {
+    const sources = stubSources({
+      routes: [{ ...routeConfigs[0]!, allowed_tool_types: ["function"] }],
+    });
+    const api = createLocalApi({
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+    });
+    const url = "http://localhost/__agent-context-trimmer/api/model-routes";
+
+    const listed = await api.handle(new Request(url));
+    const listedBody = (await listed?.json()) as { routes: Record<string, unknown>[] };
+    expect(listedBody.routes[0]).toMatchObject({
+      allowed_tool_types: ["function"],
+      effective_tool_policy: {
+        function: "pass",
+        namespace: "reject",
+        custom: "reject",
+        web_search: "reject",
+        tool_search: "reject",
+      },
+    });
+
+    const update = await api.handle(
+      new Request(url, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: 1,
+          routes: [{ ...routeConfigs[0], tool_policy: { web_search: "reject" } }],
+        }),
+      }),
+    );
+    expect(update?.status).toBe(200);
+    const updatedBody = (await update?.json()) as { routes: Record<string, unknown>[] };
+    expect(updatedBody.routes[0]).toMatchObject({
+      tool_policy: { web_search: "reject" },
+      effective_tool_policy: {
+        function: "pass",
+        namespace: "pass",
+        custom: "pass",
+        web_search: "reject",
+        tool_search: "pass",
+      },
+    });
+    expect(sources.currentRoutes()[0]).not.toHaveProperty("effective_tool_policy");
   });
 
   it("serves the observed upstream responses cache", async () => {
@@ -439,6 +502,36 @@ describe("local context API", () => {
     expect(update?.status).toBe(400);
     expect(await update?.json()).toEqual({
       error: "route[0].authorization_env must be a non-empty string",
+    });
+    expect(sources.currentRoutes()).toEqual([]);
+  });
+
+  it("rejects a tool policy action before saving a route", async () => {
+    const sources = stubSources({});
+    const api = createLocalApi({
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+    });
+
+    const update = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/model-routes", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: 1,
+          routes: [{ ...routeConfigs[0], tool_policy: { web_search: "broker" } }],
+        }),
+      }),
+    );
+
+    expect(update?.status).toBe(400);
+    expect(await update?.json()).toEqual({
+      error:
+        'route[0].tool_policy.web_search action "broker" is not implemented for responses routes',
     });
     expect(sources.currentRoutes()).toEqual([]);
   });

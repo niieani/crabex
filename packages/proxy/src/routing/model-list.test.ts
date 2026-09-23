@@ -50,6 +50,57 @@ describe("transformModels", () => {
     ]);
   });
 
+  it("gates Codex search and apply_patch advertising after route adjustments", () => {
+    const restricted = modelRouteFromConfig({
+      authorization_env: "TEST_KEY",
+      model: {
+        description: "Restricted model",
+        display_name: "Restricted model",
+        priority: 1,
+        slug: "restricted",
+        template_slug: "gpt-5.6-terra",
+      },
+      upstream: "https://gateway.example/v1",
+      tool_policy: { tool_search: "reject", custom: "reject" },
+    });
+    const result = transformModels(
+      {
+        models: [
+          {
+            ...template,
+            supports_search_tool: true,
+            apply_patch_tool_type: "freeform",
+            tool_mode: "code_mode_only",
+          },
+        ],
+      },
+      [restricted],
+      [
+        {
+          slug: "restricted",
+          overrides: {
+            supports_search_tool: true,
+            apply_patch_tool_type: "freeform",
+            tool_mode: "code_mode_only",
+          },
+        },
+      ],
+    );
+
+    expect(result.models[0]).toMatchObject({
+      slug: "restricted",
+      supports_search_tool: false,
+      apply_patch_tool_type: null,
+      tool_mode: "direct",
+    });
+    expect(result.models[1]).toMatchObject({
+      slug: "gpt-5.6-terra",
+      supports_search_tool: true,
+      apply_patch_tool_type: "freeform",
+      tool_mode: "code_mode_only",
+    });
+  });
+
   it("replaces one exact instruction span and updates the legacy field", () => {
     const instructions = "You are Codex, an agent based on GPT-5. Use the listed tools.";
     const routed: ModelRoute = {
@@ -190,6 +241,39 @@ describe("transformModels", () => {
 });
 
 describe("transformModelsResponse", () => {
+  it("keeps policy gates after local catalog transformations", async () => {
+    const restricted = modelRouteFromConfig({
+      authorization_env: "TEST_KEY",
+      model: {
+        description: "Restricted model",
+        display_name: "Restricted model",
+        priority: 1,
+        slug: "restricted",
+        template_slug: "gpt-5.6-terra",
+      },
+      upstream: "https://gateway.example/v1",
+      tool_policy: { tool_search: "reject", custom: "reject" },
+    });
+    const response = await transformModelsResponse(Response.json({ models: [template] }), {
+      routes: [restricted],
+      applyTransformations: (models) =>
+        models.map((model) => ({
+          ...model,
+          supports_search_tool: true,
+          apply_patch_tool_type: "freeform",
+          tool_mode: "code_mode_only",
+        })),
+    });
+
+    const body = (await response.json()) as { models: Record<string, unknown>[] };
+    expect(body.models[0]).toMatchObject({
+      slug: "restricted",
+      supports_search_tool: false,
+      apply_patch_tool_type: null,
+      tool_mode: "direct",
+    });
+  });
+
   it("prepends routed models and strips stale entity headers", async () => {
     const upstream = new Response(JSON.stringify({ models: [template] }), {
       status: 200,

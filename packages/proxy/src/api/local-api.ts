@@ -11,7 +11,8 @@ import {
 } from "../config/config-bundle-store.ts";
 import type { ModelRouteStore } from "../config/model-route-store.ts";
 import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
-import { parseModelRouteSet } from "../routing/model-routes.ts";
+import { parseModelRouteSet, type ModelRouteSetData } from "../routing/model-routes.ts";
+import { effectiveToolPolicy } from "../routing/tool-policy.ts";
 import { modelsFixture } from "../routing/models-fixture.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
@@ -134,12 +135,12 @@ export function createLocalApi(options: {
           return json(set);
         }
         if (url.pathname === `${API_PREFIX}/model-routes` && request.method === "GET") {
-          return json({ version: 1, ...options.modelRoutes.get() });
+          return json(modelRoutesResponse(options.modelRoutes.get()));
         }
         if (url.pathname === `${API_PREFIX}/model-routes` && request.method === "PUT") {
           const set = parseModelRouteSet(await request.json());
           await options.modelRoutes.replace(set);
-          return json({ version: 1, ...set });
+          return json(modelRoutesResponse(options.modelRoutes.get()));
         }
         if (url.pathname === `${API_PREFIX}/model-routes/env-status` && request.method === "GET") {
           const names = [
@@ -178,6 +179,17 @@ export function createLocalApi(options: {
         return json({ error: errorMessage(error) }, 400);
       }
     },
+  };
+}
+
+function modelRoutesResponse(set: ModelRouteSetData): Record<string, unknown> {
+  return {
+    version: 1,
+    ...set,
+    routes: set.routes.map((route) => ({
+      ...route,
+      effective_tool_policy: effectiveToolPolicy(route),
+    })),
   };
 }
 

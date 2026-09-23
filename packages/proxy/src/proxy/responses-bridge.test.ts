@@ -57,7 +57,7 @@ describe("httpPayloadFor", () => {
     expect(httpPayloadFor(payload, { forwardAccessPrograms: true })).toEqual(payload);
   });
 
-  it("opts into stored responses and forwards only allowed tool types", () => {
+  it("opts into stored responses without silently changing tool declarations", () => {
     const payload = {
       model: "kimi-k3",
       input: [],
@@ -70,14 +70,13 @@ describe("httpPayloadFor", () => {
     };
     expect(
       httpPayloadFor(payload, {
-        allowedToolTypes: ["function"],
         storeResponses: true,
       }),
     ).toEqual({
       model: "kimi-k3",
       input: [],
       store: true,
-      tools: [{ type: "function", name: "exec_command" }],
+      tools: payload.tools,
     });
     expect(payload.store).toBe(false);
     expect(payload.tools).toHaveLength(3);

@@ -12,7 +12,7 @@ import type {
   UpstreamCacheStore,
 } from "../config/upstream-cache.ts";
 import type { Transformation } from "../context/transformation.ts";
-import type { ModelAdjustment, ModelRoute } from "../routing/model-routes.ts";
+import type { ModelAdjustment, ModelRoute, ModelRouteConfig } from "../routing/model-routes.ts";
 import { modelRouteFromConfig } from "../routing/model-routes.ts";
 import type { ModelDefinition } from "../routing/model-list.ts";
 import { LiveRequestStore } from "../requests/live-request-store.ts";
@@ -476,7 +476,6 @@ describe("model routing and config bundle override", () => {
           {
             ...testRoute(routed.origin),
             bridgeResponseState: "stored",
-            allowedToolTypes: ["function"],
           },
         ],
       });
@@ -488,7 +487,7 @@ describe("model routing and config bundle override", () => {
           model: "kimi-k3",
           input: "hello",
           store: false,
-          tools: [{ type: "function", name: "exec_command" }, { type: "web_search" }],
+          tools: [{ type: "function", name: "exec_command" }],
         }),
       });
 
@@ -1008,6 +1007,186 @@ describe("model routing and config bundle override", () => {
     }
   });
 
+  it("rejects a disallowed tool on a routed HTTP request before upstream delivery", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let deliveries = 0;
+      const gateway = await startHttpServer((_request, response) => {
+        deliveries += 1;
+        response.end("unexpected");
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        allowed_tool_types: ["function"],
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: [],
+          tools: [{ type: "web_search" }],
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain(
+        'model route "kimi-k3" rejects tool type "web_search"',
+      );
+      const choice = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "kimi-k3", input: [], tool_choice: { type: "web_search" } }),
+      });
+      expect(choice.status).toBe(400);
+      expect(await choice.text()).toContain('model route "kimi-k3" rejects tool type "web_search"');
+      expect(deliveries).toBe(0);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("applies the policy to tools nested inside a namespace", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let deliveries = 0;
+      const gateway = await startHttpServer((_request, response) => {
+        deliveries += 1;
+        response.end("unexpected");
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        tool_policy: { function: "reject" },
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: [],
+          tools: [
+            { type: "namespace", name: "tools", tools: [{ type: "function", name: "read" }] },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain('model route "kimi-k3" rejects tool type "function"');
+      expect(deliveries).toBe(0);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("rejects a disallowed tool on the WebSocket-to-HTTP bridge", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let deliveries = 0;
+      const gateway = await startHttpServer((_request, response) => {
+        deliveries += 1;
+        response.end("unexpected");
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        tool_policy: { web_search: "reject" },
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "kimi-k3",
+          input: [],
+          tools: [{ type: "web_search" }],
+        }),
+      );
+
+      expect(JSON.parse(await nextMessage(client))).toMatchObject({
+        type: "error",
+        status: 400,
+        error: { message: 'model route "kimi-k3" rejects tool type "web_search"' },
+      });
+      expect(deliveries).toBe(0);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("rejects disallowed tools before and after a native routed WebSocket connects", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let connections = 0;
+      let deliveries = 0;
+      const gateway = await startWebSocketServer((socket) => {
+        connections += 1;
+        socket.on("message", () => {
+          deliveries += 1;
+          socket.send("routed");
+        });
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        tool_policy: { custom: "reject" },
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      const blocked = JSON.stringify({
+        type: "response.create",
+        model: "kimi-k3",
+        input: [],
+        tools: [{ type: "custom", name: "apply_patch" }],
+      });
+      client.send(blocked);
+      expect(JSON.parse(await nextMessage(client))).toMatchObject({
+        type: "error",
+        status: 400,
+        error: { message: 'model route "kimi-k3" rejects tool type "custom"' },
+      });
+      expect(connections).toBe(0);
+
+      client.send(JSON.stringify({ type: "response.create", model: "kimi-k3", input: [] }));
+      expect(await nextMessage(client)).toBe("routed");
+      client.send(blocked);
+      expect(JSON.parse(await nextMessage(client))).toMatchObject({ type: "error", status: 400 });
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "other-model",
+          input: [],
+          tools: [{ type: "custom", name: "apply_patch" }],
+        }),
+      );
+      expect(JSON.parse(await nextMessage(client))).toMatchObject({ type: "error", status: 400 });
+      expect(connections).toBe(1);
+      expect(deliveries).toBe(1);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
   it("bridges a WebSocket response.create to an HTTP-only route and streams SSE back", async () => {
     process.env.OPENAI_API_KEY = "test-gateway-key";
     try {
@@ -1169,7 +1348,7 @@ describe("model routing and config bundle override", () => {
           model: "kimi-k3",
           input: [{ role: "user", content: "Add 19 and 23" }],
           store: false,
-          tools: [{ type: "function", name: "sum_numbers" }, { type: "web_search" }],
+          tools: [{ type: "function", name: "sum_numbers" }],
         }),
       );
       const firstCreated = JSON.parse(await nextMessage(client)) as {
@@ -1656,19 +1835,21 @@ class MemoryUpstreamCache implements UpstreamCacheStore {
 }
 
 function testRoute(upstreamOrigin: string): ModelRoute {
+  return modelRouteFromConfig(routeConfigForTest(upstreamOrigin));
+}
+
+function routeConfigForTest(upstreamOrigin: string): ModelRouteConfig {
   return {
-    ...modelRouteFromConfig({
-      authorization_env: "ACT_TEST_ROUTE_KEY",
-      model: {
-        description: "Kimi K3 via CLIProxyAPI",
-        display_name: "Kimi K3",
-        priority: 1,
-        slug: "kimi-k3",
-        template_slug: "gpt-5.6-terra",
-      },
-      upstream: `${upstreamOrigin}/v1`,
-      upstream_model: "moonshot-kimi-k3",
-    }),
+    authorization_env: "ACT_TEST_ROUTE_KEY",
+    model: {
+      description: "Kimi K3 via CLIProxyAPI",
+      display_name: "Kimi K3",
+      priority: 1,
+      slug: "kimi-k3",
+      template_slug: "gpt-5.6-terra",
+    },
+    upstream: `${upstreamOrigin}/v1`,
+    upstream_model: "moonshot-kimi-k3",
   };
 }
 

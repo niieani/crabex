@@ -13,6 +13,7 @@ export async function openModelRouteStore(filePath: string): Promise<ModelRouteS
   let initial: ModelRouteSetData = { routes: [], adjustments: [], fixture_pins: [] };
   try {
     initial = parseModelRouteSet(JSON.parse(await readFile(filePath, "utf8")));
+    warnLegacyToolTypes(initial);
   } catch (error) {
     if (!isMissingFile(error)) throw error;
   }
@@ -41,6 +42,17 @@ class FileModelRouteStore implements ModelRouteStore {
     });
     await rename(temporaryPath, this.#filePath);
     this.#set = set;
+    warnLegacyToolTypes(set);
+  }
+}
+
+function warnLegacyToolTypes(set: ModelRouteSetData): void {
+  for (const route of set.routes) {
+    if (route.allowed_tool_types !== undefined) {
+      console.warn(
+        `model route "${route.model.slug}": allowed_tool_types is deprecated; use tool_policy`,
+      );
+    }
   }
 }
 

@@ -120,14 +120,17 @@ export function transformModels(
   });
 
   const combined = prependModels({ ...response, models: upstreamModels }, advertisedModels);
-  if (adjustments.length === 0) return combined;
+  const routeBySlug = new Map(modelRoutes.map((route) => [route.model.slug, route]));
   return {
     ...combined,
     models: combined.models.map((model) => {
       const adjustment = adjustments.find((item) => item.slug === model.slug);
-      return adjustment === undefined
-        ? model
-        : (deepMerge(model, adjustment.overrides) as ModelDefinition);
+      const adjusted =
+        adjustment === undefined
+          ? model
+          : (deepMerge(model, adjustment.overrides) as ModelDefinition);
+      const route = routeBySlug.get(model.slug);
+      return route === undefined ? adjusted : gateModelCapabilities(adjusted, route);
     }),
   };
 }
@@ -202,6 +205,19 @@ export async function transformModelsResponse(
   } else if (!hasListTransforms) {
     return passthrough();
   }
+  if (routes.length > 0) {
+    const models = modelsArrayOf(transformed);
+    if (models !== undefined) {
+      const routeBySlug = new Map(routes.map((route) => [route.model.slug, route]));
+      transformed = {
+        ...(transformed as Record<string, unknown>),
+        models: models.map((model) => {
+          const route = routeBySlug.get(model.slug);
+          return route === undefined ? model : gateModelCapabilities(model, route);
+        }),
+      };
+    }
+  }
   const headers = new Headers(response.headers);
   headers.delete("content-encoding");
   headers.delete("content-length");
@@ -211,6 +227,16 @@ export async function transformModelsResponse(
     status: response.status,
     statusText: response.statusText,
   });
+}
+
+function gateModelCapabilities(model: ModelDefinition, route: ModelRoute): ModelDefinition {
+  return {
+    ...model,
+    ...(route.toolPolicy.tool_search === "reject" ? { supports_search_tool: false } : {}),
+    ...(route.toolPolicy.custom === "reject"
+      ? { apply_patch_tool_type: null, tool_mode: "direct" }
+      : {}),
+  };
 }
 
 function modelsArrayOf(body: unknown): ModelDefinition[] | undefined {
