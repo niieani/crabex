@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { modelStringFields } from "../context/model-parts.ts";
+import fixture from "./models-fixture.json";
 import { modelsFixture } from "./models-fixture.ts";
 
 describe("modelsFixture", () => {
@@ -8,8 +9,14 @@ describe("modelsFixture", () => {
     const slugs = modelsFixture().map((model) => model.slug);
 
     expect(slugs).toContain("gpt-6-astra");
+    expect(slugs).toContain("gpt-6-sol");
+    expect(slugs).toContain("gpt-6-luna");
     expect(slugs).toContain("gpt-5.6-terra");
     expect(slugs).toHaveLength(9);
+  });
+
+  it("does not bundle the local cache account identity", () => {
+    expect(fixture).not.toHaveProperty("identity");
   });
 
   it("exposes the astra model_messages strings as catalog fields", () => {

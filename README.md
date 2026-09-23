@@ -181,6 +181,8 @@ vp check
 vp run build
 ```
 
+To refresh the bundled Codex model catalog, follow the [model catalog playbook](docs/refresh-model-catalog.md).
+
 ## Flex routes
 
 Advertise a `-flex` slug and fail over to the regular model when flex is
