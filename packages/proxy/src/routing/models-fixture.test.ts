@@ -9,7 +9,7 @@ describe("modelsFixture", () => {
 
     expect(slugs).toContain("gpt-6-astra");
     expect(slugs).toContain("gpt-5.6-terra");
-    expect(slugs).toHaveLength(8);
+    expect(slugs).toHaveLength(9);
   });
 
   it("exposes the astra model_messages strings as catalog fields", () => {
