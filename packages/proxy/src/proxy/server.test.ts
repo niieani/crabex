@@ -1626,6 +1626,389 @@ describe("model routing and config bundle override", () => {
     }
   });
 
+  it("translates discovery and retains loaded tools across WebSocket and HTTP stored turns", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const seen: Record<string, unknown>[] = [];
+      const searchCall = {
+        type: "function_call",
+        id: "fc_search",
+        call_id: "search_1",
+        name: "tool_search",
+        arguments: '{"query":"inventory lookup"}',
+        status: "completed",
+      };
+      const lookupCall = {
+        type: "function_call",
+        id: "fc_lookup",
+        call_id: "lookup_1",
+        namespace: "inventory",
+        name: "lookup_item",
+        arguments: '{"sku":"A"}',
+        status: "completed",
+      };
+      const gateway = await startHttpServer(async (request, response) => {
+        const payload = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+        seen.push(payload);
+        const index = seen.length;
+        const output = index === 1 ? [searchCall] : index === 2 ? [lookupCall] : [];
+        response.setHeader("content-type", "text/event-stream");
+        response.write(
+          `data: ${JSON.stringify({ type: "response.created", response: { id: `resp_${index}` } })}\n\n`,
+        );
+        if (output[0])
+          response.write(
+            `data: ${JSON.stringify({ type: "response.output_item.done", item: output[0] })}\n\n`,
+          );
+        response.end(
+          `data: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${index}`, output } })}\n\n`,
+        );
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        bridge_response_state: "stored",
+        tool_policy: { tool_search: "translate", custom: "omit", other: "omit" },
+      });
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const identity = {
+        authorization: "Bearer oauth-secret",
+        "chatgpt-account-id": "account-1",
+        "session-id": "session-1",
+        "thread-id": "thread-1",
+      };
+      const search = {
+        type: "tool_search",
+        execution: "client",
+        description: "Find deferred tools",
+        parameters: { type: "object", properties: { query: { type: "string" } } },
+      };
+      const lookup = {
+        type: "namespace",
+        name: "inventory",
+        tools: [
+          {
+            type: "function",
+            name: "lookup_item",
+            description: "Look up a SKU",
+            defer_loading: true,
+            parameters: { type: "object", properties: { sku: { type: "string" } } },
+          },
+        ],
+      };
+      const user = message("user", "Find an inventory lookup tool and look up A");
+      const visibleSearchCall = {
+        type: "tool_search_call",
+        id: "fc_search",
+        call_id: "search_1",
+        execution: "client",
+        arguments: { query: "inventory lookup" },
+      };
+      const discovery = {
+        type: "tool_search_output",
+        call_id: "search_1",
+        status: "completed",
+        execution: "client",
+        tools: [lookup],
+      };
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: identity },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      const received: Record<string, unknown>[] = [];
+      client.on("message", (raw) => received.push(JSON.parse(rawDataText(raw))));
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "kimi-k3",
+          input: [user],
+          tools: [search],
+          tool_choice: { type: "tool_search" },
+        }),
+      );
+      await eventually(() =>
+        expect(received.some((event) => event.type === "response.completed")).toBe(true),
+      );
+      expect(seen[0]).toMatchObject({
+        tools: [{ type: "function", name: "tool_search" }],
+        tool_choice: { type: "function", name: "tool_search" },
+      });
+      expect(
+        received.find((event) => event.type === "response.output_item.done")?.item,
+      ).toMatchObject(visibleSearchCall);
+      expect(received.find((event) => event.type === "response.completed")).toMatchObject({
+        response: { output: [visibleSearchCall] },
+      });
+
+      const second = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { ...identity, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: [user, visibleSearchCall, discovery],
+          tools: [search],
+          stream: true,
+        }),
+      });
+      expect(second.status).toBe(200);
+      await second.text();
+      expect(seen[1]).toMatchObject({
+        previous_response_id: "resp_1",
+        input: [
+          {
+            type: "function_call_output",
+            call_id: "search_1",
+            output: expect.stringContaining("inventory.lookup_item"),
+          },
+        ],
+        tools: [
+          { type: "function", name: "tool_search" },
+          { type: "namespace", name: "inventory", tools: [{ name: "lookup_item" }] },
+        ],
+      });
+      expect(JSON.stringify(seen[1]?.tools)).not.toContain("defer_loading");
+
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "kimi-k3",
+          input: [
+            user,
+            visibleSearchCall,
+            discovery,
+            lookupCall,
+            { type: "function_call_output", call_id: "lookup_1", output: "found" },
+          ],
+          tools: [search],
+        }),
+      );
+      await eventually(() =>
+        expect(received.filter((event) => event.type === "response.completed")).toHaveLength(2),
+      );
+      expect(seen[2]).toMatchObject({
+        previous_response_id: "resp_2",
+        input: [{ type: "function_call_output", call_id: "lookup_1", output: "found" }],
+        tools: [
+          { type: "function", name: "tool_search" },
+          { type: "namespace", name: "inventory", tools: [{ name: "lookup_item" }] },
+        ],
+      });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("reports missing loaded-tool state for delta-only continuations on both transports", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let deliveries = 0;
+      const gateway = await startHttpServer((_request, response) => {
+        deliveries += 1;
+        response.end("unexpected");
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        bridge_response_state: "stored",
+        tool_policy: { tool_search: "translate" },
+      });
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const payload = {
+        model: "kimi-k3",
+        previous_response_id: "resp_old",
+        input: [{ type: "function_call_output", call_id: "lookup_1", output: "found" }],
+        tools: [
+          {
+            type: "tool_search",
+            execution: "client",
+            description: "Find tools",
+            parameters: { type: "object" },
+          },
+        ],
+      };
+      const http = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      expect(http.status).toBe(400);
+      expect(await http.text()).toContain("lost loaded tools for a delta-only continuation");
+
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        {
+          headers: {
+            authorization: "Bearer oauth-secret",
+            "session-id": "new",
+            "thread-id": "new",
+          },
+        },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      client.send(JSON.stringify({ type: "response.create", ...payload }));
+      expect(JSON.parse(await nextMessage(client))).toMatchObject({
+        type: "error",
+        status: 400,
+        error: {
+          message: expect.stringContaining("lost loaded tools for a delta-only continuation"),
+        },
+      });
+      expect(deliveries).toBe(0);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("injects discovered tools into Anthropic replay and restores namespaced calls", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const seen: Record<string, unknown>[] = [];
+      const gateway = await startHttpServer(async (request, response) => {
+        const payload = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+        seen.push(payload);
+        const name =
+          seen.length === 1
+            ? "tool_search"
+            : (payload.tools as { name: string }[]).find((tool) => tool.name !== "tool_search")!
+                .name;
+        const id = seen.length === 1 ? "search_1" : "lookup_1";
+        const input = seen.length === 1 ? { query: "inventory lookup" } : { sku: "A" };
+        response.setHeader("content-type", "text/event-stream");
+        for (const event of [
+          { type: "message_start", message: { usage: {} } },
+          {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "tool_use", id, name, input: {} },
+          },
+          {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "input_json_delta", partial_json: JSON.stringify(input) },
+          },
+          { type: "content_block_stop", index: 0 },
+          { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} },
+          { type: "message_stop" },
+        ])
+          response.write(`data: ${JSON.stringify(event)}\n\n`);
+        response.end();
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        api: "anthropic-messages",
+        tool_policy: { tool_search: "translate" },
+      });
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const search = {
+        type: "tool_search",
+        execution: "client",
+        description: "Find deferred tools",
+        parameters: { type: "object", properties: { query: { type: "string" } } },
+      };
+      const discovered = {
+        type: "namespace",
+        name: "inventory",
+        tools: [
+          {
+            type: "function",
+            name: "lookup_item",
+            defer_loading: true,
+            description: "Look up a SKU",
+            parameters: { type: "object" },
+          },
+        ],
+      };
+      const first = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          stream: true,
+          input: [message("user", "Find a tool")],
+          tools: [search],
+        }),
+      });
+      expect(first.status).toBe(200);
+      const firstEvents = (await Array.fromAsync(parseSseEvents(first.body!))).map((event) =>
+        JSON.parse(event),
+      );
+      const firstDone = firstEvents.find(
+        (event) => event.type === "response.output_item.done",
+      )?.item;
+      expect(firstDone).toMatchObject({
+        type: "tool_search_call",
+        execution: "client",
+        arguments: { query: "inventory lookup" },
+      });
+      const second = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          stream: true,
+          input: [
+            message("user", "Find a tool"),
+            firstDone,
+            {
+              type: "tool_search_output",
+              call_id: "search_1",
+              execution: "client",
+              status: "completed",
+              tools: [discovered],
+            },
+          ],
+          tools: [search],
+        }),
+      });
+      expect(second.status).toBe(200);
+      const secondEvents = (await Array.fromAsync(parseSseEvents(second.body!))).map((event) =>
+        JSON.parse(event),
+      );
+      expect(
+        secondEvents.find((event) => event.type === "response.output_item.done")?.item,
+      ).toMatchObject({
+        type: "function_call",
+        namespace: "inventory",
+        name: "lookup_item",
+        arguments: '{"sku":"A"}',
+      });
+      expect(seen[0]?.tools).toMatchObject([{ name: "tool_search" }]);
+      expect(seen[1]?.tools).toMatchObject([
+        { name: "tool_search" },
+        { name: expect.stringMatching(/^tool_/) },
+      ]);
+      expect(seen[1]?.messages).toMatchObject([
+        { role: "user" },
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", name: "tool_search", input: { query: "inventory lookup" } },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              content: [{ text: expect.stringContaining("inventory.lookup_item") }],
+            },
+          ],
+        },
+      ]);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
   it("converts a matching tool-call replay into a stored upstream continuation", async () => {
     process.env.OPENAI_API_KEY = "test-gateway-key";
     try {

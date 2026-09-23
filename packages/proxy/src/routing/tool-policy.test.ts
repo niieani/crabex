@@ -27,6 +27,27 @@ describe("applyRouteToolPolicy", () => {
     ).toThrow("not implemented");
   });
 
+  it("accepts tool search translation on HTTP Responses and Anthropic routes", () => {
+    expect(
+      parseModelRouteSet([
+        { ...base, transport: "http", tool_policy: { tool_search: "translate" } },
+      ]).routes[0]?.tool_policy,
+    ).toEqual({ tool_search: "translate" });
+    expect(() =>
+      parseModelRouteSet([{ ...base, transport: "ws", tool_policy: { tool_search: "translate" } }]),
+    ).toThrow('tool_policy.tool_search action "translate" requires http transport');
+    expect(
+      parseModelRouteSet([
+        {
+          ...base,
+          api: "anthropic-messages",
+          transport: "http",
+          tool_policy: { tool_search: "translate" },
+        },
+      ]).routes[0]?.tool_policy,
+    ).toEqual({ tool_search: "translate" });
+  });
+
   it("preserves legacy outbound tools and removes a typed choice for an omitted declaration", () => {
     const route = modelRouteFromConfig({ ...base, allowed_tool_types: ["function"] });
     const payload = {

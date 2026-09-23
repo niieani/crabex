@@ -8,6 +8,7 @@ import {
   type MappedTool,
   type ToolCodec,
 } from "../tool-codec.ts";
+import { toolSearchResultText } from "../tool-search.ts";
 import { AnthropicEnvelope, AnthropicRequestError, record, text, type Json } from "./envelope.ts";
 
 export interface Tool extends MappedTool {
@@ -36,10 +37,18 @@ function codecFailure(error: unknown): never {
   throw error;
 }
 
-function prepareTools(input: unknown): { codec: ToolCodec; tools: Tool[] } {
+function prepareTools(
+  input: unknown,
+  translateSearch: boolean,
+): { codec: ToolCodec; tools: Tool[] } {
   let codec: ToolCodec;
   try {
-    codec = createToolCodec(input, { namespace: "flatten", custom: "wrap", union: "wrap" });
+    codec = createToolCodec(input, {
+      namespace: "flatten",
+      custom: "wrap",
+      union: "wrap",
+      ...(translateSearch ? { toolSearch: "function" } : {}),
+    });
   } catch (error) {
     codecFailure(error);
   }
@@ -111,7 +120,10 @@ export function prepareAnthropic(
   if (!Array.isArray(input)) fail("Anthropic routes require input messages");
   const items = input as unknown[];
   compact ||= items.some((item) => record(item) && item.type === "compaction_trigger");
-  const { codec, tools } = prepareTools(compact ? [] : payload.tools);
+  const { codec, tools } = prepareTools(
+    compact ? [] : payload.tools,
+    route.toolPolicy.tool_search === "translate",
+  );
   const system: Json[] =
     typeof payload.instructions === "string" && payload.instructions
       ? [{ type: "text", text: payload.instructions }]
@@ -151,7 +163,8 @@ export function prepareAnthropic(
         break;
       }
       case "function_call":
-      case "custom_tool_call": {
+      case "custom_tool_call":
+      case "tool_search_call": {
         let call;
         try {
           call = codec.encode(item);
@@ -176,6 +189,15 @@ export function prepareAnthropic(
             tool_use_id: callId(item.call_id),
             content: content(item.output ?? ""),
             ...(item.is_error === true ? { is_error: true } : {}),
+          },
+        ]);
+        break;
+      case "tool_search_output":
+        push("user", [
+          {
+            type: "tool_result",
+            tool_use_id: callId(item.call_id),
+            content: [{ type: "text", text: toolSearchResultText(item) }],
           },
         ]);
         break;
@@ -285,7 +307,8 @@ export function prepareAnthropic(
     let type = choice === "none" ? "none" : choice === "required" ? "any" : "auto";
     let name: string | undefined;
     if (record(choice)) {
-      if (choice.type !== "function" && choice.type !== "custom") fail("Unsupported tool_choice");
+      if (!["function", "custom", "tool_search"].includes(String(choice.type)))
+        fail("Unsupported tool_choice");
       const chosen = codec.resolve(choice);
       if (!tools.some((t) => t.wire === chosen.wire)) fail("tool_choice names an unknown tool");
       name = chosen.wire;

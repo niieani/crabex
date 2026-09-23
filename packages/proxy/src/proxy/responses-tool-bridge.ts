@@ -1,6 +1,7 @@
 import type { ModelRoute } from "../routing/model-routes.ts";
 import { ToolPolicyError } from "../routing/tool-policy.ts";
 import { createToolCodec, type MappedTool, type ToolCodec } from "./tool-codec.ts";
+import { toolSearchResultText } from "./tool-search.ts";
 import { parseSseEvents } from "./responses-bridge.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -14,20 +15,27 @@ type CallState = {
 const record = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-/** Request-local translation for an HTTP Responses upstream with custom tool wrapping. */
+/** Request-local translation for an HTTP Responses upstream. */
 export class ResponsesToolBridge {
   private readonly codec: ToolCodec;
   private readonly routeSlug: string;
   private readonly callsById = new Map<string, CallState>();
   private readonly callsByIndex = new Map<number, CallState>();
   private sequence = 0;
+  private readonly modes: { custom: boolean; search: boolean };
 
-  constructor(routeSlug: string, declarations: unknown) {
+  constructor(
+    routeSlug: string,
+    declarations: unknown,
+    modes: { custom: boolean; search: boolean },
+  ) {
     this.routeSlug = routeSlug;
+    this.modes = modes;
     try {
       this.codec = createToolCodec(declarations, {
         namespace: "preserve",
-        custom: "wrap",
+        custom: modes.custom ? "wrap" : "preserve",
+        toolSearch: modes.search ? "function" : "pass",
         union: "preserve",
         functionSchema: "preserve",
         callId: "preserve",
@@ -45,9 +53,12 @@ export class ResponsesToolBridge {
       if (Array.isArray(payload.input)) {
         translated.input = payload.input.map((item) => {
           if (!record(item)) return item;
-          if (item.type === "custom_tool_call") {
+          if (
+            (item.type === "custom_tool_call" && this.modes.custom) ||
+            (item.type === "tool_search_call" && this.modes.search)
+          ) {
             const call = this.codec.encode(item);
-            const { input: _input, ...rest } = item;
+            const { input: _input, execution: _execution, ...rest } = item;
             return {
               ...rest,
               type: "function_call",
@@ -57,7 +68,7 @@ export class ResponsesToolBridge {
               arguments: JSON.stringify(call.input),
             };
           }
-          if (item.type === "custom_tool_call_output") {
+          if (item.type === "custom_tool_call_output" && this.modes.custom) {
             if (typeof item.call_id !== "string" || !item.call_id)
               throw new Error("Tool call is missing its call_id");
             return {
@@ -66,10 +77,23 @@ export class ResponsesToolBridge {
               call_id: item.call_id,
             };
           }
+          if (item.type === "tool_search_output" && this.modes.search) {
+            if (typeof item.call_id !== "string" || !item.call_id)
+              throw new Error("Tool search output is missing its call_id");
+            return {
+              type: "function_call_output",
+              call_id: item.call_id,
+              output: toolSearchResultText(item),
+            };
+          }
           return item;
         });
       }
-      if (record(payload.tool_choice) && payload.tool_choice.type === "custom") {
+      if (
+        record(payload.tool_choice) &&
+        ((payload.tool_choice.type === "custom" && this.modes.custom) ||
+          (payload.tool_choice.type === "tool_search" && this.modes.search))
+      ) {
         const chosen = this.codec.resolve(payload.tool_choice);
         translated.tool_choice = {
           ...payload.tool_choice,
@@ -104,14 +128,14 @@ export class ResponsesToolBridge {
   private translateEvent(event: JsonObject): JsonObject[] {
     if (event.type === "response.output_item.added" && record(event.item)) {
       const item = event.item;
-      const tool = this.customTool(item);
+      const tool = this.translatedTool(item);
       if (!tool) return [event];
-      if (typeof item.call_id !== "string") throw new Error("Custom tool call lacks call_id");
+      if (typeof item.call_id !== "string") throw new Error("Translated tool call lacks call_id");
       const state: CallState = { tool, callId: item.call_id, arguments: "", inputEmitted: false };
       if (typeof item.id === "string") this.callsById.set(item.id, state);
       if (typeof event.output_index === "number") this.callsByIndex.set(event.output_index, state);
       const decoded = this.codec.decode(this.wireCall(state));
-      const { arguments: _arguments, ...rest } = item;
+      const { arguments: _arguments, name: _name, namespace: _namespace, ...rest } = item;
       return [{ ...event, item: { ...rest, ...decoded } }];
     }
     if (event.type === "response.function_call_arguments.delta") {
@@ -123,26 +147,31 @@ export class ResponsesToolBridge {
     if (event.type === "response.function_call_arguments.done") {
       const state = this.callState(event);
       if (!state) return [event];
+      if (state.tool.search) {
+        state.arguments = this.argumentsText(event.arguments, state.arguments);
+        return [];
+      }
       return this.inputEvents(event, state, this.argumentsText(event.arguments, state.arguments));
     }
     if (event.type === "response.output_item.done" && record(event.item)) {
-      const tool = this.customTool(event.item);
+      const tool = this.translatedTool(event.item);
       if (!tool) return [event];
       const state = this.callState(event);
       const argumentsText = this.argumentsText(event.item.arguments, state?.arguments);
       const item = this.completeItem(event.item, argumentsText);
-      const inputEvents = state?.inputEmitted
-        ? []
-        : this.inputEvents(
-            event,
-            state ?? {
-              tool,
-              callId: String(event.item.call_id),
-              arguments: argumentsText,
-              inputEmitted: false,
-            },
-            argumentsText,
-          );
+      const inputEvents =
+        tool.search || state?.inputEmitted
+          ? []
+          : this.inputEvents(
+              event,
+              state ?? {
+                tool,
+                callId: String(event.item.call_id),
+                arguments: argumentsText,
+                inputEmitted: false,
+              },
+              argumentsText,
+            );
       return [...inputEvents, { ...event, item }];
     }
     if (event.type === "response.completed" && record(event.response)) {
@@ -151,10 +180,12 @@ export class ResponsesToolBridge {
     return [event];
   }
 
-  private customTool(item: JsonObject): MappedTool | undefined {
+  private translatedTool(item: JsonObject): MappedTool | undefined {
     if (item.type !== "function_call") return undefined;
     const tool = this.codec.byWire(item.name, item.namespace);
-    return tool?.custom ? tool : undefined;
+    return tool && ((this.modes.custom && tool.custom) || (this.modes.search && tool.search))
+      ? tool
+      : undefined;
   }
 
   private callState(event: JsonObject): CallState | undefined {
@@ -169,7 +200,7 @@ export class ResponsesToolBridge {
     if (typeof value === "string" && value.length > 0) return value;
     if (fallback) return fallback;
     if (typeof value === "string") return value;
-    throw new Error("Custom tool call lacks completed arguments");
+    throw new Error("Translated tool call lacks completed arguments");
   }
 
   private wireCall(state: CallState, input?: unknown) {
@@ -205,9 +236,9 @@ export class ResponsesToolBridge {
 
   private completeItem(item: unknown, argumentsText?: string): unknown {
     if (!record(item)) return item;
-    const tool = this.customTool(item);
+    const tool = this.translatedTool(item);
     if (!tool) return item;
-    if (typeof item.call_id !== "string") throw new Error("Custom tool call lacks call_id");
+    if (typeof item.call_id !== "string") throw new Error("Translated tool call lacks call_id");
     const parsed: unknown = JSON.parse(argumentsText ?? this.argumentsText(item.arguments));
     const decoded = this.codec.decode(
       this.wireCall(
@@ -220,7 +251,7 @@ export class ResponsesToolBridge {
         parsed,
       ),
     );
-    const { arguments: _arguments, ...rest } = item;
+    const { arguments: _arguments, name: _name, namespace: _namespace, ...rest } = item;
     return { ...rest, ...decoded };
   }
 
@@ -240,17 +271,22 @@ export class ResponsesToolBridge {
   private fail(error: unknown): never {
     const message = error instanceof Error ? error.message : String(error);
     throw new ToolPolicyError(
-      `model route "${this.routeSlug}" custom tool translation failed: ${message}`,
+      `model route "${this.routeSlug}" tool translation failed: ${message}`,
     );
   }
 }
 
 export function createResponsesToolBridge(
-  route: Pick<ModelRoute, "model" | "toolPolicy">,
+  route: Pick<ModelRoute, "api" | "model" | "toolPolicy">,
   declarations: unknown,
 ): ResponsesToolBridge | undefined {
-  return route.toolPolicy.custom === "translate"
-    ? new ResponsesToolBridge(route.model.slug, declarations)
+  if (route.api === "anthropic-messages") return undefined;
+  const modes = {
+    custom: route.toolPolicy.custom === "translate",
+    search: route.toolPolicy.tool_search === "translate",
+  };
+  return modes.custom || modes.search
+    ? new ResponsesToolBridge(route.model.slug, declarations, modes)
     : undefined;
 }
 

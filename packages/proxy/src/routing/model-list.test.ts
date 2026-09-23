@@ -45,6 +45,7 @@ describe("transformModels", () => {
         multi_agent_version: null,
         priority: 1,
         slug: "kimi-k3",
+        supports_search_tool: false,
       },
       template,
     ]);
@@ -154,6 +155,30 @@ describe("transformModels", () => {
       apply_patch_tool_type: "freeform",
       tool_mode: "direct",
     });
+  });
+
+  it("advertises tool discovery only for translated search routes", () => {
+    const config = {
+      authorization_env: "TEST_KEY",
+      transport: "http" as const,
+      model: {
+        description: "Tool discovery route",
+        display_name: "Discovery",
+        priority: 1,
+        slug: "discovery",
+        template_slug: "gpt-5.6-terra",
+        overrides: { supports_search_tool: false },
+      },
+      upstream: "https://gateway.example/v1",
+    };
+    const translated = modelRouteFromConfig({
+      ...config,
+      tool_policy: { tool_search: "translate" },
+    });
+    const passed = modelRouteFromConfig({ ...config, tool_policy: { tool_search: "pass" } });
+    const upstream = { models: [{ ...template, supports_search_tool: true }] };
+    expect(transformModels(upstream, [translated]).models[0]?.supports_search_tool).toBe(true);
+    expect(transformModels(upstream, [passed]).models[0]?.supports_search_tool).toBe(false);
   });
 
   it("replaces one exact instruction span and updates the legacy field", () => {

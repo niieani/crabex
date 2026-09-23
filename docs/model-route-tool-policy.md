@@ -15,7 +15,7 @@ Set `tool_policy` on a route to override its defaults:
     "namespace": "pass",
     "custom": "translate",
     "web_search": "reject",
-    "tool_search": "reject",
+    "tool_search": "translate",
     "other": "pass"
   },
   "model": {
@@ -39,9 +39,27 @@ upstream as a function with a required `{input: string}` parameter, then restore
 Codex's custom call and result shapes on replay and response streams. Function
 namespaces, union schemas, and structured tool result arrays (including images)
 pass through natively. Translation on an upstream WebSocket route fails
-validation. Other `translate` actions and all `broker` actions are reserved for
-later adapters and fail route validation today.
+validation. `tool_search: "translate"` is also available on HTTP Responses and
+Anthropic Messages routes. Other `translate` actions and all `broker` actions
+are reserved for later adapters and fail route validation today.
 Anthropic routes cannot use `pass` because their upstream wire format differs.
+
+For client tool discovery, Codex must enable namespace tools and have at least
+one deferred MCP or app tool. The proxy presents Codex's `tool_search`
+description and schema as a function to the upstream model. On a search call it
+returns a Codex `tool_search_call` with JSON arguments; Codex executes the
+search and sends `tool_search_output`. The proxy summarizes the result for the
+model and adds the discovered function or namespace declarations to subsequent
+requests. Anthropic receives flattened wire names; Responses routes keep native
+namespaces. Codex's catalog advertises `supports_search_tool: true` only when
+the route translates discovery.
+
+Loaded declarations are scoped to the account, thread, and route, expire after
+30 minutes, and are bounded to 256 tools and 1 MiB of declarations per scope.
+A full history replay replaces the loaded set. An explicit compaction item, or
+a replacement full replay with no discovery outputs, clears it; the model must
+search again. A stored, delta-only continuation with no matching loaded state
+fails visibly instead of calling a discovered tool without its declaration.
 
 For a Fireworks Responses route verified with native web search, set
 `web_search: "pass"`. The proxy forwards Codex's `web_search` declaration,
@@ -66,8 +84,8 @@ logs each omitted route/type pair once and records omitted types on the live
 request and capture routing metadata. Unknown string types follow `other`;
 missing or non-string declaration types are invalid.
 
-Codex's model list advertises `supports_search_tool: false` when a route omits
-or rejects `tool_search`. Omitting or rejecting `custom` also disables the
+Codex's model list advertises `supports_search_tool: false` unless the route
+translates `tool_search`. Omitting or rejecting `custom` also disables the
 catalog's `apply_patch_tool_type` and forces direct tool mode. Responses routes
 with `custom: "translate"` advertise freeform `apply_patch` so Codex can call it.
 Codex has no model-level switch for hosted `web_search` or all

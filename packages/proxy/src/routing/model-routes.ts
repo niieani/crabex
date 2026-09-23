@@ -158,10 +158,16 @@ export function parseModelRouteSet(value: unknown): ModelRouteSetData {
 export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
   const transport = config.transport ?? (config.api === "anthropic-messages" ? "http" : "ws");
   const toolPolicy = effectiveToolPolicy(config);
-  requireCustomTranslationBridge(
+  requireResponsesTranslationBridge(
     toolPolicy.custom,
     transport,
-    "model route",
+    "model route.tool_policy.custom",
+    config.api ?? "responses",
+  );
+  requireResponsesTranslationBridge(
+    toolPolicy.tool_search,
+    transport,
+    "model route.tool_policy.tool_search",
     config.api ?? "responses",
   );
   return {
@@ -350,10 +356,16 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
     api ?? "responses",
     source,
   );
-  requireCustomTranslationBridge(
+  requireResponsesTranslationBridge(
     toolConfiguration.tool_policy?.custom,
     transport ?? (api === "anthropic-messages" ? "http" : "ws"),
     `${source}.tool_policy.custom`,
+    api ?? "responses",
+  );
+  requireResponsesTranslationBridge(
+    toolConfiguration.tool_policy?.tool_search,
+    transport ?? (api === "anthropic-messages" ? "http" : "ws"),
+    `${source}.tool_policy.tool_search`,
     api ?? "responses",
   );
   const forwardAccessPrograms = value.forward_access_programs;
@@ -384,7 +396,7 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   };
 }
 
-function requireCustomTranslationBridge(
+function requireResponsesTranslationBridge(
   action: string | undefined,
   transport: "http" | "ws",
   source: string,

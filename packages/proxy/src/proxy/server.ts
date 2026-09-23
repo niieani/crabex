@@ -44,6 +44,7 @@ import {
   translateResponsesStream,
   type ResponsesToolBridge,
 } from "./responses-tool-bridge.ts";
+import { LoadedToolRegistry } from "./tool-search.ts";
 import {
   completedStoredResponse,
   continuationSessionKey,
@@ -167,6 +168,7 @@ interface SocketData {
   continuationSession?: string;
   storedResponses: StoredResponseRegistry;
   storedResponse?: StoredResponseState;
+  loadedTools: LoadedToolRegistry;
 }
 
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
@@ -204,6 +206,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
   const breakers = options.breakers ?? new TargetBreakers();
   const liveRequests = options.liveRequests ?? new LiveRequestStore();
   const storedResponses = new StoredResponseRegistry();
+  const loadedTools = new LoadedToolRegistry();
   const configBundleSource = options.configBundleSource;
   const upstreamCache = options.upstreamCache;
   let lastBundleObservation = 0;
@@ -282,6 +285,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           breakers,
           liveRequests,
           storedResponses,
+          loadedTools,
           anthropicKey,
         );
       }
@@ -299,6 +303,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         breakers,
         liveRequests,
         storedResponses,
+        loadedTools,
         anthropicKey,
       );
     },
@@ -485,6 +490,7 @@ async function proxyHttpRequest(
   breakers: TargetBreakers,
   liveRequests: LiveRequestStore,
   storedResponses: StoredResponseRegistry,
+  loadedTools: LoadedToolRegistry,
   anthropicKey: Uint8Array,
 ): Promise<Response> {
   let liveRequestId: string | undefined;
@@ -548,7 +554,6 @@ async function proxyHttpRequest(
     if (routedRequest !== undefined) {
       const { inspected, route } = routedRequest;
       const policy = applyRouteToolPolicy(route, inspected.payload);
-      toolBridge = createResponsesToolBridge(route, policy.payload.tools);
       noteToolOmissions(route, policy.omittedTypes, liveRequests, liveRequestId);
       if (policy.omittedTypes.length > 0) {
         captureEffectivePayload = JSON.stringify(policy.payload);
@@ -559,25 +564,30 @@ async function proxyHttpRequest(
         forwardAccessPrograms: route.forwardAccessPrograms,
         storeResponses: route.bridgeResponseState === "stored",
       });
+      const scopedKey = storedResponseKey(
+        continuationSessionKey(request.headers),
+        route.model.slug,
+        responseTargetUrl(route, requestUrl.search).toString(),
+        route.targets[0]?.upstreamModel ?? route.model.slug,
+        authorization,
+      );
       if (route.bridgeResponseState === "stored") {
-        responseStateKey = storedResponseKey(
-          continuationSessionKey(request.headers),
-          route.model.slug,
-          responseTargetUrl(route, requestUrl.search).toString(),
-          route.targets[0]?.upstreamModel ?? route.model.slug,
-          authorization,
-        );
+        responseStateKey = scopedKey;
         preparedStoredRequest = prepareStoredRequest(
           routedPayload,
           route.model.slug,
           storedResponses.get(responseStateKey),
         );
       }
-      translatedPayload =
-        toolBridge?.request(preparedStoredRequest?.payload ?? routedPayload) ??
-        preparedStoredRequest?.payload ??
-        routedPayload;
-      if (toolBridge !== undefined) captureEffectivePayload = JSON.stringify(translatedPayload);
+      const requestPayload = preparedStoredRequest?.payload ?? routedPayload;
+      const searchPayload =
+        route.toolPolicy.tool_search === "translate"
+          ? loadedTools.prepare(route.model.slug, scopedKey, routedPayload, requestPayload)
+          : requestPayload;
+      toolBridge = createResponsesToolBridge(route, searchPayload.tools);
+      translatedPayload = toolBridge?.request(searchPayload) ?? searchPayload;
+      if (toolBridge !== undefined || searchPayload !== requestPayload)
+        captureEffectivePayload = JSON.stringify(translatedPayload);
       routing = {
         action: "routed",
         routeSlugs: [route.model.slug],
@@ -944,6 +954,7 @@ async function upgradeWebSocket(
   breakers: TargetBreakers,
   liveRequests: LiveRequestStore,
   storedResponses: StoredResponseRegistry,
+  loadedTools: LoadedToolRegistry,
   anthropicKey: Uint8Array,
 ): Promise<Response | undefined> {
   try {
@@ -963,6 +974,7 @@ async function upgradeWebSocket(
       liveRequests,
       continuationSession: continuationSessionKey(request.headers),
       storedResponses,
+      loadedTools,
       anthropicKey,
     };
 
@@ -1125,7 +1137,6 @@ async function runBridgedCreate(
     });
 
   const policy = applyRouteToolPolicy(route, inspected.payload);
-  const toolBridge = createResponsesToolBridge(route, policy.payload.tools);
 
   // Warmup creates (generate: false) are answered locally: forwarding them
   // would bill a real generation for a response the client ignores.
@@ -1178,11 +1189,20 @@ async function runBridgedCreate(
             : data.storedResponses.get(responseStateKey),
         )
       : undefined;
-  const translatedPayload =
-    toolBridge?.request(storedRequest?.payload ?? forwardedPayload) ??
-    storedRequest?.payload ??
-    forwardedPayload;
-  if (toolBridge !== undefined) captureEffectivePayload = JSON.stringify(translatedPayload);
+  const requestPayload = storedRequest?.payload ?? forwardedPayload;
+  const searchPayload =
+    route.toolPolicy.tool_search === "translate"
+      ? data.loadedTools.prepare(
+          route.model.slug,
+          responseStateKey,
+          forwardedPayload,
+          requestPayload,
+        )
+      : requestPayload;
+  const toolBridge = createResponsesToolBridge(route, searchPayload.tools);
+  const translatedPayload = toolBridge?.request(searchPayload) ?? searchPayload;
+  if (toolBridge !== undefined || searchPayload !== requestPayload)
+    captureEffectivePayload = JSON.stringify(translatedPayload);
   data.bridgeAbort = new AbortController();
   const result = await fetchWithFailover({
     route,

@@ -6,6 +6,7 @@ type JsonObject = Record<string, unknown>;
 export interface ToolTransforms {
   namespace: "flatten" | "preserve";
   custom: "wrap" | "preserve";
+  toolSearch?: "function" | "pass";
   union: "wrap" | "preserve";
   functionSchema?: "require" | "preserve";
   callId?: "normalize" | "preserve";
@@ -18,6 +19,7 @@ export interface MappedTool {
   wire: string;
   wireNamespace?: string;
   custom: boolean;
+  search: boolean;
   wrapped: boolean;
   description: unknown;
   parameters: JsonObject;
@@ -115,6 +117,30 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
       const children = value.tools.flatMap((child) => add(child, childNamespace));
       return transforms.namespace === "flatten" ? children : [{ ...value, tools: children }];
     }
+    if (value.type === "tool_search" && transforms.toolSearch === "function") {
+      if (namespace !== undefined)
+        throw new ToolCodecError("tool_search must be a top-level declaration");
+      if (!record(value.parameters))
+        throw new ToolCodecError("tool_search requires an object schema");
+      const wire = wireName("tool_search", undefined, transforms);
+      tools.push({
+        name: "tool_search",
+        wire,
+        custom: false,
+        search: true,
+        wrapped: false,
+        description: value.description ?? "",
+        parameters: value.parameters,
+      });
+      return [
+        {
+          type: "function",
+          name: wire,
+          description: value.description ?? "",
+          parameters: value.parameters,
+        },
+      ];
+    }
     if (value.type !== "function" && value.type !== "custom") {
       if (transforms.other === "pass") return [value];
       throw new ToolCodecError(`Unsupported tool type: ${String(value.type)}`, "unsupported");
@@ -145,6 +171,7 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
       wire,
       ...(wireNamespace !== undefined ? { wireNamespace } : {}),
       custom,
+      search: false,
       wrapped,
       description: value.description ?? "",
       parameters: wireParameters,
@@ -175,20 +202,23 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
     throw new ToolCodecError("Ambiguous tool names", "ambiguous");
 
   function resolve(item: JsonObject): MappedTool {
+    const search = item.type === "tool_search_call" || item.type === "tool_search";
+    const name = search ? "tool_search" : item.name;
     const requestedNamespace =
       transforms.namespace === "flatten" && item.namespace === "functions"
         ? undefined
         : item.namespace;
     const namespace = typeof requestedNamespace === "string" ? requestedNamespace : undefined;
     return (
-      tools.find((tool) => tool.name === item.name && tool.namespace === requestedNamespace) ?? {
-        name: String(item.name),
+      tools.find((tool) => tool.name === name && tool.namespace === requestedNamespace) ?? {
+        name: String(name),
         namespace,
-        wire: wireName(String(item.name), namespace, transforms),
+        wire: wireName(String(name), namespace, transforms),
         ...(transforms.namespace === "preserve" && namespace !== undefined
           ? { wireNamespace: namespace }
           : {}),
         custom: item.type === "custom_tool_call" || item.type === "custom",
+        search,
         wrapped: false,
         description: "",
         parameters: {},
@@ -204,7 +234,9 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
     const tool = resolve(item);
     let args: unknown;
     try {
-      if (tool.custom) args = transforms.custom === "wrap" ? { input: item.input } : item.input;
+      if (tool.search) args = item.arguments;
+      else if (tool.custom)
+        args = transforms.custom === "wrap" ? { input: item.input } : item.input;
       else {
         if (item.arguments != null && typeof item.arguments !== "string")
           throw new Error("Expected a string field");
@@ -214,7 +246,7 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
       if (error instanceof ToolCodecError) throw error;
       throw new ToolCodecError(`Invalid JSON arguments for ${tool.name}`);
     }
-    if (!tool.custom || transforms.custom === "wrap") {
+    if (tool.search || !tool.custom || transforms.custom === "wrap") {
       if (!record(args))
         throw new ToolCodecError(`Tool arguments for ${tool.name} must be an object`);
     } else if (typeof args !== "string") {
@@ -234,6 +266,16 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
   function decode(call: WireToolCall): JsonObject {
     const tool = byWire(call.name, call.namespace);
     if (!tool) throw new ToolCodecError(`Unknown wire tool: ${String(call.name)}`);
+    if (tool.search) {
+      if (call.input !== undefined && !record(call.input))
+        throw new ToolCodecError("tool_search arguments must be an object");
+      return {
+        type: "tool_search_call",
+        call_id: call.callId,
+        execution: "client",
+        arguments: call.input ?? {},
+      };
+    }
     const item: JsonObject = {
       type: tool.custom ? "custom_tool_call" : "function_call",
       call_id: call.callId,

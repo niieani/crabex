@@ -2,6 +2,55 @@ import { describe, expect, it } from "vite-plus/test";
 import { createToolCodec, normalizeToolCallId } from "./tool-codec.ts";
 
 describe("tool codec", () => {
+  it("maps client tool discovery to a function and restores JSON-valued search arguments", () => {
+    const search = {
+      type: "tool_search",
+      execution: "client",
+      description: "Find deferred tools",
+      parameters: { type: "object", properties: { query: { type: "string" } } },
+    };
+    for (const namespace of ["preserve", "flatten"] as const) {
+      const codec = createToolCodec([search], {
+        namespace,
+        custom: "wrap",
+        union: "preserve",
+        toolSearch: "function",
+      });
+      expect(codec.declarations).toEqual([
+        {
+          type: "function",
+          name: "tool_search",
+          description: search.description,
+          parameters: search.parameters,
+        },
+      ]);
+      expect(
+        codec.encode({
+          type: "tool_search_call",
+          call_id: "search-1",
+          execution: "client",
+          arguments: { query: "inventory", limit: 2 },
+        }),
+      ).toEqual({
+        name: "tool_search",
+        callId: "search-1",
+        input: { query: "inventory", limit: 2 },
+      });
+      expect(
+        codec.decode({ name: "tool_search", callId: "search-1", input: { query: "inventory" } }),
+      ).toEqual({
+        type: "tool_search_call",
+        call_id: "search-1",
+        execution: "client",
+        arguments: { query: "inventory" },
+      });
+      expect(codec.decode({ name: "tool_search", callId: "search-1" })).toMatchObject({
+        type: "tool_search_call",
+        arguments: {},
+      });
+    }
+  });
+
   it("flattens namespaces, wraps custom and union tools, and restores Codex calls", () => {
     const codec = createToolCodec(
       [

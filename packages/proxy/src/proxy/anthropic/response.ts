@@ -197,7 +197,10 @@ export class AnthropicResponse {
         if (delta.type === "input_json_delta" && block.value.type === "tool_use") {
           block.json += text(delta.partial_json);
           // Custom tools wrap a JSON string; emit raw input only once it is complete/unescaped.
-          return this.prepared.compact || block.tool?.custom || block.tool?.wrapped
+          return this.prepared.compact ||
+            block.tool?.custom ||
+            block.tool?.search ||
+            block.tool?.wrapped
             ? []
             : [
                 this.event("response.function_call_arguments.delta", {
@@ -317,7 +320,7 @@ export class AnthropicResponse {
                 input: block.item.input,
               }),
             );
-          } else if (block.tool) {
+          } else if (block.tool && !block.tool.search) {
             if (block.tool.wrapped)
               events.push(
                 this.event("response.function_call_arguments.delta", {

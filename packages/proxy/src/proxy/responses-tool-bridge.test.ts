@@ -15,6 +15,151 @@ const route = modelRouteFromConfig({
   },
   upstream: "https://gateway.example/v1",
 });
+
+describe("Responses tool discovery bridge", () => {
+  const searchRoute = modelRouteFromConfig({
+    authorization_env: "TEST_KEY",
+    transport: "http",
+    tool_policy: { custom: "translate", tool_search: "translate" },
+    model: {
+      slug: "discovery-test",
+      display_name: "Discovery test",
+      description: "Test discovery bridge",
+      priority: 1,
+      template_slug: "gpt-6-astra",
+    },
+    upstream: "https://gateway.example/v1",
+  });
+  const search = {
+    type: "tool_search",
+    execution: "client",
+    description: "Find deferred tools",
+    parameters: { type: "object", properties: { query: { type: "string" } } },
+  };
+  const discovered = {
+    type: "namespace",
+    name: "inventory",
+    tools: [{ type: "function", name: "lookup_item", parameters: { type: "object" } }],
+  };
+  const call = {
+    type: "function_call",
+    id: "fc_search",
+    call_id: "search_1",
+    name: "tool_search",
+    arguments: '{"query":"inventory lookup"}',
+    status: "completed",
+  };
+
+  it("converts search history and its result while injecting discovered declarations", () => {
+    const bridge = createResponsesToolBridge(searchRoute, [search, discovered])!;
+    const output = {
+      type: "tool_search_output",
+      call_id: "search_1",
+      status: "completed",
+      execution: "client",
+      tools: [discovered],
+    };
+    const result = bridge.request({
+      tools: [search, discovered],
+      tool_choice: { type: "tool_search" },
+      parallel_tool_calls: false,
+      input: [
+        {
+          type: "tool_search_call",
+          call_id: "search_1",
+          execution: "client",
+          arguments: { query: "inventory lookup" },
+        },
+        output,
+      ],
+    });
+    expect(result.tools).toMatchObject([
+      { type: "function", name: "tool_search", description: search.description },
+      discovered,
+    ]);
+    expect(result.tool_choice).toEqual({ type: "function", name: "tool_search" });
+    expect(result.parallel_tool_calls).toBe(false);
+    expect(result.input).toMatchObject([
+      {
+        type: "function_call",
+        call_id: "search_1",
+        name: "tool_search",
+        arguments: call.arguments,
+      },
+      {
+        type: "function_call_output",
+        call_id: "search_1",
+        output: expect.stringContaining("inventory.lookup_item"),
+      },
+    ]);
+  });
+
+  it("buffers search arguments and restores JSON-valued calls in every response shape", () => {
+    const bridge = createResponsesToolBridge(searchRoute, [search, discovered])!;
+    const added = bridge.event(
+      JSON.stringify({
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { ...call, arguments: "", status: "in_progress" },
+      }),
+    );
+    expect(JSON.parse(added[0]!).item).toMatchObject({
+      type: "tool_search_call",
+      call_id: "search_1",
+      execution: "client",
+      arguments: {},
+    });
+    expect(
+      bridge.event(
+        JSON.stringify({
+          type: "response.function_call_arguments.delta",
+          item_id: "fc_search",
+          delta: '{"query":"inventory lookup"}',
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      bridge.event(
+        JSON.stringify({
+          type: "response.function_call_arguments.done",
+          item_id: "fc_search",
+          arguments: call.arguments,
+        }),
+      ),
+    ).toEqual([]);
+    const done = bridge.event(JSON.stringify({ type: "response.output_item.done", item: call }));
+    expect(done.map((value) => JSON.parse(value).type)).toEqual(["response.output_item.done"]);
+    expect(JSON.parse(done[0]!).item).toMatchObject({
+      type: "tool_search_call",
+      call_id: "search_1",
+      execution: "client",
+      arguments: { query: "inventory lookup" },
+    });
+    const completed = bridge.event(
+      JSON.stringify({
+        type: "response.completed",
+        response: {
+          id: "resp_1",
+          output: [
+            call,
+            {
+              type: "function_call",
+              id: "fc_lookup",
+              call_id: "lookup_1",
+              namespace: "inventory",
+              name: "lookup_item",
+              arguments: '{"sku":"A"}',
+            },
+          ],
+        },
+      }),
+    );
+    expect(JSON.parse(completed[0]!).response.output).toMatchObject([
+      { type: "tool_search_call", arguments: { query: "inventory lookup" } },
+      { type: "function_call", namespace: "inventory", name: "lookup_item" },
+    ]);
+  });
+});
 const tools = [
   { type: "custom", name: "apply_patch", format: { type: "text" } },
   {

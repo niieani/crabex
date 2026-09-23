@@ -56,6 +56,145 @@ async function converted(response: Response, payload: Json = base) {
 }
 
 describe("Anthropic protocol", () => {
+  it("translates discovery history and restores search and namespaced tool calls", async () => {
+    const discoveryRoute = {
+      ...route,
+      toolPolicy: { ...route.toolPolicy, tool_search: "translate" as const },
+    };
+    const search = {
+      type: "tool_search",
+      execution: "client",
+      description: "Find deferred tools",
+      parameters: { type: "object", properties: { query: { type: "string" } } },
+    };
+    const discovered = {
+      type: "namespace",
+      name: "inventory",
+      tools: [
+        {
+          type: "function",
+          name: "lookup_item",
+          description: "Look up a SKU",
+          parameters: { type: "object" },
+        },
+      ],
+    };
+    const prepared = prepareAnthropic(
+      {
+        ...base,
+        tools: [search, discovered],
+        input: [
+          { role: "user", content: "Find an inventory tool" },
+          {
+            type: "tool_search_call",
+            call_id: "search_1",
+            execution: "client",
+            arguments: { query: "inventory" },
+          },
+          {
+            type: "tool_search_output",
+            call_id: "search_1",
+            status: "completed",
+            execution: "client",
+            tools: [discovered],
+          },
+          {
+            type: "function_call",
+            call_id: "lookup_1",
+            namespace: "inventory",
+            name: "lookup_item",
+            arguments: '{"sku":"A"}',
+          },
+          { type: "function_call_output", call_id: "lookup_1", output: "found" },
+        ],
+      },
+      discoveryRoute,
+      key,
+    );
+    const lookup = prepared.codec.tools.find((tool) => tool.namespace === "inventory")!;
+    expect(prepared.body.tools).toMatchObject([
+      { name: "tool_search", description: search.description },
+      { name: lookup.wire, description: "Look up a SKU" },
+    ]);
+    expect(prepared.body.messages).toMatchObject([
+      { role: "user" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", name: "tool_search", input: { query: "inventory" } }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            content: [{ text: expect.stringContaining("inventory.lookup_item") }],
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", name: lookup.wire, input: { sku: "A" } }],
+      },
+      { role: "user", content: [{ type: "tool_result", content: [{ text: "found" }] }] },
+    ]);
+
+    const events = await Array.fromAsync(
+      anthropicEvents(
+        sse([
+          { type: "message_start", message: { usage: {} } },
+          {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "tool_use", id: "search_2", name: "tool_search", input: {} },
+          },
+          {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "input_json_delta", partial_json: '{"query":"inventory"}' },
+          },
+          { type: "content_block_stop", index: 0 },
+          {
+            type: "content_block_start",
+            index: 1,
+            content_block: { type: "tool_use", id: "lookup_2", name: lookup.wire, input: {} },
+          },
+          {
+            type: "content_block_delta",
+            index: 1,
+            delta: { type: "input_json_delta", partial_json: '{"sku":"B"}' },
+          },
+          { type: "content_block_stop", index: 1 },
+          { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} },
+          { type: "message_stop" },
+        ]),
+        prepared,
+        discoveryRoute.model.slug,
+      ),
+    );
+    const parsed = events.map((event) => JSON.parse(event));
+    const done = parsed.filter((event) => event.type === "response.output_item.done");
+    expect(
+      parsed.filter(
+        (event) =>
+          event.type === "response.function_call_arguments.delta" &&
+          event.item_id === done[0].item.id,
+      ),
+    ).toHaveLength(0);
+    expect(done[0].item).toMatchObject({
+      type: "tool_search_call",
+      call_id: "search_2",
+      execution: "client",
+      arguments: { query: "inventory" },
+    });
+    expect(done[1].item).toMatchObject({
+      type: "function_call",
+      namespace: "inventory",
+      name: "lookup_item",
+      arguments: '{"sku":"B"}',
+    });
+    expect(parsed.at(-1).response.output).toMatchObject([done[0].item, done[1].item]);
+  });
+
   it("cancels upstream readers after terminal events and on consumer cancellation", async () => {
     let cancelled = false;
     const upstream = new Response(
