@@ -43,6 +43,22 @@ validation. Other `translate` actions and all `broker` actions are reserved for
 later adapters and fail route validation today.
 Anthropic routes cannot use `pass` because their upstream wire format differs.
 
+For a Fireworks Responses route verified with native web search, set
+`web_search: "pass"`. The proxy forwards Codex's `web_search` declaration,
+including `external_web_access` and `indexed_web_access`, unchanged. Fireworks
+accepted the tested live (`true`), cached (`false`), and indexed (`true` with
+`indexed_web_access: true`) forms and returned search calls and answer URLs.
+Those probes do not establish whether Fireworks applies Codex's freshness or
+indexing semantics. Treat these fields as requests to the provider, not as a
+guarantee of live, cached, or indexed results.
+
+Fireworks search answers in the tested streams contained ordinary URLs and no
+`url_citation` annotations. The provider also added a completion-only
+`tool_output` item containing URL, title, and snippet results. Codex has no
+matching Responses search-source field and ignores this item; the proxy keeps
+it unchanged and does not invent citation offsets. The stored-response matcher
+skips provider-only output items because Codex does not replay them.
+
 Rejected declarations and rejected typed `tool_choice` values return HTTP 400
 or a WebSocket error frame naming the route and tool type. `omit` removes the
 declaration and any matching typed `tool_choice` before forwarding. The proxy

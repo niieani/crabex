@@ -103,6 +103,45 @@ describe("stored response continuation", () => {
     ).toBeUndefined();
   });
 
+  it("ignores provider-only output items when matching a stored search replay", () => {
+    const user = { type: "message", role: "user", content: "Search NASA" };
+    const search = {
+      type: "web_search_call",
+      id: "ws_1",
+      status: "completed",
+      action: { type: "search", query: "NASA Mars facts" },
+    };
+    const answer = {
+      type: "message",
+      id: "msg_1",
+      role: "assistant",
+      content: [{ type: "output_text", text: "https://science.nasa.gov/mars/facts/" }],
+    };
+    const prepared = prepareStoredRequest({ input: [user] }, "glm-5.3-flash");
+    const previous = completedStoredResponse(
+      JSON.stringify({
+        type: "response.completed",
+        response: {
+          id: "resp_search",
+          output: [
+            search,
+            { type: "tool_output", tool_call_id: "provider_1", output: "sources" },
+            { type: "provider_future_item", id: "provider_2" },
+            answer,
+          ],
+        },
+      }),
+      "glm-5.3-flash",
+      prepared.inputMarkers,
+    );
+    expect(previous?.outputMarkers).toHaveLength(2);
+    const followup = { type: "message", role: "user", content: "Thanks" };
+    expect(
+      prepareStoredRequest({ input: [user, search, answer, followup] }, "glm-5.3-flash", previous)
+        .payload,
+    ).toEqual({ input: [followup], previous_response_id: "resp_search" });
+  });
+
   it("shares only matching client and route scopes, and expires old state", () => {
     const headers = new Headers({
       "session-id": "session-1",

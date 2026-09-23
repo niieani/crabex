@@ -35,6 +35,44 @@ const wireCall = {
 };
 
 describe("Responses custom tool bridge", () => {
+  it("preserves native web search calls, answer URLs, and provider source output", () => {
+    const bridge = createResponsesToolBridge(route, [tools[0], { type: "web_search" }])!;
+    const search = {
+      type: "web_search_call",
+      id: "ws_1",
+      status: "completed",
+      action: { type: "search", query: "NASA Mars facts" },
+    };
+    const source = {
+      type: "tool_output",
+      tool_call_id: "provider_1",
+      output: '{"results":[{"url":"https://science.nasa.gov/mars/facts/","title":"Mars: Facts"}]}',
+    };
+    const message = {
+      type: "message",
+      id: "msg_1",
+      role: "assistant",
+      content: [
+        {
+          type: "output_text",
+          text: "https://science.nasa.gov/mars/facts/",
+          annotations: [],
+        },
+      ],
+    };
+    const done = { type: "response.output_item.done", item: search };
+    expect(JSON.parse(bridge.event(JSON.stringify(done))[0]!)).toMatchObject(done);
+    const completed = {
+      type: "response.completed",
+      response: { id: "resp_1", output: [search, source, message] },
+    };
+    expect(JSON.parse(bridge.event(JSON.stringify(completed))[0]!).response.output).toEqual([
+      search,
+      source,
+      message,
+    ]);
+  });
+
   it("wraps only custom declarations and translates choices and replayed calls", () => {
     const bridge = createResponsesToolBridge(route, tools)!;
     const image = { type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" };

@@ -1052,6 +1052,126 @@ describe("model routing and config bundle override", () => {
     }
   });
 
+  it("passes native web search through the WebSocket bridge and matches its stored replay", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const seen: Record<string, unknown>[] = [];
+      const search = {
+        type: "web_search_call",
+        id: "ws_1",
+        status: "completed",
+        action: { type: "search", query: "NASA Mars facts" },
+      };
+      const source = {
+        type: "tool_output",
+        tool_call_id: "provider_1",
+        output:
+          '{"results":[{"url":"https://science.nasa.gov/mars/facts/","title":"Mars: Facts"}]}',
+      };
+      const answer = {
+        type: "message",
+        id: "msg_1",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: "Mars has two moons: https://science.nasa.gov/mars/facts/",
+            annotations: [],
+          },
+        ],
+      };
+      const gateway = await startHttpServer(async (request, response) => {
+        const payload = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+        seen.push(payload);
+        const id = `resp_${seen.length}`;
+        response.setHeader("content-type", "text/event-stream");
+        response.write(
+          `data: ${JSON.stringify({ type: "response.created", response: { id } })}\n\n`,
+        );
+        if (seen.length === 1) {
+          response.write(
+            `data: ${JSON.stringify({ type: "response.output_item.done", item: search })}\n\n`,
+          );
+          response.write(
+            `data: ${JSON.stringify({ type: "response.output_item.done", item: answer })}\n\n`,
+          );
+        }
+        response.end(
+          `data: ${JSON.stringify({ type: "response.completed", response: { id, output: seen.length === 1 ? [search, source, answer] : [] } })}\n\n`,
+        );
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        bridge_response_state: "stored",
+        tool_policy: { custom: "translate", web_search: "pass" },
+      });
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const identity = {
+        authorization: "Bearer oauth-secret",
+        "chatgpt-account-id": "account-1",
+        "session-id": "session-1",
+        "thread-id": "thread-1",
+      };
+      const user = message("user", "Search NASA");
+      const webTool = { type: "web_search", external_web_access: true, indexed_web_access: true };
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: identity },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      const received: Record<string, unknown>[] = [];
+      client.on("message", (raw) => received.push(JSON.parse(rawDataText(raw))));
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "kimi-k3",
+          input: [user],
+          tools: [webTool],
+          tool_choice: { type: "web_search" },
+        }),
+      );
+      await eventually(() =>
+        expect(received.some((event) => event.type === "response.completed")).toBe(true),
+      );
+      expect(seen[0]).toMatchObject({
+        tools: [webTool],
+        tool_choice: { type: "web_search" },
+      });
+      expect(received.find((event) => event.type === "response.output_item.done")?.item).toEqual(
+        search,
+      );
+      const completed = received.find((event) => event.type === "response.completed")?.response as {
+        output: unknown[];
+      };
+      expect(completed.output).toEqual([search, source, answer]);
+
+      const followup = message("user", "Thanks");
+      const next = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { ...identity, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: [user, search, answer, followup],
+          tools: [webTool],
+          stream: true,
+        }),
+      });
+      expect(next.status).toBe(200);
+      await next.text();
+      expect(seen[1]).toMatchObject({
+        previous_response_id: "resp_1",
+        input: [followup],
+        tools: [webTool],
+      });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
   it("omits legacy-disallowed tools on HTTP and records each omission", async () => {
     process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});

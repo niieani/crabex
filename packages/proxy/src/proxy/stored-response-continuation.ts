@@ -23,6 +23,26 @@ export interface PreparedStoredRequest {
 
 const STATE_TTL_MS = 30 * 60_000;
 const MAX_STORED_RESPONSES = 512;
+// Codex parses unknown response item types as Other and excludes them from replay.
+// Fireworks can add a completion-only tool_output after a native web search.
+const REPLAYED_OUTPUT_TYPES = new Set([
+  "additional_tools",
+  "agent_message",
+  "compaction",
+  "compaction_summary",
+  "context_compaction",
+  "custom_tool_call",
+  "custom_tool_call_output",
+  "function_call",
+  "function_call_output",
+  "image_generation_call",
+  "local_shell_call",
+  "message",
+  "reasoning",
+  "tool_search_call",
+  "tool_search_output",
+  "web_search_call",
+]);
 
 /** The two Codex transport paths share these headers for one conversation. */
 export function continuationSessionKey(headers: Headers): string | undefined {
@@ -148,7 +168,7 @@ export function completedStoredResponse(
   ) {
     return undefined;
   }
-  const outputMarkers = response.output.map(outputMarker);
+  const outputMarkers = response.output.filter(replayedOutput).map(outputMarker);
   if (outputMarkers.some((marker) => marker === undefined)) return undefined;
   return {
     routeSlug,
@@ -156,6 +176,10 @@ export function completedStoredResponse(
     inputMarkers,
     outputMarkers: outputMarkers as OutputMarker[],
   };
+}
+
+function replayedOutput(item: unknown): boolean {
+  return !isRecord(item) || typeof item.type !== "string" || REPLAYED_OUTPUT_TYPES.has(item.type);
 }
 
 function exactMarker(item: unknown): ExactMarker {

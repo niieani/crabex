@@ -63,6 +63,22 @@ describe("applyRouteToolPolicy", () => {
     expect(result.omittedTypes).toEqual([]);
   });
 
+  it("passes native web search access flags and typed choice unchanged", () => {
+    const route = modelRouteFromConfig({
+      ...base,
+      transport: "http",
+      tool_policy: { web_search: "pass" },
+    });
+    for (const search of [
+      { type: "web_search", external_web_access: true },
+      { type: "web_search", external_web_access: false },
+      { type: "web_search", external_web_access: true, indexed_web_access: true },
+    ]) {
+      const payload = { tools: [search], tool_choice: { type: "web_search" } };
+      expect(applyRouteToolPolicy(route, payload)).toEqual({ payload, omittedTypes: [] });
+    }
+  });
+
   it("rejects future declarations for Anthropic unless other is omit", () => {
     const anthropic = { ...base, api: "anthropic-messages" as const };
     const payload = {
