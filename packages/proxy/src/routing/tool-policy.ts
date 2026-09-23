@@ -245,6 +245,7 @@ function assertImplemented(
     action === "reject" ||
     action === "omit" ||
     (api === "responses" && action === "pass") ||
+    (api === "responses" && type === "custom" && action === "translate") ||
     (api === "anthropic-messages" &&
       action === "translate" &&
       (type === "function" || type === "namespace" || type === "custom"))

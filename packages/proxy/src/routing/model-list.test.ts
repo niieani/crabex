@@ -130,6 +130,32 @@ describe("transformModels", () => {
     });
   });
 
+  it("advertises freeform apply_patch when the HTTP bridge translates custom tools", () => {
+    const translated = modelRouteFromConfig({
+      authorization_env: "TEST_KEY",
+      transport: "http",
+      tool_policy: { custom: "translate" },
+      model: {
+        description: "Translated custom tools",
+        display_name: "Translated custom tools",
+        priority: 1,
+        slug: "translated-custom",
+        template_slug: "gpt-5.6-terra",
+        overrides: { apply_patch_tool_type: null, tool_mode: "direct" },
+      },
+      upstream: "https://gateway.example/v1",
+    });
+    const result = transformModels(
+      { models: [{ ...template, apply_patch_tool_type: "freeform", tool_mode: "code_mode_only" }] },
+      [translated],
+    );
+    expect(result.models[0]).toMatchObject({
+      slug: "translated-custom",
+      apply_patch_tool_type: "freeform",
+      tool_mode: "direct",
+    });
+  });
+
   it("replaces one exact instruction span and updates the legacy field", () => {
     const instructions = "You are Codex, an agent based on GPT-5. Use the listed tools.";
     const routed: ModelRoute = {

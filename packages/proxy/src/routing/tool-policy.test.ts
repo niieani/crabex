@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { modelRouteFromConfig, type ModelRouteConfig } from "./model-routes.ts";
+import { modelRouteFromConfig, parseModelRouteSet, type ModelRouteConfig } from "./model-routes.ts";
 import { applyRouteToolPolicy } from "./tool-policy.ts";
 
 const base: ModelRouteConfig = {
@@ -16,6 +16,17 @@ const base: ModelRouteConfig = {
 };
 
 describe("applyRouteToolPolicy", () => {
+  it("accepts custom translation only on an HTTP Responses bridge", () => {
+    const bridged = { ...base, transport: "http", tool_policy: { custom: "translate" } };
+    expect(parseModelRouteSet([bridged]).routes[0]?.tool_policy).toEqual({ custom: "translate" });
+    expect(() => parseModelRouteSet([{ ...bridged, transport: "ws" }])).toThrow(
+      "requires http transport",
+    );
+    expect(() =>
+      parseModelRouteSet([{ ...base, tool_policy: { web_search: "translate" } }]),
+    ).toThrow("not implemented");
+  });
+
   it("preserves legacy outbound tools and removes a typed choice for an omitted declaration", () => {
     const route = modelRouteFromConfig({ ...base, allowed_tool_types: ["function"] });
     const payload = {

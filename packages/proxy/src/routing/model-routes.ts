@@ -156,6 +156,14 @@ export function parseModelRouteSet(value: unknown): ModelRouteSetData {
 }
 
 export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
+  const transport = config.transport ?? (config.api === "anthropic-messages" ? "http" : "ws");
+  const toolPolicy = effectiveToolPolicy(config);
+  requireCustomTranslationBridge(
+    toolPolicy.custom,
+    transport,
+    "model route",
+    config.api ?? "responses",
+  );
   return {
     authorizationEnv: config.authorization_env,
     ...(config.api === undefined ? {} : { api: config.api }),
@@ -184,9 +192,9 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
         cooldownMs: config.retry?.breaker?.cooldown_ms ?? DEFAULT_BREAKER.cooldownMs,
       },
     },
-    transport: config.transport ?? (config.api === "anthropic-messages" ? "http" : "ws"),
+    transport,
     bridgeResponseState: config.bridge_response_state ?? "replay",
-    toolPolicy: effectiveToolPolicy(config),
+    toolPolicy,
     forwardAccessPrograms: config.forward_access_programs === true,
   };
 }
@@ -342,6 +350,12 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
     api ?? "responses",
     source,
   );
+  requireCustomTranslationBridge(
+    toolConfiguration.tool_policy?.custom,
+    transport ?? (api === "anthropic-messages" ? "http" : "ws"),
+    `${source}.tool_policy.custom`,
+    api ?? "responses",
+  );
   const forwardAccessPrograms = value.forward_access_programs;
   if (forwardAccessPrograms !== undefined && typeof forwardAccessPrograms !== "boolean") {
     throw new Error(`${source}.forward_access_programs must be a boolean`);
@@ -368,6 +382,17 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
       ? {}
       : { forward_access_programs: forwardAccessPrograms }),
   };
+}
+
+function requireCustomTranslationBridge(
+  action: string | undefined,
+  transport: "http" | "ws",
+  source: string,
+  api: "responses" | "anthropic-messages" = "responses",
+): void {
+  if (api === "responses" && action === "translate" && transport !== "http") {
+    throw new Error(`${source} action "translate" requires http transport`);
+  }
 }
 
 function targetsConfig(value: unknown, source: string): RouteTargetConfig[] {

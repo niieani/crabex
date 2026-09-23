@@ -16,6 +16,7 @@ import type { ModelAdjustment, ModelRoute, ModelRouteConfig } from "../routing/m
 import { modelRouteFromConfig } from "../routing/model-routes.ts";
 import type { ModelDefinition } from "../routing/model-list.ts";
 import { LiveRequestStore } from "../requests/live-request-store.ts";
+import { parseSseEvents } from "./responses-bridge.ts";
 import { sanitizeCloseCode, startReverseProxy, type RunningProxy } from "./server.ts";
 
 class MemoryCaptureSink implements CaptureSink {
@@ -1612,6 +1613,259 @@ describe("model routing and config bundle override", () => {
       });
     } finally {
       delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it("translates custom tool calls on a routed HTTP Responses stream", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const patch = "*** Begin Patch\n*** Add File: note.txt\n+ok\n*** End Patch";
+      const argumentsJson = JSON.stringify({ input: patch });
+      const seen: Record<string, unknown>[] = [];
+      const call = {
+        type: "function_call",
+        id: "fc_1",
+        call_id: "call_1",
+        name: "apply_patch",
+        arguments: argumentsJson,
+        status: "completed",
+      };
+      const gateway = await startHttpServer(async (request, response) => {
+        seen.push(JSON.parse((await readBody(request)).toString()));
+        response.setHeader("content-type", "text/event-stream");
+        for (const event of [
+          { type: "response.created", response: { id: "resp_1" } },
+          {
+            type: "response.output_item.added",
+            output_index: 0,
+            item: { ...call, arguments: "", status: "in_progress" },
+          },
+          {
+            type: "response.function_call_arguments.delta",
+            item_id: "fc_1",
+            output_index: 0,
+            delta: argumentsJson.slice(0, 15),
+          },
+          {
+            type: "response.function_call_arguments.delta",
+            item_id: "fc_1",
+            output_index: 0,
+            delta: argumentsJson.slice(15),
+          },
+          {
+            type: "response.function_call_arguments.done",
+            item_id: "fc_1",
+            output_index: 0,
+            arguments: argumentsJson,
+          },
+          { type: "response.output_item.done", output_index: 0, item: call },
+          { type: "response.completed", response: { id: "resp_1", output: [call] } },
+        ])
+          response.write(`data: ${JSON.stringify(event)}\n\n`);
+        response.end();
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        tool_policy: { custom: "translate" },
+      });
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const tools = [{ type: "custom", name: "apply_patch", format: { type: "text" } }];
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { authorization: "Bearer oauth-secret", "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: [message("user", "Patch a file")],
+          tools,
+          tool_choice: { type: "custom", name: "apply_patch" },
+          parallel_tool_calls: false,
+          stream: true,
+        }),
+      });
+      expect(response.status).toBe(200);
+      const events = await Array.fromAsync(parseSseEvents(response.body!)).then((items) =>
+        items.map((item) => JSON.parse(item)),
+      );
+      expect(seen[0]).toMatchObject({
+        tools: [
+          {
+            type: "function",
+            name: "apply_patch",
+            parameters: { properties: { input: { type: "string" } } },
+          },
+        ],
+        tool_choice: { type: "function", name: "apply_patch" },
+        parallel_tool_calls: false,
+      });
+      expect(events.map((event) => event.type)).toEqual([
+        "response.created",
+        "response.output_item.added",
+        "response.custom_tool_call_input.delta",
+        "response.custom_tool_call_input.done",
+        "response.output_item.done",
+        "response.completed",
+      ]);
+      expect(events[2].delta).toBe(patch);
+      expect(events[4].item).toMatchObject({ type: "custom_tool_call", input: patch });
+      expect(events[5].response.output[0]).toMatchObject({
+        type: "custom_tool_call",
+        input: patch,
+      });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("translates custom calls in a non-streamed HTTP Responses body", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const gateway = await startHttpServer((_request, response) => {
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            id: "resp_1",
+            output: [
+              {
+                type: "function_call",
+                id: "fc_1",
+                call_id: "call_1",
+                name: "apply_patch",
+                arguments: '{"input":"patch"}',
+              },
+            ],
+          }),
+        );
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        tool_policy: { custom: "translate" },
+      });
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { authorization: "Bearer oauth-secret", "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: "Patch",
+          stream: false,
+          tools: [{ type: "custom", name: "apply_patch" }],
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        output: [{ type: "custom_tool_call", name: "apply_patch", input: "patch" }],
+      });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("matches a translated custom call across WebSocket to HTTP stored continuation", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const patch = "*** Begin Patch\n*** Add File: note.txt\n+ok\n*** End Patch";
+      const call = {
+        type: "function_call",
+        id: "fc_1",
+        call_id: "call_1",
+        name: "apply_patch",
+        arguments: JSON.stringify({ input: patch }),
+        status: "completed",
+      };
+      const seen: Record<string, unknown>[] = [];
+      const gateway = await startHttpServer(async (request, response) => {
+        const payload = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+        seen.push(payload);
+        const id = `resp_${seen.length}`;
+        const output = seen.length === 1 ? [call] : [];
+        response.setHeader("content-type", "text/event-stream");
+        response.write(
+          `data: ${JSON.stringify({ type: "response.created", response: { id } })}\n\n`,
+        );
+        if (seen.length === 1) {
+          response.write(
+            `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "", status: "in_progress" } })}\n\n`,
+          );
+          response.write(
+            `data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: call })}\n\n`,
+          );
+        }
+        response.end(
+          `data: ${JSON.stringify({ type: "response.completed", response: { id, output } })}\n\n`,
+        );
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        bridge_response_state: "stored",
+        tool_policy: { custom: "translate" },
+      });
+      const proxy = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const identity = {
+        authorization: "Bearer oauth-secret",
+        "chatgpt-account-id": "account-1",
+        "session-id": "session-1",
+        "thread-id": "thread-1",
+      };
+      const tools = [{ type: "custom", name: "apply_patch", format: { type: "text" } }];
+      const user = message("user", "Patch a file");
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: identity },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      const received: Record<string, unknown>[] = [];
+      client.on("message", (raw) => received.push(JSON.parse(rawDataText(raw))));
+      client.send(
+        JSON.stringify({ type: "response.create", model: "kimi-k3", input: [user], tools }),
+      );
+      await eventually(() =>
+        expect(received.some((event) => event.type === "response.completed")).toBe(true),
+      );
+      expect(
+        received.find((event) => event.type === "response.output_item.done")?.item,
+      ).toMatchObject({ type: "custom_tool_call", input: patch });
+      expect(
+        received.find((event) => event.type === "response.custom_tool_call_input.delta")?.delta,
+      ).toBe(patch);
+
+      const followup = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { ...identity, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: [
+            user,
+            {
+              type: "custom_tool_call",
+              id: "fc_1",
+              call_id: "call_1",
+              name: "apply_patch",
+              input: patch,
+            },
+            { type: "custom_tool_call_output", call_id: "call_1", output: "done" },
+          ],
+          tools,
+          stream: true,
+        }),
+      });
+      expect(followup.status).toBe(200);
+      await followup.text();
+      expect(seen[1]).toMatchObject({
+        previous_response_id: "resp_1",
+        input: [{ type: "function_call_output", call_id: "call_1", output: "done" }],
+      });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
     }
   });
 

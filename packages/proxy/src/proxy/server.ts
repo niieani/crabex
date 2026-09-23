@@ -40,6 +40,11 @@ import {
   wrappedErrorEvent,
 } from "./responses-bridge.ts";
 import {
+  createResponsesToolBridge,
+  translateResponsesStream,
+  type ResponsesToolBridge,
+} from "./responses-tool-bridge.ts";
+import {
   completedStoredResponse,
   continuationSessionKey,
   prepareStoredRequest,
@@ -511,6 +516,8 @@ async function proxyHttpRequest(
     const outbound = processed.value;
     let routing: CaptureRouting | undefined;
     let routedPayload: Record<string, unknown> | undefined;
+    let translatedPayload: Record<string, unknown> | undefined;
+    let toolBridge: ResponsesToolBridge | undefined;
     let captureEffectivePayload = processed.effectivePayload;
     let preparedStoredRequest: PreparedStoredRequest | undefined;
     let responseStateKey: string | undefined;
@@ -541,6 +548,7 @@ async function proxyHttpRequest(
     if (routedRequest !== undefined) {
       const { inspected, route } = routedRequest;
       const policy = applyRouteToolPolicy(route, inspected.payload);
+      toolBridge = createResponsesToolBridge(route, policy.payload.tools);
       noteToolOmissions(route, policy.omittedTypes, liveRequests, liveRequestId);
       if (policy.omittedTypes.length > 0) {
         captureEffectivePayload = JSON.stringify(policy.payload);
@@ -565,6 +573,11 @@ async function proxyHttpRequest(
           storedResponses.get(responseStateKey),
         );
       }
+      translatedPayload =
+        toolBridge?.request(preparedStoredRequest?.payload ?? routedPayload) ??
+        preparedStoredRequest?.payload ??
+        routedPayload;
+      if (toolBridge !== undefined) captureEffectivePayload = JSON.stringify(translatedPayload);
       routing = {
         action: "routed",
         routeSlugs: [route.model.slug],
@@ -636,7 +649,7 @@ async function proxyHttpRequest(
                 method: request.method,
                 headers,
                 body: JSON.stringify({
-                  ...(preparedStoredRequest?.payload ?? routedPayload),
+                  ...translatedPayload,
                   model: routeTarget.upstreamModel ?? routedRequest.route.model.slug,
                 }),
                 redirect: "manual",
@@ -686,6 +699,34 @@ async function proxyHttpRequest(
     }
 
     let routedBody = response.body;
+    const translatedStream =
+      toolBridge !== undefined &&
+      routedRequest?.route.api !== "anthropic-messages" &&
+      response.ok &&
+      routedBody !== null &&
+      response.headers.get("content-type")?.includes("text/event-stream");
+    if (translatedStream) routedBody = translateResponsesStream(routedBody!, toolBridge!);
+    const translatedJson =
+      toolBridge !== undefined &&
+      routedRequest?.route.api !== "anthropic-messages" &&
+      response.ok &&
+      !translatedStream &&
+      response.headers.get("content-type")?.includes("application/json");
+    if (translatedJson) {
+      const rewritten = toolBridge!.response(await response.json());
+      routedBody = new Response(JSON.stringify(rewritten)).body;
+      const completedEvent = JSON.stringify({ type: "response.completed", response: rewritten });
+      const usage = observePayload(completedEvent, "upstream_to_client").responseSummary?.usage;
+      if (usage && routing) recorder.recordUsage(routing, usage);
+      if (responseStateKey !== undefined && preparedStoredRequest !== undefined) {
+        const completed = completedStoredResponse(
+          completedEvent,
+          routedRequest!.route.model.slug,
+          preparedStoredRequest.inputMarkers,
+        );
+        if (completed !== undefined) storedResponses.set(responseStateKey, completed);
+      }
+    }
     if (
       routedRequest?.route.api === "anthropic-messages" &&
       routing &&
@@ -744,7 +785,10 @@ async function proxyHttpRequest(
     const downstream = new Response(downstreamBody, {
       status: response.status,
       statusText: response.statusText,
-      headers: downstreamHeaders(response.headers),
+      headers:
+        translatedStream || translatedJson
+          ? translatedHeaders(response.headers)
+          : downstreamHeaders(response.headers),
     });
     if (isModelsRequest(request.method, requestUrl.pathname)) {
       return await transformModelsResponse(downstream, {
@@ -1081,6 +1125,7 @@ async function runBridgedCreate(
     });
 
   const policy = applyRouteToolPolicy(route, inspected.payload);
+  const toolBridge = createResponsesToolBridge(route, policy.payload.tools);
 
   // Warmup creates (generate: false) are answered locally: forwarding them
   // would bill a real generation for a response the client ignores.
@@ -1133,6 +1178,11 @@ async function runBridgedCreate(
             : data.storedResponses.get(responseStateKey),
         )
       : undefined;
+  const translatedPayload =
+    toolBridge?.request(storedRequest?.payload ?? forwardedPayload) ??
+    storedRequest?.payload ??
+    forwardedPayload;
+  if (toolBridge !== undefined) captureEffectivePayload = JSON.stringify(translatedPayload);
   data.bridgeAbort = new AbortController();
   const result = await fetchWithFailover({
     route,
@@ -1153,7 +1203,7 @@ async function runBridgedCreate(
           accept: "text/event-stream",
         },
         body: JSON.stringify({
-          ...(storedRequest?.payload ?? forwardedPayload),
+          ...translatedPayload,
           model: target.upstreamModel ?? route.model.slug,
           stream: true,
         }),
@@ -1186,29 +1236,31 @@ async function runBridgedCreate(
   });
   let failed = false;
   for await (const eventData of parseSseEvents(result.response.body)) {
-    try {
-      const type = JSON.parse(eventData).type;
-      failed ||= ["response.failed", "response.incomplete", "error"].includes(type);
-    } catch {
-      /* upstream data is recorded verbatim */
+    for (const translatedEvent of toolBridge?.event(eventData) ?? [eventData]) {
+      try {
+        const type = JSON.parse(translatedEvent).type;
+        failed ||= ["response.failed", "response.incomplete", "error"].includes(type);
+      } catch {
+        /* upstream data is recorded verbatim */
+      }
+      if (data.client === undefined || data.client.readyState !== WebSocket.OPEN) break;
+      const completed = completedStoredResponse(
+        translatedEvent,
+        route.model.slug,
+        storedRequest?.inputMarkers,
+      );
+      if (completed !== undefined) {
+        if (responseStateKey === undefined) data.storedResponse = completed;
+        else data.storedResponses.set(responseStateKey, completed);
+      }
+      await queueBridgedMessage(
+        data,
+        rewriteBridgedEvent(translatedEvent, route.model.slug, {
+          preserveResponseId: route.bridgeResponseState === "stored",
+        }),
+        origin,
+      );
     }
-    if (data.client === undefined || data.client.readyState !== WebSocket.OPEN) break;
-    const completed = completedStoredResponse(
-      eventData,
-      route.model.slug,
-      storedRequest?.inputMarkers,
-    );
-    if (completed !== undefined) {
-      if (responseStateKey === undefined) data.storedResponse = completed;
-      else data.storedResponses.set(responseStateKey, completed);
-    }
-    await queueBridgedMessage(
-      data,
-      rewriteBridgedEvent(eventData, route.model.slug, {
-        preserveResponseId: route.bridgeResponseState === "stored",
-      }),
-      origin,
-    );
   }
   data.bridgeAbort = undefined;
   data.liveRequests.finish(liveRequestId, {
@@ -1299,6 +1351,12 @@ function forwardedWebSocketHeaders(
 function downstreamHeaders(incoming: Headers): Headers {
   const headers = new Headers(incoming);
   for (const name of [...HOP_BY_HOP_HEADERS, "set-cookie"]) headers.delete(name);
+  return headers;
+}
+
+function translatedHeaders(incoming: Headers): Headers {
+  const headers = downstreamHeaders(incoming);
+  for (const name of ["content-length", "content-encoding", "etag"]) headers.delete(name);
   return headers;
 }
 

@@ -149,6 +149,23 @@ describe("tool codec", () => {
     });
   });
 
+  it("can preserve provider call IDs for stored Responses continuation", () => {
+    const native = createToolCodec([{ type: "custom", name: "apply_patch" }], {
+      namespace: "preserve",
+      custom: "wrap",
+      union: "preserve",
+      callId: "preserve",
+    });
+    expect(
+      native.encode({
+        type: "custom_tool_call",
+        name: "apply_patch",
+        call_id: "call.with.dots",
+        input: "patch",
+      }).callId,
+    ).toBe("call.with.dots");
+  });
+
   it("treats Codex's functions namespace as the default when flattening", () => {
     const codec = createToolCodec(
       [

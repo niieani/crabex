@@ -7,6 +7,8 @@ export interface ToolTransforms {
   namespace: "flatten" | "preserve";
   custom: "wrap" | "preserve";
   union: "wrap" | "preserve";
+  functionSchema?: "require" | "preserve";
+  callId?: "normalize" | "preserve";
   other?: "pass" | "reject";
 }
 
@@ -119,11 +121,15 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
     }
     if (typeof value.name !== "string") throw new ToolCodecError("Tool definition requires a name");
     const custom = value.type === "custom";
+    const preserveSchema =
+      !custom && transforms.functionSchema === "preserve" && !record(value.parameters);
     const parameters = custom
       ? transforms.custom === "wrap"
         ? customSchema(value.name)
         : {}
-      : value.parameters;
+      : preserveSchema
+        ? {}
+        : value.parameters;
     if (!record(parameters))
       throw new ToolCodecError(`Tool ${value.name} requires an object schema`);
     const wrapped =
@@ -158,7 +164,7 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
         ...value,
         type: "function",
         name: wire,
-        parameters: wireParameters,
+        ...(preserveSchema ? {} : { parameters: wireParameters }),
       },
     ];
   }
@@ -217,7 +223,10 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
     return {
       name: tool.wire,
       ...(tool.wireNamespace !== undefined ? { namespace: tool.wireNamespace } : {}),
-      callId: normalizeToolCallId(item.call_id),
+      callId:
+        transforms.callId === "preserve"
+          ? requireCallId(item.call_id)
+          : normalizeToolCallId(item.call_id),
       input: tool.wrapped ? { arguments: args } : args,
     };
   }
@@ -253,4 +262,10 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
   }
 
   return { tools, declarations, resolve, byWire, encode, decode };
+}
+
+function requireCallId(value: unknown): string {
+  if (typeof value !== "string" || !value)
+    throw new ToolCodecError("Tool call is missing its call_id");
+  return value;
 }

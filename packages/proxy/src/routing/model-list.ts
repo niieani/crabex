@@ -234,10 +234,13 @@ function gateModelCapabilities(model: ModelDefinition, route: ModelRoute): Model
     route.toolPolicy.tool_search === "reject" || route.toolPolicy.tool_search === "omit";
   const customUnavailable =
     route.toolPolicy.custom === "reject" || route.toolPolicy.custom === "omit";
+  const translatedCustom =
+    (route.api ?? "responses") === "responses" && route.toolPolicy.custom === "translate";
   return {
     ...model,
     ...(searchUnavailable ? { supports_search_tool: false } : {}),
     ...(customUnavailable ? { apply_patch_tool_type: null, tool_mode: "direct" } : {}),
+    ...(translatedCustom ? { apply_patch_tool_type: "freeform" } : {}),
   };
 }
 
