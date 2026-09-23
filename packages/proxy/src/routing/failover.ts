@@ -84,11 +84,12 @@ export class TargetBreakers {
 }
 
 export interface FetchWithFailoverOptions {
+  signal?: AbortSignal;
   route: ModelRoute;
   /** Builds the request init for a target — the model rewrite happens here. */
   requestFor: (target: RouteTarget) => { url: URL; init: RequestInit };
   breakers?: TargetBreakers;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: (url: URL, init: RequestInit) => Promise<Response>;
   sleep?: (ms: number) => Promise<void>;
   onEvent?: (event: FailoverEvent) => void;
 }
@@ -145,6 +146,7 @@ export async function fetchWithFailover(
   let lastFailure: { response: Response } | { error: unknown } | undefined;
 
   for (const [targetIndex, target] of route.targets.entries()) {
+    options.signal?.throwIfAborted();
     const upstreamModel = target.upstreamModel ?? route.model.slug;
     const key = breakerKey(route, target);
     if (breakers.isOpen(key)) {
@@ -166,6 +168,7 @@ export async function fetchWithFailover(
         });
         await sleep(delayMs);
       }
+      options.signal?.throwIfAborted();
       options.onEvent?.({
         type: "attempt-started",
         targetIndex,
@@ -180,6 +183,7 @@ export async function fetchWithFailover(
       try {
         response = await fetchImpl(url, init);
       } catch (error) {
+        options.signal?.throwIfAborted();
         attempts.push({ upstreamModel, outcome: "network-error", durationMs: durationMs() });
         options.onEvent?.({
           type: "attempt-finished",
@@ -216,7 +220,11 @@ export async function fetchWithFailover(
         }
         response = new Response(
           JSON.stringify({
-            error: { code: "rate_limit_exceeded", message: "rate_limit_exceeded" },
+            error: {
+              code: resolved.status === 429 ? "rate_limit_exceeded" : "anthropic_overloaded",
+              message:
+                resolved.status === 429 ? "rate_limit_exceeded" : "Anthropic upstream overloaded",
+            },
           }),
           { status: resolved.status, headers: { "content-type": "application/json" } },
         );

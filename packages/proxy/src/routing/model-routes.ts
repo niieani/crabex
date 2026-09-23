@@ -42,7 +42,21 @@ export interface RouteRetryConfig {
   breaker?: RouteBreakerConfig;
 }
 
+export interface AnthropicOptions {
+  /** Includes thinking and visible output. */
+  max_tokens?: number;
+  thinking?: "adaptive" | "budget" | "disabled";
+  thinking_required?: boolean;
+  drop_mismatched_thinking?: boolean;
+  budget_tokens?: number;
+  auth?: "bearer" | "api-key";
+  cache_prompt?: boolean;
+  beta?: string[];
+}
+
 export interface ModelRouteConfig {
+  api?: "responses" | "anthropic-messages";
+  anthropic?: AnthropicOptions;
   authorization_env: string;
   enabled?: boolean;
   model: AdvertisedModelConfig;
@@ -102,6 +116,8 @@ export const DEFAULT_RETRY_BACKOFF_MS = [250, 1000];
 export const DEFAULT_BREAKER = { failures: 3, cooldownMs: 60_000 };
 
 export interface ModelRoute {
+  api?: "responses" | "anthropic-messages";
+  anthropic?: AnthropicOptions;
   authorizationEnv: string;
   enabled: boolean;
   model: AdvertisedModel;
@@ -133,6 +149,8 @@ export function parseModelRouteSet(value: unknown): ModelRouteSetData {
 export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
   return {
     authorizationEnv: config.authorization_env,
+    ...(config.api === undefined ? {} : { api: config.api }),
+    ...(config.anthropic === undefined ? {} : { anthropic: config.anthropic }),
     enabled: config.enabled ?? true,
     model: {
       description: config.model.description,
@@ -157,7 +175,7 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
         cooldownMs: config.retry?.breaker?.cooldown_ms ?? DEFAULT_BREAKER.cooldownMs,
       },
     },
-    transport: config.transport ?? "ws",
+    transport: config.transport ?? (config.api === "anthropic-messages" ? "http" : "ws"),
     bridgeResponseState: config.bridge_response_state ?? "replay",
     ...(config.allowed_tool_types === undefined
       ? {}
@@ -186,7 +204,14 @@ export function modelRouteFor(
 export function responseTargetUrl(route: ModelRoute, search: string): URL {
   const target = new URL(route.upstream);
   const basePath = target.pathname.replace(/\/$/, "");
-  target.pathname = `${basePath}/responses`;
+  target.pathname =
+    route.api === "anthropic-messages"
+      ? basePath.endsWith("/v1/messages")
+        ? basePath
+        : basePath.endsWith("/v1")
+          ? `${basePath}/messages`
+          : `${basePath}/v1/messages`
+      : `${basePath}/responses`;
   target.search = search;
   return target;
 }
@@ -261,6 +286,20 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   if (!isRecord(value)) {
     throw new Error(`${source} must be an object`);
   }
+  const api = value.api;
+  if (api !== undefined && api !== "responses" && api !== "anthropic-messages") {
+    throw new Error(`${source}.api must be responses or anthropic-messages`);
+  }
+  const anthropic =
+    value.anthropic === undefined ? undefined : anthropicOptions(value.anthropic, source);
+  if (anthropic !== undefined && api !== "anthropic-messages")
+    throw new Error(`${source}.anthropic requires anthropic-messages api`);
+  if (
+    api === "anthropic-messages" &&
+    (value.transport === "ws" || value.bridge_response_state === "stored")
+  ) {
+    throw new Error(`${source}: Anthropic requires HTTP transport and replay response state`);
+  }
   const enabled = value.enabled;
   if (enabled !== undefined && typeof enabled !== "boolean") {
     throw new Error(`${source}.enabled must be a boolean`);
@@ -304,6 +343,8 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
     throw new Error(`${source}.forward_access_programs must be a boolean`);
   }
   return {
+    ...(api === undefined ? {} : { api }),
+    ...(anthropic === undefined ? {} : { anthropic }),
     authorization_env: nonEmptyString(value.authorization_env, `${source}.authorization_env`),
     ...(enabled === undefined ? {} : { enabled }),
     model: advertisedModelConfig(value.model, `${source}.model`),
@@ -481,4 +522,57 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function anthropicOptions(value: unknown, source: string): AnthropicOptions {
+  if (!isRecord(value)) throw new Error(`${source}.anthropic must be an object`);
+  const allowed = new Set([
+    "max_tokens",
+    "thinking",
+    "thinking_required",
+    "drop_mismatched_thinking",
+    "budget_tokens",
+    "auth",
+    "cache_prompt",
+    "beta",
+  ]);
+  for (const key of Object.keys(value))
+    if (!allowed.has(key)) throw new Error(`${source}.anthropic.${key} is unknown`);
+  for (const key of ["max_tokens", "budget_tokens"]) {
+    const n = value[key];
+    if (
+      n !== undefined &&
+      (typeof n !== "number" ||
+        !Number.isSafeInteger(n) ||
+        n < (key === "budget_tokens" ? 1024 : 1))
+    )
+      throw new Error(`${source}.anthropic.${key} is invalid`);
+  }
+  if (
+    value.thinking !== undefined &&
+    (typeof value.thinking !== "string" ||
+      !["adaptive", "budget", "disabled"].includes(value.thinking))
+  )
+    throw new Error(`${source}.anthropic.thinking is invalid`);
+  for (const field of ["thinking_required", "drop_mismatched_thinking"])
+    if (value[field] !== undefined && typeof value[field] !== "boolean")
+      throw new Error(`${source}.anthropic.${field} must be boolean`);
+  if (value.thinking_required && value.thinking !== undefined && value.thinking !== "adaptive")
+    throw new Error(`${source}.anthropic.thinking_required requires adaptive thinking`);
+  if (value.auth !== undefined && value.auth !== "bearer" && value.auth !== "api-key")
+    throw new Error(`${source}.anthropic.auth is invalid`);
+  if (value.cache_prompt !== undefined && typeof value.cache_prompt !== "boolean")
+    throw new Error(`${source}.anthropic.cache_prompt must be boolean`);
+  if (
+    value.beta !== undefined &&
+    (!Array.isArray(value.beta) ||
+      value.beta.some((v) => typeof v !== "string" || !/^[a-zA-Z0-9-]+$/.test(v)))
+  )
+    throw new Error(`${source}.anthropic.beta is invalid`);
+  if (
+    typeof value.budget_tokens === "number" &&
+    value.budget_tokens >= Number(value.max_tokens ?? 32768)
+  )
+    throw new Error(`${source}.anthropic.budget_tokens must be less than max_tokens`);
+  return value as AnthropicOptions;
 }

@@ -229,6 +229,17 @@ export interface RouteRetryConfig {
 }
 
 export interface ModelRouteConfig {
+  api?: "responses" | "anthropic-messages";
+  anthropic?: {
+    max_tokens?: number;
+    thinking?: "adaptive" | "budget" | "disabled";
+    thinking_required?: boolean;
+    drop_mismatched_thinking?: boolean;
+    budget_tokens?: number;
+    auth?: "bearer" | "api-key";
+    cache_prompt?: boolean;
+    beta?: string[];
+  };
   authorization_env: string;
   enabled?: boolean;
   model: AdvertisedModelConfig;

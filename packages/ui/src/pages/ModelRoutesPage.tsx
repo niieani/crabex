@@ -301,6 +301,7 @@ function RouteCard({
             <Tag>priority:{route.model.priority}</Tag>
             <Tag>{route.upstream}</Tag>
             {route.transport === undefined ? null : <Tag>{route.transport}</Tag>}
+            {route.api === "anthropic-messages" ? <Tag>Anthropic Messages</Tag> : null}
             {route.upstream_model === undefined ? null : <Tag>as:{route.upstream_model}</Tag>}
             {(route.targets ?? []).map((target) => (
               <Tag key={target.upstream_model ?? "default"}>
@@ -646,6 +647,9 @@ function RouteEditor({
   onCreate: (route: ModelRouteConfig) => void;
   templateSlugs: string[];
 }) {
+  const [api, setApi] = useState<"responses" | "anthropic-messages">("responses");
+  const [maxTokens, setMaxTokens] = useState("32768");
+  const [thinking, setThinking] = useState<"adaptive" | "budget" | "disabled">("adaptive");
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [description, setDescription] = useState("");
@@ -674,6 +678,13 @@ function RouteEditor({
       }
     }
     onCreate({
+      ...(api === "anthropic-messages"
+        ? ({
+            api,
+            transport: "http",
+            anthropic: { max_tokens: Number(maxTokens), thinking },
+          } as const)
+        : {}),
       authorization_env: authorizationEnv.trim(),
       enabled: true,
       model: {
@@ -698,6 +709,41 @@ function RouteEditor({
 
   return (
     <form className="mt-4 space-y-3" onSubmit={submit}>
+      <Field label="Upstream API">
+        <select
+          className="input"
+          value={api}
+          onChange={(event) => setApi(event.target.value as typeof api)}
+        >
+          <option value="responses">OpenAI Responses</option>
+          <option value="anthropic-messages">Anthropic Messages (including Bedrock Mantle)</option>
+        </select>
+      </Field>
+      {api === "anthropic-messages" ? (
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Maximum output tokens">
+            <input
+              type="number"
+              min="1"
+              required
+              className="input"
+              value={maxTokens}
+              onChange={(event) => setMaxTokens(event.target.value)}
+            />
+          </Field>
+          <Field label="Thinking">
+            <select
+              className="input"
+              value={thinking}
+              onChange={(event) => setThinking(event.target.value as typeof thinking)}
+            >
+              <option value="adaptive">Adaptive</option>
+              <option value="budget">Token budget</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </Field>
+        </div>
+      ) : null}
       <div className="grid grid-cols-2 gap-2">
         <Field label="Slug">
           <input

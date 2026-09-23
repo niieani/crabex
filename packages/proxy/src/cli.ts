@@ -16,6 +16,7 @@ import { openTransformationStore } from "./config/transformation-store.ts";
 import { openUpstreamCacheStore } from "./config/upstream-cache.ts";
 import { startReverseProxy } from "./proxy/server.ts";
 import { TargetBreakers } from "./routing/failover.ts";
+import { openAnthropicKey } from "./proxy/anthropic/envelope.ts";
 import { modelRouteFromConfig } from "./routing/model-routes.ts";
 import { FileCaptureRepository } from "./recording/capture-repository.ts";
 import { openNdjsonCaptureSink } from "./recording/ndjson-capture-sink.ts";
@@ -110,6 +111,7 @@ async function main(): Promise<void> {
   const host = options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host;
   const proxyOrigin = `${options.tlsDirectory ? "https" : "http"}://${host === "::1" ? "[::1]" : host}:${options.port}`;
   const proxy = await startReverseProxy({
+    anthropicKey: await openAnthropicKey(`${options.modelRoutesPath}.anthropic-key`),
     webUi: createWebUi(await findUiDirectory(import.meta.dirname)),
     host: options.host,
     tls: options.tlsDirectory ? await readTls(options.tlsDirectory) : undefined,

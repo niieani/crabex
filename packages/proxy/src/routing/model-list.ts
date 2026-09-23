@@ -81,6 +81,40 @@ export function transformModels(
       model.model_messages = { ...messages, instructions_template: instructions };
       model.base_instructions = instructions;
     }
+    if (route.api === "anthropic-messages") {
+      model.use_responses_lite = false;
+      model.tool_mode = route.model.overrides.tool_mode ?? null;
+      model.supports_reasoning_summary_parameter = false;
+      model.support_verbosity = false;
+      model.supports_search_tool = false;
+      model.web_search_tool_type = "text";
+      model.supports_image_detail_original = false;
+      model.additional_speed_tiers = [];
+      model.service_tiers = [];
+      model.available_access_programs = { cyber: [] };
+      model.availability_nux = null;
+      model.max_context_window = route.model.overrides.context_window ?? 200000;
+      model.context_window = route.model.overrides.context_window ?? 200000;
+      model.default_reasoning_level =
+        route.model.overrides.default_reasoning_level ??
+        (route.anthropic?.thinking === "disabled" ? "none" : "medium");
+      model.supported_reasoning_levels =
+        route.model.overrides.supported_reasoning_levels ??
+        (route.anthropic?.thinking === "disabled"
+          ? ["none"]
+          : [
+              ...(route.anthropic?.thinking_required ? [] : ["none"]),
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+            ]
+        ).map((effort) => ({
+          effort,
+          description: effort === "none" ? "Disable thinking" : `${effort} reasoning effort`,
+        }));
+    }
     delete model.upgrade;
     return model;
   });

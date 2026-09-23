@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { anthropicFetch } from "./anthropic/adapter.ts";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import type { CaptureRouting, CaptureSink, CaptureUpstreamOrigin } from "../recording/capture.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
@@ -76,6 +77,8 @@ const WEBSOCKET_HANDSHAKE_HEADERS = [
 ];
 
 export interface ReverseProxyOptions {
+  /** Persistent 32-byte key for encrypted Anthropic reasoning and compaction replay. */
+  anthropicKey?: Uint8Array;
   /** Reuse observed ChatGPT credentials for unauthenticated Apps MCP requests. Single account only. */
   appsAuthRelay?: boolean;
   proxyConfigSource?: Pick<ProxyConfigStore, "get" | "subscribe">;
@@ -128,6 +131,8 @@ interface BridgeContext {
 }
 
 interface SocketData {
+  anthropicKey: Uint8Array;
+  bridgeAbort?: AbortController;
   upstream?: WebSocket;
   recorder: EventRecorder;
   client?: Bun.ServerWebSocket<SocketData>;
@@ -154,6 +159,7 @@ interface SocketData {
 }
 
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
+  const anthropicKey = options.anthropicKey ?? randomBytes(32);
   const host = options.host ?? "127.0.0.1";
   const upstreamOrigin = parseUpstreamOrigin(options.upstreamOrigin);
   let appsAuthRelay: AppsAuthRelay | undefined;
@@ -265,6 +271,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           breakers,
           liveRequests,
           storedResponses,
+          anthropicKey,
         );
       }
       return proxyHttpRequest(
@@ -281,6 +288,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         breakers,
         liveRequests,
         storedResponses,
+        anthropicKey,
       );
     },
     websocket: {
@@ -296,6 +304,16 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
       },
       message(client, message) {
         const data = client.data;
+        if (data.bridgeAbort && typeof message === "string") {
+          try {
+            if (JSON.parse(message).type === "response.cancel") {
+              data.bridgeAbort.abort();
+              return;
+            }
+          } catch {
+            /* ordinary frame */
+          }
+        }
         const encoding = typeof message === "string" ? "utf8" : "base64";
         data.clientToUpstream = data.clientToUpstream
           .then(async () => {
@@ -310,14 +328,26 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             let routing: CaptureRouting | undefined;
             const bridged = matchBridgeRoute(data.bridge, processed.value);
             if (bridged !== undefined) {
-              await runBridgedCreate(
-                data,
-                bridged.route,
-                bridged.inspected,
-                message,
-                encoding,
-                processed,
-              );
+              try {
+                await runBridgedCreate(
+                  data,
+                  bridged.route,
+                  bridged.inspected,
+                  message,
+                  encoding,
+                  processed,
+                );
+              } catch (error) {
+                if (!data.bridgeAbort?.signal.aborted) throw error;
+                if (data.activeRequestId)
+                  data.liveRequests.finish(data.activeRequestId, {
+                    state: "failed",
+                    detail: "Request cancelled",
+                  });
+                data.bridgeAbort = undefined;
+                if (client.readyState === WebSocket.OPEN)
+                  client.send(wrappedErrorEvent(499, "Request cancelled"));
+              }
               return;
             }
             const liveInspected = inspectResponseModel(processed.value);
@@ -368,6 +398,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           .catch(() => closePair(data, 1011, "capture failed"));
       },
       close(client, code, reason) {
+        client.data.bridgeAbort?.abort();
         if (client.data.upstream !== undefined) closeUpstream(client.data.upstream, code, reason);
       },
     },
@@ -397,6 +428,7 @@ async function proxyHttpRequest(
   breakers: TargetBreakers,
   liveRequests: LiveRequestStore,
   storedResponses: StoredResponseRegistry,
+  anthropicKey: Uint8Array,
 ): Promise<Response> {
   let liveRequestId: string | undefined;
   try {
@@ -525,6 +557,16 @@ async function proxyHttpRequest(
           })
         : await fetchWithFailover({
             route: routedRequest.route,
+            signal: request.signal,
+            fetchImpl:
+              routedRequest.route.api === "anthropic-messages"
+                ? anthropicFetch(
+                    routedRequest.route,
+                    anthropicKey,
+                    request.signal,
+                    requestUrl.pathname.endsWith("/compact"),
+                  )
+                : undefined,
             breakers,
             onEvent:
               liveRequestId === undefined
@@ -585,9 +627,32 @@ async function proxyHttpRequest(
       });
     }
 
+    let routedBody = response.body;
+    if (
+      routedRequest?.route.api === "anthropic-messages" &&
+      routing &&
+      response.headers.get("content-type")?.includes("application/json")
+    ) {
+      const serialized = await response.text();
+      routedBody = new Response(serialized).body;
+      const result: unknown = JSON.parse(serialized);
+      const usage = observePayload(
+        JSON.stringify({ type: "response.completed", response: result }),
+        "upstream_to_client",
+      ).responseSummary?.usage;
+      if (usage) recorder.recordUsage(routing, usage);
+    }
+    let routedStreamFailed = false;
     let downstreamBody =
-      routedRequest !== undefined && routing !== undefined && response.ok && response.body !== null
-        ? tapRoutedUsage(response.body, routing, recorder, (eventData) => {
+      routedRequest !== undefined && routing !== undefined && response.ok && routedBody !== null
+        ? tapRoutedUsage(routedBody, routing, recorder, (eventData) => {
+            try {
+              routedStreamFailed ||= ["response.failed", "response.incomplete", "error"].includes(
+                JSON.parse(eventData).type,
+              );
+            } catch {
+              /* observation only */
+            }
             if (responseStateKey === undefined || preparedStoredRequest === undefined) return;
             const completed = completedStoredResponse(
               eventData,
@@ -596,7 +661,7 @@ async function proxyHttpRequest(
             );
             if (completed !== undefined) storedResponses.set(responseStateKey, completed);
           })
-        : response.body;
+        : routedBody;
     if (liveRequestId !== undefined) {
       liveRequests.update(liveRequestId, { state: "streaming", status: response.status });
       if (downstreamBody === null) {
@@ -605,7 +670,10 @@ async function proxyHttpRequest(
         downstreamBody = trackResponseBody(
           downstreamBody,
           () =>
-            liveRequests.finish(liveRequestId!, { state: "completed", status: response.status }),
+            liveRequests.finish(liveRequestId!, {
+              state: routedStreamFailed ? "failed" : "completed",
+              status: response.status,
+            }),
           (error) =>
             liveRequests.finish(liveRequestId!, {
               state: "failed",
@@ -753,6 +821,7 @@ async function upgradeWebSocket(
   breakers: TargetBreakers,
   liveRequests: LiveRequestStore,
   storedResponses: StoredResponseRegistry,
+  anthropicKey: Uint8Array,
 ): Promise<Response | undefined> {
   try {
     const requestUrl = new URL(request.url);
@@ -771,6 +840,7 @@ async function upgradeWebSocket(
       liveRequests,
       continuationSession: continuationSessionKey(request.headers),
       storedResponses,
+      anthropicKey,
     };
 
     if (lazyRouting) {
@@ -975,8 +1045,14 @@ async function runBridgedCreate(
             : data.storedResponses.get(responseStateKey),
         )
       : undefined;
+  data.bridgeAbort = new AbortController();
   const result = await fetchWithFailover({
     route,
+    signal: data.bridgeAbort.signal,
+    fetchImpl:
+      route.api === "anthropic-messages"
+        ? anthropicFetch(route, data.anthropicKey, data.bridgeAbort.signal)
+        : undefined,
     breakers: bridge.breakers,
     onEvent: (event) => updateLiveRequestFromFailover(data.liveRequests, liveRequestId, event),
     requestFor: (target) => ({
@@ -1006,6 +1082,7 @@ async function runBridgedCreate(
   await recordRequest(routing);
 
   if (!result.response.ok || result.response.body === null) {
+    data.bridgeAbort = undefined;
     const detail = await result.response.text();
     await queueBridgedMessage(data, wrappedErrorEvent(result.response.status, detail), origin);
     data.liveRequests.finish(liveRequestId, {
@@ -1019,7 +1096,14 @@ async function runBridgedCreate(
     state: "streaming",
     status: result.response.status,
   });
+  let failed = false;
   for await (const eventData of parseSseEvents(result.response.body)) {
+    try {
+      const type = JSON.parse(eventData).type;
+      failed ||= ["response.failed", "response.incomplete", "error"].includes(type);
+    } catch {
+      /* upstream data is recorded verbatim */
+    }
     if (data.client === undefined || data.client.readyState !== WebSocket.OPEN) break;
     const completed = completedStoredResponse(
       eventData,
@@ -1038,8 +1122,9 @@ async function runBridgedCreate(
       origin,
     );
   }
+  data.bridgeAbort = undefined;
   data.liveRequests.finish(liveRequestId, {
-    state: "completed",
+    state: failed ? "failed" : "completed",
     status: result.response.status,
   });
 }

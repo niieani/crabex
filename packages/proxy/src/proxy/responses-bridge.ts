@@ -129,7 +129,10 @@ export function wrappedErrorEvent(status: number, detail: string): string {
  * lines, `event:` lines, and the `[DONE]` sentinel are skipped — the data
  * JSON carries the Responses event type itself.
  */
-const STREAM_RETRY_CODES = new Set(["rate_limit_exceeded"]);
+const STREAM_RETRY_CODES = new Map([
+  ["rate_limit_exceeded", 429],
+  ["anthropic_overloaded", 503],
+]);
 const STREAM_ERROR_TYPES = new Set(["error", "response.failed", "response.error"]);
 
 /** HTTP status used when an SSE error should retry/fail over like that status. */
@@ -150,7 +153,7 @@ export function eventStreamRetryStatus(eventData: string): number | undefined {
         ? (event.response as { error: { code?: unknown } }).error
         : undefined);
     const code = typeof nested?.code === "string" ? nested.code : event.code;
-    return typeof code === "string" && STREAM_RETRY_CODES.has(code) ? 429 : undefined;
+    return typeof code === "string" ? STREAM_RETRY_CODES.get(code) : undefined;
   } catch {
     return undefined;
   }
@@ -220,21 +223,19 @@ function replaySseResponse(
   rest?: AsyncGenerator<string>,
 ): Response {
   const encoder = new TextEncoder();
+  let index = 0;
   const body = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      try {
-        for (const event of buffered) {
-          controller.enqueue(encoder.encode(`data: ${event}\n\n`));
-        }
-        if (rest !== undefined) {
-          for await (const event of rest) {
-            controller.enqueue(encoder.encode(`data: ${event}\n\n`));
-          }
-        }
-        controller.close();
-      } catch (error) {
-        controller.error(error);
+    async pull(controller) {
+      if (index < buffered.length) {
+        controller.enqueue(encoder.encode(`data: ${buffered[index++]}\n\n`));
+        return;
       }
+      const next = await rest?.next();
+      if (!next || next.done) controller.close();
+      else controller.enqueue(encoder.encode(`data: ${next.value}\n\n`));
+    },
+    async cancel() {
+      await rest?.return(undefined);
     },
   });
   return new Response(body, {
@@ -249,15 +250,20 @@ export async function* parseSseEvents(
 ): AsyncGenerator<string, void, undefined> {
   const reader = body.getReader();
   const scanner = new SseEventScanner();
+  let finished = false;
 
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        finished = true;
+        break;
+      }
       yield* scanner.push(value);
     }
     yield* scanner.finish();
   } finally {
+    if (!finished) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

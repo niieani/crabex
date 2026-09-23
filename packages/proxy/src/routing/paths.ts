@@ -20,11 +20,17 @@ export function isModelsRequest(method: string, pathname: string): boolean {
 
 export function isResponsesPath(pathname: string): boolean {
   return (
+    pathname === "/v1/responses" ||
+    pathname === "/responses" ||
     pathname === CODEX_RESPONSES_PATH ||
     pathname === `${CHATGPT_BACKEND_API_PATH}${CODEX_RESPONSES_PATH}`
   );
 }
 
 export function isResponsesRequest(method: string, pathname: string): boolean {
-  return method === "POST" && isResponsesPath(pathname);
+  return (
+    method === "POST" &&
+    (isResponsesPath(pathname) ||
+      (pathname.endsWith("/compact") && isResponsesPath(pathname.slice(0, -8))))
+  );
 }
