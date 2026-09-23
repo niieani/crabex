@@ -1,6 +1,6 @@
 # Third-party notices
 
-The Anthropic adapter's custom-tool wrapping and reasoning/compaction replay design are informed by
+The shared tool codec's custom-tool wrapping and the Anthropic adapter's reasoning/compaction replay design are informed by
 [opencodex](https://github.com/lidge-jun/opencodex), commit
 4cb43cb0a8c6b60318cf0d63ffa8e57fd18407b2 (src/responses/parser-tools.ts,
 src/responses/reasoning-envelope.ts, src/bridge/sse.ts and src/adapters/anthropic.ts).

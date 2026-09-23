@@ -1,20 +1,22 @@
-// Tool wrapping and signed-thinking replay are informed by opencodex (MIT).
+// Signed-thinking replay is informed by opencodex (MIT).
 // See THIRD_PARTY_NOTICES.md. No provider OAuth or silent history repair is imported.
-import { createHash } from "node:crypto";
 import type { ModelRoute } from "../../routing/model-routes.ts";
+import {
+  createToolCodec,
+  normalizeToolCallId,
+  ToolCodecError,
+  type MappedTool,
+  type ToolCodec,
+} from "../tool-codec.ts";
 import { AnthropicEnvelope, AnthropicRequestError, record, text, type Json } from "./envelope.ts";
 
-export interface Tool {
-  name: string;
-  namespace?: string;
-  custom: boolean;
-  wrapped?: boolean;
-  wire: string;
+export interface Tool extends MappedTool {
   schema: Json;
 }
 export interface PreparedAnthropic {
   body: Json;
   tools: Tool[];
+  codec: ToolCodec;
   envelope: AnthropicEnvelope;
   model: string;
   compact: boolean;
@@ -22,98 +24,40 @@ export interface PreparedAnthropic {
 const fail = (message: string): never => {
   throw new AnthropicRequestError(message);
 };
-const id = (s: unknown): string => {
-  if (typeof s !== "string" || !s) return fail("Tool call is missing its call_id");
-  return /^[a-zA-Z0-9_-]{1,64}$/.test(s)
-    ? s
-    : `call_${createHash("sha256").update(s).digest("hex").slice(0, 48)}`;
-};
-function toolWire(name: string, namespace?: string): string {
-  if (!namespace && /^[a-zA-Z0-9_-]{1,64}$/.test(name)) return name;
-  return `tool_${createHash("sha256")
-    .update(JSON.stringify([namespace, name]))
-    .digest("hex")
-    .slice(0, 48)}`;
-}
-function toolsFor(input: unknown): Tool[] {
-  const result: Tool[] = [];
-  function add(value: unknown, namespace?: string) {
-    if (!record(value)) return fail("Invalid tool definition");
-    if (value.type === "namespace" && Array.isArray(value.tools)) {
-      for (const child of value.tools)
-        add(child, value.name === "functions" ? undefined : String(value.name));
-      return;
-    }
-    if (value.type !== "function" && value.type !== "custom")
-      return fail(
-        `Unsupported Anthropic tool type: ${String(value.type)}. Disable hosted tools for this route.`,
+function codecFailure(error: unknown): never {
+  if (error instanceof ToolCodecError) {
+    if (error.code === "unsupported")
+      fail(
+        `${error.message.replace("Unsupported tool type:", "Unsupported Anthropic tool type:")}. Disable hosted tools for this route.`,
       );
-    if (typeof value.name !== "string") return fail("Tool definition requires a name");
-    const custom = value.type === "custom";
-    const schema = custom
-      ? {
-          type: "object",
-          properties: {
-            input: {
-              type: "string",
-              description:
-                value.name === "apply_patch"
-                  ? "Raw patch starting with *** Begin Patch and ending with *** End Patch."
-                  : "Raw tool input, without markdown fences.",
-            },
-          },
-          required: ["input"],
-          additionalProperties: false,
-        }
-      : value.parameters;
-    if (!record(schema)) return fail(`Tool ${value.name} requires an object schema`);
-    const wrapped = !custom && ["oneOf", "anyOf", "allOf"].some((key) => key in schema);
-    // Preserve union constraints under one object property; relocate local JSON pointers.
-    const wrappedSchema = wrapped
-      ? JSON.parse(
-          JSON.stringify(schema, (key, value) =>
-            key === "$ref" && typeof value === "string" && (value === "#" || value.startsWith("#/"))
-              ? "#/properties/arguments" + value.slice(1)
-              : value,
-          ),
-        )
-      : schema;
-    result.push({
-      name: value.name,
-      namespace,
-      custom,
-      wrapped,
-      wire: toolWire(value.name, namespace),
-      schema: {
-        name: toolWire(value.name, namespace),
-        description: value.description ?? "",
-        input_schema: wrapped
-          ? {
-              type: "object",
-              properties: { arguments: wrappedSchema },
-              required: ["arguments"],
-              additionalProperties: false,
-            }
-          : schema,
-      },
-    });
+    if (error.code === "ambiguous") fail("Ambiguous Anthropic tool names");
+    fail(error.message);
   }
-  if (Array.isArray(input)) for (const tool of input) add(tool);
-  if (new Set(result.map((t) => t.wire)).size !== result.length)
-    fail("Ambiguous Anthropic tool names");
-  return result;
+  throw error;
 }
-function lookup(tools: Tool[], item: Json): Tool {
-  const namespace = item.namespace === "functions" ? undefined : item.namespace;
-  return (
-    tools.find((t) => t.name === item.name && t.namespace === namespace) ?? {
-      name: String(item.name),
-      namespace: typeof namespace === "string" ? namespace : undefined,
-      wire: toolWire(String(item.name), typeof namespace === "string" ? namespace : undefined),
-      custom: item.type === "custom_tool_call",
-      schema: {},
-    }
-  );
+
+function prepareTools(input: unknown): { codec: ToolCodec; tools: Tool[] } {
+  let codec: ToolCodec;
+  try {
+    codec = createToolCodec(input, { namespace: "flatten", custom: "wrap", union: "wrap" });
+  } catch (error) {
+    codecFailure(error);
+  }
+  return {
+    codec,
+    tools: codec.tools.map((tool) => ({
+      ...tool,
+      schema: { name: tool.wire, description: tool.description, input_schema: tool.parameters },
+    })),
+  };
+}
+
+function callId(value: unknown): string {
+  try {
+    return normalizeToolCallId(value);
+  } catch (error) {
+    codecFailure(error);
+  }
 }
 function content(value: unknown): Json[] {
   if (typeof value === "string") return value ? [{ type: "text", text: value }] : [];
@@ -167,7 +111,7 @@ export function prepareAnthropic(
   if (!Array.isArray(input)) fail("Anthropic routes require input messages");
   const items = input as unknown[];
   compact ||= items.some((item) => record(item) && item.type === "compaction_trigger");
-  const tools = toolsFor(compact ? [] : payload.tools);
+  const { codec, tools } = prepareTools(compact ? [] : payload.tools);
   const system: Json[] =
     typeof payload.instructions === "string" && payload.instructions
       ? [{ type: "text", text: payload.instructions }]
@@ -208,20 +152,18 @@ export function prepareAnthropic(
       }
       case "function_call":
       case "custom_tool_call": {
-        const tool = lookup(tools, item);
-        let args: unknown;
+        let call;
         try {
-          args = tool.custom ? { input: item.input } : JSON.parse(text(item.arguments, "{}"));
-        } catch {
-          fail(`Invalid JSON arguments for ${tool.name}`);
+          call = codec.encode(item);
+        } catch (error) {
+          codecFailure(error);
         }
-        if (!record(args)) fail(`Tool arguments for ${tool.name} must be an object`);
         push("assistant", [
           {
             type: "tool_use",
-            id: id(item.call_id),
-            name: tool.wire,
-            input: tool.wrapped ? { arguments: args } : args,
+            id: call.callId,
+            name: call.name,
+            input: call.input,
           },
         ]);
         break;
@@ -231,7 +173,7 @@ export function prepareAnthropic(
         push("user", [
           {
             type: "tool_result",
-            tool_use_id: id(item.call_id),
+            tool_use_id: callId(item.call_id),
             content: content(item.output ?? ""),
             ...(item.is_error === true ? { is_error: true } : {}),
           },
@@ -344,7 +286,7 @@ export function prepareAnthropic(
     let name: string | undefined;
     if (record(choice)) {
       if (choice.type !== "function" && choice.type !== "custom") fail("Unsupported tool_choice");
-      const chosen = lookup(tools, choice);
+      const chosen = codec.resolve(choice);
       if (!tools.some((t) => t.wire === chosen.wire)) fail("tool_choice names an unknown tool");
       name = chosen.wire;
       type = "tool";
@@ -398,5 +340,5 @@ export function prepareAnthropic(
     if (last && ["text", "image", "tool_result"].includes(String(last.type)))
       last.cache_control = { type: "ephemeral" };
   }
-  return { body, tools, envelope, model, compact };
+  return { body, tools, codec, envelope, model, compact };
 }

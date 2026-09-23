@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { parseSseEvents } from "../responses-bridge.ts";
+import type { MappedTool } from "../tool-codec.ts";
 import { record, text, type Json } from "./envelope.ts";
-import type { PreparedAnthropic, Tool } from "./request.ts";
+import type { PreparedAnthropic } from "./request.ts";
 
 const MAX_STREAM_BYTES = 32 * 1024 * 1024;
 interface Block {
@@ -9,7 +10,7 @@ interface Block {
   item: Json;
   outputIndex: number;
   json: string;
-  tool?: Tool;
+  tool?: MappedTool;
   stopped: boolean;
 }
 
@@ -102,7 +103,7 @@ export class AnthropicResponse {
         const outputIndex = this.output.length;
         const itemId = `${value.type === "tool_use" ? "fc" : value.type === "text" ? "msg" : "rs"}_${randomUUID()}`;
         let item: Json;
-        let tool: Tool | undefined;
+        let tool: MappedTool | undefined;
         if (value.type === "text")
           item = {
             type: "message",
@@ -114,16 +115,12 @@ export class AnthropicResponse {
         else if (value.type === "thinking" || value.type === "redacted_thinking")
           item = { type: "reasoning", id: itemId, summary: [] };
         else if (value.type === "tool_use") {
-          tool = this.prepared.tools.find((t) => t.wire === value.name);
+          tool = this.prepared.codec.byWire(value.name);
           if (!tool) throw new Error(`Anthropic returned unknown tool: ${String(value.name)}`);
           if (typeof value.id !== "string") throw new Error("Anthropic tool call lacks id");
           item = {
-            type: tool.custom ? "custom_tool_call" : "function_call",
+            ...this.prepared.codec.decode({ name: tool.wire, callId: value.id }),
             id: itemId,
-            call_id: value.id,
-            name: tool.name,
-            ...(tool.namespace ? { namespace: tool.namespace } : {}),
-            ...(tool.custom ? { input: "" } : { arguments: "" }),
             status: "in_progress",
           };
         } else throw new Error(`Unsupported Anthropic response block: ${String(value.type)}`);
@@ -222,15 +219,13 @@ export class AnthropicResponse {
         else if (block.value.type === "tool_use") {
           const input: unknown = block.json ? JSON.parse(block.json) : block.value.input;
           if (!record(input)) throw new Error("Anthropic tool arguments are not a JSON object");
-          if (block.tool?.custom) {
-            if (typeof input.input !== "string")
-              throw new Error("Custom tool requires a string input");
-            block.item.input = input.input;
-          } else {
-            const args = block.tool?.wrapped ? input.arguments : input;
-            if (!record(args)) throw new Error("Wrapped tool requires an arguments object");
-            block.item.arguments = JSON.stringify(args);
-          }
+          const decoded = this.prepared.codec.decode({
+            name: block.tool!.wire,
+            callId: String(block.item.call_id),
+            input,
+          });
+          if (block.tool?.custom) block.item.input = decoded.input;
+          else block.item.arguments = decoded.arguments;
         } else {
           if (block.value.type === "thinking" && !block.value.signature)
             throw new Error("Anthropic thinking block lacks its replay signature");
