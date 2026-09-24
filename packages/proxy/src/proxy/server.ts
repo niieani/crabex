@@ -1,8 +1,6 @@
 import { anthropicFetch } from "./anthropic/adapter.ts";
 import {
-  brokerRouteFor,
   brokerFailureSummary,
-  needsSearchBroker,
   SearchBrokerRouteError,
   type BrokerResult,
 } from "./search-broker.ts";
@@ -40,20 +38,16 @@ import {
   warnOmittedToolTypes,
 } from "../routing/tool-policy.ts";
 import {
-  httpPayloadFor,
   parseSseEvents,
   rewriteBridgedEvent,
   SseEventScanner,
   warmupCompletionEvents,
   wrappedErrorEvent,
 } from "./responses-bridge.ts";
-import {
-  createResponsesToolBridge,
-  translateResponsesStream,
-  type ResponsesToolBridge,
-} from "./responses-tool-bridge.ts";
+import { translateResponsesStream, type ResponsesToolBridge } from "./responses-tool-bridge.ts";
 import { LoadedToolRegistry } from "./tool-search.ts";
-import { prepareCustomAgentMessages, UnreadableAgentMessage } from "./multi-agent-handoff.ts";
+import { prepareRoutedRequest } from "./routed-request.ts";
+import { UnreadableAgentMessage } from "./multi-agent-handoff.ts";
 import {
   ForeignHistoryError,
   NATIVE_REASONING_FAMILY,
@@ -69,9 +63,7 @@ import {
 import {
   completedStoredResponse,
   continuationSessionKey,
-  prepareStoredRequest,
   StoredResponseRegistry,
-  storedResponseKey,
   type PreparedStoredRequest,
   type StoredResponseState,
 } from "./stored-response-continuation.ts";
@@ -647,7 +639,6 @@ async function proxyHttpRequest(
     }
     let outbound = processed.value;
     let routing: CaptureRouting | undefined;
-    let routedPayload: Record<string, unknown> | undefined;
     let translatedPayload: Record<string, unknown> | undefined;
     let toolBridge: ResponsesToolBridge | undefined;
     let captureEffectivePayload = processed.effectivePayload;
@@ -702,67 +693,43 @@ async function proxyHttpRequest(
     }
     if (routedRequest !== undefined) {
       const { inspected, route } = routedRequest;
-      const policy = applyRouteToolPolicy(route, inspected.payload);
-      noteToolOmissions(route, policy.omittedTypes, liveRequests, liveRequestId);
-      if (policy.omittedTypes.length > 0) {
-        captureEffectivePayload = JSON.stringify(policy.payload);
-      }
-      const sanitized = sanitizeMixedProviderHistory(policy.payload, {
-        target: route.api === "anthropic-messages" ? "anthropic" : "responses",
+      const prepared = prepareRoutedRequest({
+        route,
+        routes,
+        payload: inspected.payload,
+        search: requestUrl.search,
+        sessionKey: continuationSessionKey(request.headers),
         sourceFamily: historySourceFamily,
         targetFamily,
+        plaintextHandoffEnabled: proxyConfigSource?.get().routed_agents.enabled,
+        defaultBrokerRoute: proxyConfigSource?.get().search_broker.route,
+        storedResponses,
+        loadedTools,
       });
-      if (sanitized !== policy.payload) captureEffectivePayload = JSON.stringify(sanitized);
-      const agentPayload = prepareCustomAgentMessages(
-        sanitized,
-        route.model.slug,
-        proxyConfigSource?.get().routed_agents.enabled,
-      );
-      if (agentPayload !== sanitized) captureEffectivePayload = JSON.stringify(agentPayload);
-      const authorization = authorizationFor(route, process.env);
-      brokerRoute = needsSearchBroker(route, agentPayload.tools)
-        ? brokerRouteFor(
-            routes,
-            route.searchBrokerRoute ?? proxyConfigSource?.get().search_broker.route ?? "gpt-6-luna",
-            route.model.slug,
-          )
-        : undefined;
-      headers = routedHeaders(headers, authorization);
-      routedPayload = httpPayloadFor(agentPayload, {
-        forwardAccessPrograms: route.forwardAccessPrograms,
-        storeResponses: route.bridgeResponseState === "stored",
-      });
-      const scopedKey = storedResponseKey(
-        continuationSessionKey(request.headers),
-        route.model.slug,
-        responseTargetUrl(route, requestUrl.search).toString(),
-        route.targets[0]?.upstreamModel ?? route.model.slug,
-        authorization,
-      );
-      if (route.bridgeResponseState === "stored") {
-        responseStateKey = scopedKey;
-        preparedStoredRequest = prepareStoredRequest(
-          routedPayload,
-          route.model.slug,
-          storedResponses.get(responseStateKey),
-        );
+      if (prepared.kind === "failed") {
+        noteToolOmissions(route, prepared.omittedTypes, liveRequests, liveRequestId);
+        throw prepared.error;
       }
-      const requestPayload = preparedStoredRequest?.payload ?? routedPayload;
-      const searchPayload =
-        route.toolPolicy.tool_search === "translate"
-          ? loadedTools.prepare(route.model.slug, scopedKey, routedPayload, requestPayload)
-          : requestPayload;
-      toolBridge = createResponsesToolBridge(route, searchPayload.tools);
-      translatedPayload = toolBridge?.request(searchPayload) ?? searchPayload;
-      if (toolBridge !== undefined || searchPayload !== requestPayload)
-        captureEffectivePayload = JSON.stringify(translatedPayload);
+      if (prepared.kind !== "ready") throw new Error("HTTP route cannot use local warmup");
+      noteToolOmissions(route, prepared.omittedTypes, liveRequests, liveRequestId);
+      if (prepared.omittedTypes.length > 0)
+        captureEffectivePayload = JSON.stringify(prepared.policyPayload);
+      if (prepared.agentPayload !== prepared.policyPayload)
+        captureEffectivePayload = JSON.stringify(prepared.agentPayload);
+      headers = routedHeaders(headers, prepared.authorization);
+      brokerRoute = prepared.brokerRoute;
+      preparedStoredRequest = prepared.storedRequest;
+      responseStateKey = prepared.responseStateKey;
+      toolBridge = prepared.toolBridge;
+      translatedPayload = prepared.translatedPayload;
+      if (prepared.translated) captureEffectivePayload = JSON.stringify(translatedPayload);
       routing = {
         action: "routed",
         routeSlugs: [route.model.slug],
         upstream: route.upstream.origin,
         requestedModel: inspected.model,
         upstreamModel: route.targets[0]?.upstreamModel ?? route.model.slug,
-        ...(policy.omittedTypes.length === 0 ? {} : { omittedToolTypes: policy.omittedTypes }),
+        ...(prepared.omittedTypes.length === 0 ? {} : { omittedToolTypes: prepared.omittedTypes }),
       };
     } else if (inspectedAgent !== undefined) {
       const sanitized = sanitizeMixedProviderHistory(inspectedAgent.payload, {
@@ -1407,36 +1374,63 @@ async function runBridgedCreate(
       origin,
     });
 
-  const policy = applyRouteToolPolicy(route, inspected.payload);
-  let agentPayload: Record<string, unknown>;
-  try {
-    const sanitized = sanitizeMixedProviderHistory(policy.payload, {
-      target: route.api === "anthropic-messages" ? "anthropic" : "responses",
-      sourceFamily,
-      targetFamily,
-    });
-    agentPayload = prepareCustomAgentMessages(
-      sanitized,
-      route.model.slug,
-      data.proxyConfigSource?.get().routed_agents.enabled,
-    );
-    if (agentPayload !== policy.payload) captureEffectivePayload = JSON.stringify(agentPayload);
-  } catch (error) {
-    if (!(error instanceof UnreadableAgentMessage || error instanceof ForeignHistoryError))
-      throw error;
-    await recordRequest(routingBase);
-    await queueBridgedMessage(data, wrappedErrorEvent(422, error.message), origin);
-    data.liveRequests.finish(liveRequestId, {
-      state: "failed",
-      status: 422,
-      detail: error.message,
-    });
-    return;
+  const prepared = prepareRoutedRequest({
+    route,
+    routes: bridge.routes,
+    payload: inspected.payload,
+    search: bridge.search,
+    sessionKey: data.continuationSession,
+    sourceFamily,
+    targetFamily,
+    plaintextHandoffEnabled: data.proxyConfigSource?.get().routed_agents.enabled,
+    defaultBrokerRoute: data.proxyConfigSource?.get().search_broker.route,
+    localWarmup: true,
+    storedResponses: data.storedResponses,
+    fallbackStoredResponse: data.storedResponse,
+    loadedTools: data.loadedTools,
+  });
+  if (prepared.kind === "failed") {
+    const error = prepared.error;
+    if (
+      prepared.phase === "preflight" &&
+      (error instanceof UnreadableAgentMessage || error instanceof ForeignHistoryError)
+    ) {
+      await recordRequest(routingBase);
+      await queueBridgedMessage(data, wrappedErrorEvent(422, error.message), origin);
+      data.liveRequests.finish(liveRequestId, {
+        state: "failed",
+        status: 422,
+        detail: error.message,
+      });
+      return;
+    }
+    if (prepared.phase === "upstream") {
+      noteToolOmissions(route, prepared.omittedTypes, data.liveRequests, liveRequestId);
+      if (prepared.omittedTypes.length > 0) {
+        routingBase.omittedToolTypes = prepared.omittedTypes;
+        captureEffectivePayload = JSON.stringify(prepared.policyPayload);
+      }
+      if (prepared.agentPayload !== prepared.policyPayload)
+        captureEffectivePayload = JSON.stringify(prepared.agentPayload);
+      await recordRequest(routingBase);
+      await queueBridgedMessage(
+        data,
+        wrappedErrorEvent(error instanceof SearchBrokerRouteError ? 400 : 502, errorMessage(error)),
+        origin,
+      );
+      data.liveRequests.finish(liveRequestId, { state: "failed", detail: errorMessage(error) });
+      return;
+    }
+    if (prepared.phase === "translation")
+      noteToolOmissions(route, prepared.omittedTypes, data.liveRequests, liveRequestId);
+    throw error;
   }
 
   // Warmup creates (generate: false) are answered locally: forwarding them
   // would bill a real generation for a response the client ignores.
-  if (inspected.payload.generate === false) {
+  if (prepared.kind === "warmup") {
+    if (prepared.agentPayload !== prepared.policyPayload)
+      captureEffectivePayload = JSON.stringify(prepared.agentPayload);
     await recordRequest(routingBase);
     for (const event of warmupCompletionEvents(inspected.model)) {
       await queueBridgedMessage(data, event, origin);
@@ -1445,74 +1439,22 @@ async function runBridgedCreate(
     return;
   }
 
-  noteToolOmissions(route, policy.omittedTypes, data.liveRequests, liveRequestId);
-  if (policy.omittedTypes.length > 0) {
-    routingBase.omittedToolTypes = policy.omittedTypes;
-    captureEffectivePayload = JSON.stringify(policy.payload);
+  noteToolOmissions(route, prepared.omittedTypes, data.liveRequests, liveRequestId);
+  if (prepared.omittedTypes.length > 0) {
+    routingBase.omittedToolTypes = prepared.omittedTypes;
+    captureEffectivePayload = JSON.stringify(prepared.policyPayload);
   }
-  if (agentPayload !== policy.payload) captureEffectivePayload = JSON.stringify(agentPayload);
-
-  let authorization: string;
-  let brokerRoute: ModelRoute | undefined;
-  try {
-    authorization = authorizationFor(route, process.env);
-    if (needsSearchBroker(route, agentPayload.tools))
-      brokerRoute = brokerRouteFor(
-        bridge.routes,
-        route.searchBrokerRoute ??
-          data.proxyConfigSource?.get().search_broker.route ??
-          "gpt-6-luna",
-        route.model.slug,
-      );
-  } catch (error) {
-    await recordRequest(routingBase);
-    await queueBridgedMessage(
-      data,
-      wrappedErrorEvent(error instanceof SearchBrokerRouteError ? 400 : 502, errorMessage(error)),
-      origin,
-    );
-    data.liveRequests.finish(liveRequestId, {
-      state: "failed",
-      detail: errorMessage(error),
-    });
-    return;
-  }
-
-  const forwardedPayload = httpPayloadFor(agentPayload, {
-    forwardAccessPrograms: route.forwardAccessPrograms,
-    storeResponses: route.bridgeResponseState === "stored",
-  });
-  const responseStateKey = storedResponseKey(
-    data.continuationSession,
-    route.model.slug,
-    responseTargetUrl(route, bridge.search).toString(),
-    route.targets[0]?.upstreamModel ?? route.model.slug,
+  if (prepared.agentPayload !== prepared.policyPayload)
+    captureEffectivePayload = JSON.stringify(prepared.agentPayload);
+  const {
     authorization,
-  );
-  const storedRequest =
-    route.bridgeResponseState === "stored"
-      ? prepareStoredRequest(
-          forwardedPayload,
-          route.model.slug,
-          responseStateKey === undefined
-            ? data.storedResponse
-            : data.storedResponses.get(responseStateKey),
-        )
-      : undefined;
-  const requestPayload = storedRequest?.payload ?? forwardedPayload;
-  const searchPayload =
-    route.toolPolicy.tool_search === "translate"
-      ? data.loadedTools.prepare(
-          route.model.slug,
-          responseStateKey,
-          forwardedPayload,
-          requestPayload,
-        )
-      : requestPayload;
-  const toolBridge = createResponsesToolBridge(route, searchPayload.tools);
-  const translatedPayload = toolBridge?.request(searchPayload) ?? searchPayload;
-  if (toolBridge !== undefined || searchPayload !== requestPayload)
-    captureEffectivePayload = JSON.stringify(translatedPayload);
+    brokerRoute,
+    responseStateKey,
+    storedRequest,
+    toolBridge,
+    translatedPayload,
+  } = prepared;
+  if (prepared.translated) captureEffectivePayload = JSON.stringify(translatedPayload);
   data.bridgeAbort = new AbortController();
   const result = await fetchWithFailover({
     route,
