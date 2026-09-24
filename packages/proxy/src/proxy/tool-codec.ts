@@ -12,6 +12,7 @@ export interface ToolTransforms {
   functionSchema?: "require" | "preserve";
   callId?: "normalize" | "preserve";
   other?: "pass" | "reject";
+  plaintextCollaboration?: boolean;
 }
 
 export interface MappedTool {
@@ -64,23 +65,12 @@ function encryptedMessageParameter(parameters: unknown): boolean {
   return record(message) && message.encrypted === true;
 }
 
-export function hasEncryptedCollaborationMessageTool(input: unknown): boolean {
-  return (
-    Array.isArray(input) &&
-    input.some(
-      (tool) =>
-        record(tool) &&
-        tool.type === "namespace" &&
-        tool.name === "collaboration" &&
-        Array.isArray(tool.tools) &&
-        tool.tools.some(
-          (member: unknown) =>
-            record(member) &&
-            member.type === "function" &&
-            encryptedMessageParameter(member.parameters),
-        ),
-    )
-  );
+function plaintextMessageParameters(parameters: JsonObject): JsonObject {
+  const copy = structuredClone(parameters);
+  const properties = copy.properties as JsonObject;
+  const message = properties.message as JsonObject;
+  delete message.encrypted;
+  return copy;
 }
 
 const hash = (value: string): string =>
@@ -230,7 +220,14 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
       ["oneOf", "anyOf", "allOf"].some((key) => key in parameters);
     const wire = wireName(value.name, namespace, transforms);
     const wireNamespace = transforms.namespace === "preserve" ? namespace : undefined;
-    const wireParameters = wrapped ? wrapUnion(parameters) : parameters;
+    const plaintextMessage =
+      transforms.plaintextCollaboration === true &&
+      namespace === "collaboration" &&
+      encryptedMessageParameter(value.parameters);
+    const outboundParameters = plaintextMessage
+      ? plaintextMessageParameters(parameters)
+      : parameters;
+    const wireParameters = wrapped ? wrapUnion(outboundParameters) : outboundParameters;
     tools.push({
       name: value.name,
       namespace,
@@ -238,9 +235,7 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
       ...(wireNamespace !== undefined ? { wireNamespace } : {}),
       custom,
       search: false,
-      ...(namespace === "collaboration" && encryptedMessageParameter(value.parameters)
-        ? { plaintextMessage: true }
-        : {}),
+      ...(plaintextMessage ? { plaintextMessage: true } : {}),
       wrapped,
       description: value.description ?? "",
       parameters: wireParameters,

@@ -81,6 +81,64 @@ describe("subscription reverse proxy", () => {
     expect(JSON.stringify(captures.events)).not.toContain("oauth-secret");
   });
 
+  it("preserves encrypted collaboration calls on a default pass Responses route", async () => {
+    const declaration = collaborationDeclaration();
+    const call = {
+      type: "function_call",
+      id: "fc_spawn",
+      call_id: "call_spawn",
+      namespace: "collaboration",
+      name: "spawn_agent",
+      arguments: '{"message":"ciphertext"}',
+      encrypted_function_args: ["ciphertext"],
+    };
+    let outbound: Record<string, unknown> | undefined;
+    const upstream = await startHttpServer(async (request, response) => {
+      outbound = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      for (const event of [
+        { type: "response.output_item.added", output_index: 0, item: call },
+        { type: "response.output_item.done", output_index: 0, item: call },
+        { type: "response.completed", response: { output: [call] } },
+      ])
+        response.write(`data: ${JSON.stringify(event)}\n\n`);
+      response.end();
+    });
+    const original = process.env.ACT_TEST_ROUTE_KEY;
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(upstream.origin),
+        transport: "http",
+      });
+      const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { authorization: "Bearer oauth-secret", "content-type": "application/json" },
+        body: JSON.stringify({ model: "kimi-k3", input: [], tools: [declaration], stream: true }),
+      });
+      const events = (await Array.fromAsync(parseSseEvents(response.body!))).map((entry) =>
+        JSON.parse(entry),
+      );
+      expect(response.status).toBe(200);
+      expect(outbound?.tools).toEqual([declaration]);
+      expect(events.find((event) => event.type === "response.output_item.added")?.item).toEqual(
+        call,
+      );
+      expect(events.find((event) => event.type === "response.output_item.done")?.item).toEqual(
+        call,
+      );
+      expect(
+        events.find((event) => event.type === "response.completed")?.response.output[0],
+      ).toEqual(call);
+    } finally {
+      if (original === undefined) delete process.env.ACT_TEST_ROUTE_KEY;
+      else process.env.ACT_TEST_ROUTE_KEY = original;
+    }
+  });
+
   it("adds routed agent tools on native HTTP and restores plaintext calls through replay", async () => {
     const seen: Record<string, unknown>[] = [];
     const spawn = {

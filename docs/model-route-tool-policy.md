@@ -152,10 +152,12 @@ broker overrides and each route's advertised `multi_agent_version`.
 
 ## V2 agent handoff through routed models
 
-Custom Responses and Anthropic routes mark calls to Codex's encrypted
-`collaboration` message tools with `encrypted_function_args: []` when their
-declarations identify the `message` parameter as encrypted. This tells Codex
-that the provider's argument is readable text. A routed child receives a
+Custom Responses routes using `custom: "translate"` and Anthropic routes
+remove the `encrypted` annotation from outbound `collaboration` message
+parameters, then mark their plaintext calls with `encrypted_function_args: []`.
+Plain Responses routes keep the original declaration and any upstream
+encrypted arguments unchanged. Custom-parent plaintext handoff does not depend
+on the proxy-wide `routed_agents` opt-in. A routed child receives a
 readable `agent_message` as a user message with sender and recipient context.
 If its task contains `encrypted_content`, the route refuses it with HTTP 422
 or a WebSocket 422 error event instead of forwarding unreadable ciphertext.

@@ -1,11 +1,6 @@
 import type { ModelRoute } from "../routing/model-routes.ts";
 import { ToolPolicyError } from "../routing/tool-policy.ts";
-import {
-  createToolCodec,
-  hasEncryptedCollaborationMessageTool,
-  type MappedTool,
-  type ToolCodec,
-} from "./tool-codec.ts";
+import { createToolCodec, type MappedTool, type ToolCodec } from "./tool-codec.ts";
 import { toolSearchResultText } from "./tool-search.ts";
 import { parseSseEvents } from "./responses-bridge.ts";
 
@@ -45,6 +40,7 @@ export class ResponsesToolBridge {
         functionSchema: "preserve",
         callId: "preserve",
         other: "pass",
+        plaintextCollaboration: modes.custom,
       });
     } catch (error) {
       this.fail(error);
@@ -196,7 +192,9 @@ export class ResponsesToolBridge {
   private markPlaintextMessage(item: JsonObject): JsonObject {
     if (item.type !== "function_call") return item;
     const tool = this.codec.byWire(item.name, item.namespace);
-    return tool?.plaintextMessage ? { ...item, encrypted_function_args: [] } : item;
+    return tool?.plaintextMessage && !Object.hasOwn(item, "encrypted_function_args")
+      ? { ...item, encrypted_function_args: [] }
+      : item;
   }
 
   private callState(event: JsonObject): CallState | undefined {
@@ -296,7 +294,7 @@ export function createResponsesToolBridge(
     custom: route.toolPolicy.custom === "translate",
     search: route.toolPolicy.tool_search === "translate",
   };
-  return modes.custom || modes.search || hasEncryptedCollaborationMessageTool(declarations)
+  return modes.custom || modes.search
     ? new ResponsesToolBridge(route.model.slug, declarations, modes)
     : undefined;
 }

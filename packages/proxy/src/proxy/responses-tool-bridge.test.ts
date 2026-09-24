@@ -17,19 +17,7 @@ const route = modelRouteFromConfig({
 });
 
 describe("Responses tool discovery bridge", () => {
-  it("marks encrypted collaboration message calls as plaintext in streamed and completed output", () => {
-    const passRoute = modelRouteFromConfig({
-      authorization_env: "TEST_KEY",
-      transport: "http",
-      model: {
-        slug: "collaboration-test",
-        display_name: "Collaboration test",
-        description: "Test Responses bridge",
-        priority: 1,
-        template_slug: "gpt-6-astra",
-      },
-      upstream: "https://gateway.example/v1",
-    });
+  it("marks only deliberately plaintext collaboration calls and strips their outbound annotation", () => {
     const declaration = {
       type: "namespace",
       name: "collaboration",
@@ -49,7 +37,15 @@ describe("Responses tool discovery bridge", () => {
         },
       ],
     };
-    const bridge = createResponsesToolBridge(passRoute, [declaration])!;
+    const bridge = createResponsesToolBridge(route, [declaration])!;
+    const outbound = bridge.request({ tools: [declaration] });
+    expect(
+      (outbound.tools as (typeof declaration)[])[0]?.tools[0]?.parameters.properties.message,
+    ).toEqual({ type: "string" });
+    expect(declaration.tools[0]?.parameters.properties.message).toEqual({
+      type: "string",
+      encrypted: true,
+    });
     const call = {
       type: "function_call",
       id: "fc_spawn",
@@ -80,6 +76,56 @@ describe("Responses tool discovery bridge", () => {
       }),
     );
     expect(JSON.parse(wait[0]!).item).not.toHaveProperty("encrypted_function_args");
+    const upstreamEncrypted = bridge.event(
+      JSON.stringify({
+        type: "response.output_item.done",
+        item: { ...call, encrypted_function_args: ["ciphertext"] },
+      }),
+    );
+    expect(JSON.parse(upstreamEncrypted[0]!).item.encrypted_function_args).toEqual(["ciphertext"]);
+  });
+
+  it("preserves upstream encrypted arguments on a pass route with unrelated search translation", () => {
+    const passRoute = modelRouteFromConfig({
+      authorization_env: "TEST_KEY",
+      transport: "http",
+      tool_policy: { tool_search: "translate" },
+      model: {
+        slug: "pass-test",
+        display_name: "Pass test",
+        description: "Test Responses bridge",
+        priority: 1,
+        template_slug: "gpt-6-astra",
+      },
+      upstream: "https://gateway.example/v1",
+    });
+    const declaration = {
+      type: "namespace",
+      name: "collaboration",
+      tools: [
+        {
+          type: "function",
+          name: "spawn_agent",
+          parameters: {
+            type: "object",
+            properties: { message: { type: "string", encrypted: true } },
+          },
+        },
+      ],
+    };
+    const bridge = createResponsesToolBridge(passRoute, [declaration])!;
+    expect(bridge.request({ tools: [declaration] }).tools).toEqual([declaration]);
+    const call = {
+      type: "function_call",
+      name: "spawn_agent",
+      namespace: "collaboration",
+      call_id: "call_spawn",
+      arguments: '{"message":"ciphertext"}',
+      encrypted_function_args: ["ciphertext"],
+    };
+    for (const type of ["response.output_item.added", "response.output_item.done"])
+      expect(JSON.parse(bridge.event(JSON.stringify({ type, item: call }))[0]!).item).toEqual(call);
+    expect(bridge.response({ output: [call] })).toEqual({ output: [call] });
   });
   const searchRoute = modelRouteFromConfig({
     authorization_env: "TEST_KEY",

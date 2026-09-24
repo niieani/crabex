@@ -80,6 +80,10 @@ describe("Anthropic protocol", () => {
       route,
       key,
     );
+    const schema = prepared.tools[0]!.schema.input_schema as {
+      properties: { message: Record<string, unknown> };
+    };
+    expect(schema.properties.message).toEqual({ type: "string" });
     const events = await Array.fromAsync(
       anthropicEvents(
         sse([

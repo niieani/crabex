@@ -51,6 +51,7 @@ function prepareTools(
       union: "wrap",
       ...(translateSearch ? { toolSearch: "function" } : {}),
       ...(brokerWebSearch ? { webSearch: "function" } : {}),
+      plaintextCollaboration: true,
     });
   } catch (error) {
     codecFailure(error);
