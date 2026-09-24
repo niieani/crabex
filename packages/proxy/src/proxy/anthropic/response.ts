@@ -13,10 +13,18 @@ interface Block {
   tool?: MappedTool;
   stopped: boolean;
 }
+export interface BrokerUse {
+  itemId: string;
+  id: string;
+  name: string;
+  input: Json;
+  query: string;
+}
 
 /** Incremental, index-keyed state. Completion is never synthesized on EOF or stream failure. */
 export class AnthropicResponse {
   readonly output: Json[] = [];
+  readonly brokerUses: BrokerUse[] = [];
   private readonly blocks = new Map<number, Block>();
   private usage: Json = {};
   private sequence = 0;
@@ -30,6 +38,9 @@ export class AnthropicResponse {
   constructor(prepared: PreparedAnthropic, slug: string) {
     this.prepared = prepared;
     this.slug = slug;
+  }
+  assistantBlocks(): Json[] {
+    return [...this.blocks.values()].map((block) => structuredClone(block.value));
   }
 
   private event(type: string, fields: Json = {}): string {
@@ -120,7 +131,7 @@ export class AnthropicResponse {
           if (typeof value.id !== "string") throw new Error("Anthropic tool call lacks id");
           item = {
             ...this.prepared.codec.decode({ name: tool.wire, callId: value.id }),
-            id: itemId,
+            id: tool.broker ? `ws_${randomUUID()}` : itemId,
             status: "in_progress",
           };
         } else throw new Error(`Unsupported Anthropic response block: ${String(value.type)}`);
@@ -222,12 +233,25 @@ export class AnthropicResponse {
         else if (block.value.type === "tool_use") {
           const input: unknown = block.json ? JSON.parse(block.json) : block.value.input;
           if (!record(input)) throw new Error("Anthropic tool arguments are not a JSON object");
+          block.value.input = input;
           const decoded = this.prepared.codec.decode({
             name: block.tool!.wire,
             callId: String(block.item.call_id),
             input,
           });
-          if (block.tool?.custom) block.item.input = decoded.input;
+          if (block.tool?.broker) {
+            block.item.action = decoded.action;
+            const query = input.query;
+            if (typeof query !== "string" || !query.trim())
+              throw new Error("Anthropic web_search requires a non-empty query");
+            this.brokerUses.push({
+              itemId: String(block.item.id),
+              id: String(block.value.id),
+              name: String(block.value.name),
+              input,
+              query,
+            });
+          } else if (block.tool?.custom) block.item.input = decoded.input;
           else block.item.arguments = decoded.arguments;
         } else {
           if (block.value.type === "thinking" && !block.value.signature)
@@ -320,7 +344,7 @@ export class AnthropicResponse {
                 input: block.item.input,
               }),
             );
-          } else if (block.tool && !block.tool.search) {
+          } else if (block.tool && !block.tool.search && !block.tool.broker) {
             if (block.tool.wrapped)
               events.push(
                 this.event("response.function_call_arguments.delta", {
@@ -376,8 +400,8 @@ export async function* anthropicEvents(
   response: Response,
   prepared: PreparedAnthropic,
   slug: string,
+  state = new AnthropicResponse(prepared, slug),
 ): AsyncGenerator<string> {
-  const state = new AnthropicResponse(prepared, slug);
   try {
     if (response.headers.get("content-type")?.includes("text/event-stream")) {
       if (!response.body) throw new Error("Missing Anthropic response body");

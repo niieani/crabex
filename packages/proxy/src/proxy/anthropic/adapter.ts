@@ -2,6 +2,7 @@ import type { ModelRoute } from "../../routing/model-routes.ts";
 import { AnthropicRequestError, record } from "./envelope.ts";
 import { prepareAnthropic } from "./request.ts";
 import { anthropicEvents, eventsResponse } from "./response.ts";
+import { brokeredAnthropicEvents, type BrokerContext } from "./broker.ts";
 
 /** Fetch-compatible seam: upstream attempts return Responses, before retry/commit inspection. */
 export function anthropicFetch(
@@ -9,6 +10,7 @@ export function anthropicFetch(
   key: Uint8Array,
   signal?: AbortSignal,
   legacyCompact = false,
+  broker?: BrokerContext,
 ) {
   return async (url: URL, init: RequestInit): Promise<Response> => {
     try {
@@ -58,7 +60,18 @@ export function anthropicFetch(
           { status: response.status },
         );
       }
-      const events = anthropicEvents(response, prepared, route.model.slug);
+      const events =
+        broker && prepared.codec.tools.some((tool) => tool.broker) && !legacyCompact
+          ? brokeredAnthropicEvents(
+              response,
+              url,
+              headers,
+              prepared,
+              route.model.slug,
+              broker,
+              signal,
+            )
+          : anthropicEvents(response, prepared, route.model.slug);
       if (payload.stream === true && !legacyCompact) return eventsResponse(events);
       for await (const data of events) {
         const event = JSON.parse(data);

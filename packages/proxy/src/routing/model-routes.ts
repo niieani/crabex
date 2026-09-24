@@ -64,6 +64,8 @@ export interface AnthropicOptions {
 export interface ModelRouteConfig {
   api?: "responses" | "anthropic-messages";
   anthropic?: AnthropicOptions;
+  /** OpenAI Responses route used when this Anthropic route brokers hosted web search. */
+  search_broker?: { route: string };
   authorization_env: string;
   enabled?: boolean;
   model: AdvertisedModelConfig;
@@ -127,6 +129,7 @@ export const DEFAULT_BREAKER = { failures: 3, cooldownMs: 60_000 };
 export interface ModelRoute {
   api?: "responses" | "anthropic-messages";
   anthropic?: AnthropicOptions;
+  searchBrokerRoute?: string;
   authorizationEnv: string;
   enabled: boolean;
   model: AdvertisedModel;
@@ -174,6 +177,9 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
     authorizationEnv: config.authorization_env,
     ...(config.api === undefined ? {} : { api: config.api }),
     ...(config.anthropic === undefined ? {} : { anthropic: config.anthropic }),
+    ...(config.search_broker === undefined
+      ? {}
+      : { searchBrokerRoute: config.search_broker.route }),
     enabled: config.enabled ?? true,
     model: {
       description: config.model.description,
@@ -313,6 +319,12 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   }
   const anthropic =
     value.anthropic === undefined ? undefined : anthropicOptions(value.anthropic, source);
+  const searchBroker = value.search_broker;
+  if (searchBroker !== undefined) {
+    if (api !== "anthropic-messages" || !isRecord(searchBroker))
+      throw new Error(`${source}.search_broker requires an Anthropic route and object`);
+    nonEmptyString(searchBroker.route, `${source}.search_broker.route`);
+  }
   if (anthropic !== undefined && api !== "anthropic-messages")
     throw new Error(`${source}.anthropic requires anthropic-messages api`);
   if (
@@ -375,6 +387,9 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   return {
     ...(api === undefined ? {} : { api }),
     ...(anthropic === undefined ? {} : { anthropic }),
+    ...(searchBroker === undefined
+      ? {}
+      : { search_broker: { route: searchBroker.route as string } }),
     authorization_env: nonEmptyString(value.authorization_env, `${source}.authorization_env`),
     ...(enabled === undefined ? {} : { enabled }),
     model: advertisedModelConfig(value.model, `${source}.model`),

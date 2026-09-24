@@ -18,6 +18,14 @@ export interface LiveRequestEvent {
   detail?: string;
 }
 
+export interface BrokerUsage {
+  route: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  errors: number;
+}
+
 export interface LiveRequest {
   id: string;
   startedAt: string;
@@ -34,6 +42,7 @@ export interface LiveRequest {
   maxAttempts?: number;
   status?: number;
   detail?: string;
+  brokerUsage?: BrokerUsage;
   events: LiveRequestEvent[];
 }
 
@@ -45,7 +54,14 @@ export type LiveRequestStart = Pick<
 export type LiveRequestUpdate = Partial<
   Pick<
     LiveRequest,
-    "state" | "targetModel" | "targetIndex" | "attempt" | "maxAttempts" | "status" | "detail"
+    | "state"
+    | "targetModel"
+    | "targetIndex"
+    | "attempt"
+    | "maxAttempts"
+    | "status"
+    | "detail"
+    | "brokerUsage"
   >
 >;
 
@@ -99,6 +115,28 @@ export class LiveRequestStore {
     this.#requests.set(id, next);
   }
 
+  recordBroker(
+    id: string,
+    route: string,
+    result: { usage: { inputTokens: number; outputTokens: number }; error?: string },
+  ): void {
+    const current = this.#requests.get(id);
+    if (!current) return;
+    const previous = current.brokerUsage;
+    this.update(id, {
+      brokerUsage: {
+        route,
+        calls: (previous?.calls ?? 0) + 1,
+        inputTokens: (previous?.inputTokens ?? 0) + result.usage.inputTokens,
+        outputTokens: (previous?.outputTokens ?? 0) + result.usage.outputTokens,
+        errors: (previous?.errors ?? 0) + (result.error ? 1 : 0),
+      },
+      detail: result.error
+        ? `Web search broker ${route} failed: ${result.error}`
+        : `Web search broker ${route} completed`,
+    });
+  }
+
   finish(id: string, update: LiveRequestUpdate & { state: "completed" | "failed" }): void {
     const current = this.#requests.get(id);
     if (current === undefined || current.completedAt !== undefined) return;
@@ -129,5 +167,9 @@ export class LiveRequestStore {
 }
 
 function cloneRequest(request: LiveRequest): LiveRequest {
-  return { ...request, events: request.events.map((event) => ({ ...event })) };
+  return {
+    ...request,
+    ...(request.brokerUsage ? { brokerUsage: { ...request.brokerUsage } } : {}),
+    events: request.events.map((event) => ({ ...event })),
+  };
 }

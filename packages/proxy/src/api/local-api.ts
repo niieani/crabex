@@ -54,7 +54,10 @@ export function createLocalApi(options: {
               throw new Error(
                 "Apps authentication relay is overridden by the command line; restart without the override to edit it",
               );
-            const config = parseProxyConfig(await request.json());
+            const update: unknown = await request.json();
+            if (typeof update !== "object" || update === null || Array.isArray(update))
+              throw new Error("invalid proxy config");
+            const config = parseProxyConfig({ ...options.proxyConfig.get(), ...update });
             if (config.appsAuthRelay && options.allowAppsAuthRelay === false)
               throw new Error("Apps authentication relay requires a loopback listener");
             await options.proxyConfig.replace(config);

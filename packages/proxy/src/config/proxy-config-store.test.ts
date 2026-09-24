@@ -8,12 +8,20 @@ describe("proxy config", () => {
   it("defaults the relay on and persists an opt-out with change notifications", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "act-proxy-config-")), "config.json");
     const store = await openProxyConfigStore(path);
-    expect(store.get()).toEqual({ version: 1, appsAuthRelay: true });
+    expect(store.get()).toEqual({
+      version: 1,
+      appsAuthRelay: true,
+      search_broker: { route: "gpt-6-luna" },
+    });
     const observed: boolean[] = [];
     const unsubscribe = store.subscribe(() => observed.push(store.get().appsAuthRelay));
     await store.replace({ version: 1, appsAuthRelay: false });
     expect(observed).toEqual([false]);
-    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ version: 1, appsAuthRelay: false });
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      version: 1,
+      appsAuthRelay: false,
+      search_broker: { route: "gpt-6-luna" },
+    });
     expect((await openProxyConfigStore(path)).get().appsAuthRelay).toBe(false);
     unsubscribe();
     await store.replace({ version: 1, appsAuthRelay: true });
@@ -21,7 +29,14 @@ describe("proxy config", () => {
   });
 
   it("rejects malformed settings and defaults an omitted relay setting on", () => {
-    expect(parseProxyConfig({ version: 1 })).toEqual({ version: 1, appsAuthRelay: true });
+    expect(parseProxyConfig({ version: 1 })).toEqual({
+      version: 1,
+      appsAuthRelay: true,
+      search_broker: { route: "gpt-6-luna" },
+    });
+    expect(() => parseProxyConfig({ version: 1, search_broker: { route: "" } })).toThrow(
+      "search_broker.route",
+    );
     expect(() => parseProxyConfig({ version: 1, appsAuthRelay: "false" })).toThrow("boolean");
     expect(() => parseProxyConfig({ version: 2 })).toThrow("version 1");
   });

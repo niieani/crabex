@@ -21,6 +21,7 @@ export interface PreparedAnthropic {
   envelope: AnthropicEnvelope;
   model: string;
   compact: boolean;
+  webSearchDeclaration?: Json;
 }
 const fail = (message: string): never => {
   throw new AnthropicRequestError(message);
@@ -40,6 +41,7 @@ function codecFailure(error: unknown): never {
 function prepareTools(
   input: unknown,
   translateSearch: boolean,
+  brokerWebSearch: boolean,
 ): { codec: ToolCodec; tools: Tool[] } {
   let codec: ToolCodec;
   try {
@@ -48,6 +50,7 @@ function prepareTools(
       custom: "wrap",
       union: "wrap",
       ...(translateSearch ? { toolSearch: "function" } : {}),
+      ...(brokerWebSearch ? { webSearch: "function" } : {}),
     });
   } catch (error) {
     codecFailure(error);
@@ -123,12 +126,17 @@ export function prepareAnthropic(
   const { codec, tools } = prepareTools(
     compact ? [] : payload.tools,
     route.toolPolicy.tool_search === "translate",
+    route.toolPolicy.web_search === "broker",
   );
+  const webSearchDeclaration = Array.isArray(payload.tools)
+    ? payload.tools.find((tool) => record(tool) && tool.type === "web_search")
+    : undefined;
   const system: Json[] =
     typeof payload.instructions === "string" && payload.instructions
       ? [{ type: "text", text: payload.instructions }]
       : [];
   const messages: { role: string; content: Json[] }[] = [];
+  let pendingWebSearchCalls = 0;
   function push(role: string, blocks: Json[]) {
     if (!blocks.length) return;
     const last = messages.at(-1);
@@ -156,6 +164,15 @@ export function prepareAnthropic(
       case "reasoning": {
         if (!item.encrypted_content) break;
         const state = envelope.open(item.encrypted_content);
+        if (state.kind === "broker") {
+          if (!Array.isArray(state.uses) || !Array.isArray(state.results))
+            fail("Invalid broker replay item");
+          const uses = state.uses as Json[];
+          pendingWebSearchCalls = Math.max(0, pendingWebSearchCalls - uses.length);
+          push("assistant", uses);
+          push("user", state.results as Json[]);
+          break;
+        }
         if (state.kind !== "thinking" || !Array.isArray(state.blocks))
           fail("Invalid thinking replay item");
         // A different model cannot validate this model's thinking signatures.
@@ -181,6 +198,10 @@ export function prepareAnthropic(
         ]);
         break;
       }
+      case "web_search_call":
+        // The encrypted broker marker restores Claude's tool_use and tool_result.
+        pendingWebSearchCalls++;
+        break;
       case "function_call_output":
       case "custom_tool_call_output":
         push("user", [
@@ -217,6 +238,8 @@ export function prepareAnthropic(
         fail(`Unsupported Responses input item: ${String(item.type)}`);
     }
   }
+  if (pendingWebSearchCalls)
+    fail("Anthropic web search replay is missing its encrypted broker marker");
   if (!messages.length) push("user", [{ type: "text", text: "Continue." }]);
   // Anthropic requires a user turn first. Never invent missing tool results.
   if (messages[0]?.role !== "user")
@@ -307,7 +330,7 @@ export function prepareAnthropic(
     let type = choice === "none" ? "none" : choice === "required" ? "any" : "auto";
     let name: string | undefined;
     if (record(choice)) {
-      if (!["function", "custom", "tool_search"].includes(String(choice.type)))
+      if (!["function", "custom", "tool_search", "web_search"].includes(String(choice.type)))
         fail("Unsupported tool_choice");
       const chosen = codec.resolve(choice);
       if (!tools.some((t) => t.wire === chosen.wire)) fail("tool_choice names an unknown tool");
@@ -363,5 +386,13 @@ export function prepareAnthropic(
     if (last && ["text", "image", "tool_result"].includes(String(last.type)))
       last.cache_control = { type: "ephemeral" };
   }
-  return { body, tools, codec, envelope, model, compact };
+  return {
+    body,
+    tools,
+    codec,
+    envelope,
+    model,
+    compact,
+    ...(record(webSearchDeclaration) ? { webSearchDeclaration } : {}),
+  };
 }

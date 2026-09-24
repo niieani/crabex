@@ -1,4 +1,5 @@
 import { anthropicFetch } from "./anthropic/adapter.ts";
+import { brokerRouteFor, SearchBrokerRouteError, type BrokerResult } from "./search-broker.ts";
 import { randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 
@@ -146,6 +147,7 @@ interface BridgeContext {
 
 interface SocketData {
   anthropicKey: Uint8Array;
+  proxyConfigSource?: Pick<ProxyConfigStore, "get">;
   bridgeAbort?: AbortController;
   upstream?: WebSocket;
   recorder: EventRecorder;
@@ -296,6 +298,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           storedResponses,
           loadedTools,
           anthropicKey,
+          options.proxyConfigSource,
         );
       }
       return proxyHttpRequest(
@@ -314,6 +317,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         storedResponses,
         loadedTools,
         anthropicKey,
+        options.proxyConfigSource,
       );
     },
     websocket: {
@@ -507,6 +511,7 @@ async function proxyHttpRequest(
   storedResponses: StoredResponseRegistry,
   loadedTools: LoadedToolRegistry,
   anthropicKey: Uint8Array,
+  proxyConfigSource?: Pick<ProxyConfigStore, "get">,
 ): Promise<Response> {
   let liveRequestId: string | undefined;
   try {
@@ -542,6 +547,7 @@ async function proxyHttpRequest(
     let captureEffectivePayload = processed.effectivePayload;
     let preparedStoredRequest: PreparedStoredRequest | undefined;
     let responseStateKey: string | undefined;
+    let brokerRoute: ModelRoute | undefined;
     const routedRequest = (() => {
       if (routes.length === 0 || !isResponsesRequest(request.method, requestUrl.pathname)) {
         return undefined;
@@ -574,6 +580,16 @@ async function proxyHttpRequest(
         captureEffectivePayload = JSON.stringify(policy.payload);
       }
       const authorization = authorizationFor(route, process.env);
+      brokerRoute =
+        route.toolPolicy.web_search === "broker"
+          ? brokerRouteFor(
+              routes,
+              route.searchBrokerRoute ??
+                proxyConfigSource?.get().search_broker.route ??
+                "gpt-6-luna",
+              route.model.slug,
+            )
+          : undefined;
       headers = routedHeaders(headers, authorization);
       routedPayload = httpPayloadFor(policy.payload, {
         forwardAccessPrograms: route.forwardAccessPrograms,
@@ -661,6 +677,19 @@ async function proxyHttpRequest(
                     anthropicKey,
                     request.signal,
                     requestUrl.pathname.endsWith("/compact"),
+                    brokerRoute === undefined
+                      ? undefined
+                      : {
+                          route: brokerRoute,
+                          breakers,
+                          onResult: (result) =>
+                            noteBrokerResult(
+                              liveRequests,
+                              liveRequestId,
+                              brokerRoute.model.slug,
+                              result,
+                            ),
+                        },
                   )
                 : undefined,
             breakers,
@@ -841,7 +870,7 @@ async function proxyHttpRequest(
       status:
         error instanceof RequestTooLarge
           ? 413
-          : error instanceof ToolPolicyError
+          : error instanceof ToolPolicyError || error instanceof SearchBrokerRouteError
             ? 400
             : error instanceof RouteUnavailable
               ? 502
@@ -864,6 +893,16 @@ function noteToolOmissions(
       detail: `Omitted tool types: ${omittedTypes.join(", ")}`,
     });
   }
+}
+
+function noteBrokerResult(
+  liveRequests: LiveRequestStore,
+  liveRequestId: string | undefined,
+  route: string,
+  result: BrokerResult,
+): void {
+  if (result.error) console.warn(`web search broker "${route}" failed: ${result.error}`);
+  if (liveRequestId !== undefined) liveRequests.recordBroker(liveRequestId, route, result);
 }
 
 function updateLiveRequestFromFailover(
@@ -971,6 +1010,7 @@ async function upgradeWebSocket(
   storedResponses: StoredResponseRegistry,
   loadedTools: LoadedToolRegistry,
   anthropicKey: Uint8Array,
+  proxyConfigSource?: Pick<ProxyConfigStore, "get">,
 ): Promise<Response | undefined> {
   try {
     const requestUrl = new URL(request.url);
@@ -991,6 +1031,7 @@ async function upgradeWebSocket(
       storedResponses,
       loadedTools,
       anthropicKey,
+      proxyConfigSource,
     };
 
     if (lazyRouting) {
@@ -1171,11 +1212,24 @@ async function runBridgedCreate(
   }
 
   let authorization: string;
+  let brokerRoute: ModelRoute | undefined;
   try {
     authorization = authorizationFor(route, process.env);
+    if (route.toolPolicy.web_search === "broker")
+      brokerRoute = brokerRouteFor(
+        bridge.routes,
+        route.searchBrokerRoute ??
+          data.proxyConfigSource?.get().search_broker.route ??
+          "gpt-6-luna",
+        route.model.slug,
+      );
   } catch (error) {
     await recordRequest(routingBase);
-    await queueBridgedMessage(data, wrappedErrorEvent(502, errorMessage(error)), origin);
+    await queueBridgedMessage(
+      data,
+      wrappedErrorEvent(error instanceof SearchBrokerRouteError ? 400 : 502, errorMessage(error)),
+      origin,
+    );
     data.liveRequests.finish(liveRequestId, {
       state: "failed",
       detail: errorMessage(error),
@@ -1224,7 +1278,25 @@ async function runBridgedCreate(
     signal: data.bridgeAbort.signal,
     fetchImpl:
       route.api === "anthropic-messages"
-        ? anthropicFetch(route, data.anthropicKey, data.bridgeAbort.signal)
+        ? anthropicFetch(
+            route,
+            data.anthropicKey,
+            data.bridgeAbort.signal,
+            false,
+            brokerRoute === undefined
+              ? undefined
+              : {
+                  route: brokerRoute,
+                  breakers: bridge.breakers,
+                  onResult: (result) =>
+                    noteBrokerResult(
+                      data.liveRequests,
+                      liveRequestId,
+                      brokerRoute!.model.slug,
+                      result,
+                    ),
+                },
+          )
         : undefined,
     breakers: bridge.breakers,
     onEvent: (event) => updateLiveRequestFromFailover(data.liveRequests, liveRequestId, event),

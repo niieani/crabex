@@ -48,6 +48,27 @@ describe("applyRouteToolPolicy", () => {
     ).toEqual({ tool_search: "translate" });
   });
 
+  it("allows a hosted web search broker only on Anthropic routes", () => {
+    const config = {
+      ...base,
+      api: "anthropic-messages" as const,
+      search_broker: { route: "search-route" },
+      tool_policy: { web_search: "broker" },
+    };
+    const route = modelRouteFromConfig(parseModelRouteSet([config]).routes[0]!);
+    expect(route.searchBrokerRoute).toBe("search-route");
+    expect(route.toolPolicy.web_search).toBe("broker");
+    expect(() => parseModelRouteSet([{ ...config, api: "responses" }])).toThrow(
+      "search_broker requires an Anthropic route",
+    );
+    expect(() => parseModelRouteSet([{ ...base, tool_policy: { web_search: "broker" } }])).toThrow(
+      "not implemented",
+    );
+    expect(() => parseModelRouteSet([{ ...config, search_broker: { route: "" } }])).toThrow(
+      "search_broker.route",
+    );
+  });
+
   it("preserves legacy outbound tools and removes a typed choice for an omitted declaration", () => {
     const route = modelRouteFromConfig({ ...base, allowed_tool_types: ["function"] });
     const payload = {

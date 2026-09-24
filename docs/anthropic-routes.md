@@ -70,10 +70,12 @@ code-mode `exec`, use a JSON object containing a string `input` upstream and
 return as native Codex custom calls. Grammar-constrained generation is not
 available through this wrapping. Claude routes default to regular Codex tools;
 `model.overrides.tool_mode: "code_mode_only"` explicitly opts into code mode.
-No tool executes in Relaydeck: Codex remains responsible for execution and
-approvals. Broken call/result pairs fail explicitly. Hosted tools follow the
-route policy: the default rejects them, while legacy allowlists omit them with
-a recorded warning.
+Codex remains responsible for client function execution and approvals. Broken
+call/result pairs fail explicitly. Hosted tools follow the route policy: the
+default rejects them, while legacy allowlists omit them with a recorded warning.
+With `web_search: "broker"`, Relaydeck itself executes web search through a
+configured OpenAI Responses route and continues the Claude turn before
+returning it to Codex.
 See [model route tool policy](model-route-tool-policy.md) for per-route rejection
 and the defaults for all five Codex tool types.
 
@@ -122,10 +124,14 @@ are limited to before output is committed; partial output is never transparently
 replayed against a different target. Existing route retries and circuit breakers
 apply; upstream overload HTTP 529 can be added to `retry.on_status` if needed.
 
-Hosted OpenAI tools and OpenAI-encrypted reasoning/compaction cannot be translated.
-Disable hosted web search for these tasks (`web_search = "disabled"`). Claude
-routes disable deferred tool search and Responses-lite, and advertise no OpenAI
-speed/access programs. Hosted web search still needs the task setting above.
+OpenAI-encrypted reasoning/compaction cannot be translated. Hosted web search
+is available through the broker described in
+[model route tool policy](model-route-tool-policy.md); the default Anthropic
+policy still rejects it. Native Claude server-side search is not used. Claude
+routes advertise no OpenAI speed/access programs. Structured source URLs are
+sent to Claude in its tool result, and Codex sees a web search event. Codex's
+`web_search_call` type has no source-list field, and the proxy does not fabricate
+`url_citation` offsets for Claude's answer.
 Structured response schemas are currently rejected because the targeted Mantle
 surface does not support them. Client-executed MCP/function tools remain
 available. This adapter does not implement direct AWS SigV4 authentication.

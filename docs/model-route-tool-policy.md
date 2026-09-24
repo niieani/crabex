@@ -40,9 +40,31 @@ Codex's custom call and result shapes on replay and response streams. Function
 namespaces, union schemas, and structured tool result arrays (including images)
 pass through natively. Translation on an upstream WebSocket route fails
 validation. `tool_search: "translate"` is also available on HTTP Responses and
-Anthropic Messages routes. Other `translate` actions and all `broker` actions
-are reserved for later adapters and fail route validation today.
+Anthropic Messages routes. Anthropic routes can set `web_search: "broker"` as
+described below. Other `translate` and `broker` actions fail route validation.
 Anthropic routes cannot use `pass` because their upstream wire format differs.
+
+For Anthropic hosted web search, configure a Responses route with
+`web_search: "pass"`, then set `web_search: "broker"` on the Anthropic route.
+The default broker slug is `gpt-6-luna`. Set a proxy-wide default through
+`search_broker.route` in the proxy config API or JSON file; an Anthropic route
+can override it with its own `search_broker: {"route": "search-model"}`.
+The proxy checks that the named route is enabled, uses the Responses API,
+accepts native web search, and has an available authorization environment
+variable. A missing or unusable route returns an error naming both routes.
+The broker calls the configured gateway directly with low reasoning effort,
+a 45-second timeout, at most three Claude search rounds, and six broker calls
+per response.
+Codex's access mode, filters, location, context size, and requested content
+types are forwarded to the broker's native `web_search` declaration. The
+broker provider determines how those hints are honored.
+Broker errors become Claude tool results marked as errors so Claude can react.
+The answer and URL/title list come from the broker's text and native
+`url_citation` annotations. Citation offsets into that text are not applied to
+Claude's separate answer. Codex sees a `web_search_call` with the query, while
+an encrypted reasoning marker lets later Anthropic turns replay the exact
+Claude tool call and broker result. Broker token usage and errors are visible
+on the live request separately from Claude response usage.
 
 For client tool discovery, Codex must enable namespace tools and have at least
 one deferred MCP or app tool. The proxy presents Codex's `tool_search`

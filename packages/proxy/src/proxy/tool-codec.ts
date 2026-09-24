@@ -7,6 +7,7 @@ export interface ToolTransforms {
   namespace: "flatten" | "preserve";
   custom: "wrap" | "preserve";
   toolSearch?: "function" | "pass";
+  webSearch?: "function" | "pass";
   union: "wrap" | "preserve";
   functionSchema?: "require" | "preserve";
   callId?: "normalize" | "preserve";
@@ -20,6 +21,7 @@ export interface MappedTool {
   wireNamespace?: string;
   custom: boolean;
   search: boolean;
+  broker?: boolean;
   wrapped: boolean;
   description: unknown;
   parameters: JsonObject;
@@ -141,6 +143,43 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
         },
       ];
     }
+    if (value.type === "web_search" && transforms.webSearch === "function") {
+      if (namespace !== undefined)
+        throw new ToolCodecError("web_search must be a top-level declaration");
+      const wire = "web_search";
+      const parameters = {
+        type: "object",
+        properties: { query: { type: "string", description: "A focused web search query." } },
+        required: ["query"],
+        additionalProperties: false,
+      };
+      const baseDescription =
+        typeof value.description === "string" && value.description
+          ? value.description
+          : "Search the web for facts. Return relevant findings and source URLs.";
+      const hints = [
+        value.external_web_access === false ? "Use cached web results." : undefined,
+        value.indexed_web_access === true ? "Use indexed web results." : undefined,
+        record(value.filters)
+          ? `Filters: ${JSON.stringify(value.filters).slice(0, 300)}.`
+          : undefined,
+        record(value.user_location)
+          ? `User location: ${JSON.stringify(value.user_location).slice(0, 200)}.`
+          : undefined,
+      ].filter(Boolean);
+      const description = `${baseDescription}${hints.length ? ` ${hints.join(" ")}` : ""}`;
+      tools.push({
+        name: "web_search",
+        wire,
+        custom: false,
+        search: false,
+        broker: true,
+        wrapped: false,
+        description,
+        parameters,
+      });
+      return [{ type: "function", name: wire, description, parameters }];
+    }
     if (value.type !== "function" && value.type !== "custom") {
       if (transforms.other === "pass") return [value];
       throw new ToolCodecError(`Unsupported tool type: ${String(value.type)}`, "unsupported");
@@ -203,7 +242,8 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
 
   function resolve(item: JsonObject): MappedTool {
     const search = item.type === "tool_search_call" || item.type === "tool_search";
-    const name = search ? "tool_search" : item.name;
+    const broker = item.type === "web_search_call" || item.type === "web_search";
+    const name = search ? "tool_search" : broker ? "web_search" : item.name;
     const requestedNamespace =
       transforms.namespace === "flatten" && item.namespace === "functions"
         ? undefined
@@ -219,6 +259,7 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
           : {}),
         custom: item.type === "custom_tool_call" || item.type === "custom",
         search,
+        broker,
         wrapped: false,
         description: "",
         parameters: {},
@@ -274,6 +315,18 @@ export function createToolCodec(input: unknown, transforms: ToolTransforms): Too
         call_id: call.callId,
         execution: "client",
         arguments: call.input ?? {},
+      };
+    }
+    if (tool.broker) {
+      if (call.input !== undefined && !record(call.input))
+        throw new ToolCodecError("web_search arguments must be an object");
+      const query = call.input === undefined ? undefined : call.input.query;
+      if (query !== undefined && typeof query !== "string")
+        throw new ToolCodecError("web_search query must be a string");
+      return {
+        type: "web_search_call",
+        status: call.input === undefined ? "in_progress" : "completed",
+        ...(query === undefined ? {} : { action: { type: "search", query } }),
       };
     }
     const item: JsonObject = {
