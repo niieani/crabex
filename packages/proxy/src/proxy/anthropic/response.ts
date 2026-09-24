@@ -133,6 +133,7 @@ export class AnthropicResponse {
             ...this.prepared.codec.decode({ name: tool.wire, callId: value.id }),
             id: tool.broker ? `ws_${randomUUID()}` : itemId,
             status: "in_progress",
+            ...(tool.plaintextMessage ? { encrypted_function_args: [] } : {}),
           };
         } else throw new Error(`Unsupported Anthropic response block: ${String(value.type)}`);
         this.output.push(item);

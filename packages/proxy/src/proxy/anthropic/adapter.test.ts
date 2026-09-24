@@ -56,6 +56,70 @@ async function converted(response: Response, payload: Json = base) {
 }
 
 describe("Anthropic protocol", () => {
+  it("returns plaintext markers for encrypted collaboration message calls", async () => {
+    const prepared = prepareAnthropic(
+      {
+        ...base,
+        tools: [
+          {
+            type: "namespace",
+            name: "collaboration",
+            tools: [
+              {
+                type: "function",
+                name: "send_message",
+                parameters: {
+                  type: "object",
+                  properties: { message: { type: "string", encrypted: true } },
+                },
+              },
+            ],
+          },
+        ],
+      },
+      route,
+      key,
+    );
+    const events = await Array.fromAsync(
+      anthropicEvents(
+        sse([
+          { type: "message_start", message: { usage: {} } },
+          {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "call_message",
+              name: prepared.tools[0]!.wire,
+              input: {},
+            },
+          },
+          {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "input_json_delta", partial_json: '{"message":"hello"}' },
+          },
+          { type: "content_block_stop", index: 0 },
+          { type: "message_delta", delta: { stop_reason: "tool_use" } },
+          { type: "message_stop" },
+        ]),
+        prepared,
+        route.model.slug,
+      ),
+    );
+    const parsed = events.map((event) => JSON.parse(event));
+    expect(parsed.find((event) => event.type === "response.output_item.added").item).toMatchObject({
+      type: "function_call",
+      namespace: "collaboration",
+      name: "send_message",
+      encrypted_function_args: [],
+    });
+    expect(parsed.find((event) => event.type === "response.output_item.done").item).toMatchObject({
+      arguments: '{"message":"hello"}',
+      encrypted_function_args: [],
+    });
+    expect(parsed.at(-1).response.output[0].encrypted_function_args).toEqual([]);
+  });
   it("translates discovery history and restores search and namespaced tool calls", async () => {
     const discoveryRoute = {
       ...route,

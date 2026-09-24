@@ -1,6 +1,11 @@
 import type { ModelRoute } from "../routing/model-routes.ts";
 import { ToolPolicyError } from "../routing/tool-policy.ts";
-import { createToolCodec, type MappedTool, type ToolCodec } from "./tool-codec.ts";
+import {
+  createToolCodec,
+  hasEncryptedCollaborationMessageTool,
+  type MappedTool,
+  type ToolCodec,
+} from "./tool-codec.ts";
 import { toolSearchResultText } from "./tool-search.ts";
 import { parseSseEvents } from "./responses-bridge.ts";
 
@@ -129,7 +134,7 @@ export class ResponsesToolBridge {
     if (event.type === "response.output_item.added" && record(event.item)) {
       const item = event.item;
       const tool = this.translatedTool(item);
-      if (!tool) return [event];
+      if (!tool) return [{ ...event, item: this.markPlaintextMessage(item) }];
       if (typeof item.call_id !== "string") throw new Error("Translated tool call lacks call_id");
       const state: CallState = { tool, callId: item.call_id, arguments: "", inputEmitted: false };
       if (typeof item.id === "string") this.callsById.set(item.id, state);
@@ -155,7 +160,7 @@ export class ResponsesToolBridge {
     }
     if (event.type === "response.output_item.done" && record(event.item)) {
       const tool = this.translatedTool(event.item);
-      if (!tool) return [event];
+      if (!tool) return [{ ...event, item: this.markPlaintextMessage(event.item) }];
       const state = this.callState(event);
       const argumentsText = this.argumentsText(event.item.arguments, state?.arguments);
       const item = this.completeItem(event.item, argumentsText);
@@ -186,6 +191,12 @@ export class ResponsesToolBridge {
     return tool && ((this.modes.custom && tool.custom) || (this.modes.search && tool.search))
       ? tool
       : undefined;
+  }
+
+  private markPlaintextMessage(item: JsonObject): JsonObject {
+    if (item.type !== "function_call") return item;
+    const tool = this.codec.byWire(item.name, item.namespace);
+    return tool?.plaintextMessage ? { ...item, encrypted_function_args: [] } : item;
   }
 
   private callState(event: JsonObject): CallState | undefined {
@@ -237,7 +248,7 @@ export class ResponsesToolBridge {
   private completeItem(item: unknown, argumentsText?: string): unknown {
     if (!record(item)) return item;
     const tool = this.translatedTool(item);
-    if (!tool) return item;
+    if (!tool) return this.markPlaintextMessage(item);
     if (typeof item.call_id !== "string") throw new Error("Translated tool call lacks call_id");
     const parsed: unknown = JSON.parse(argumentsText ?? this.argumentsText(item.arguments));
     const decoded = this.codec.decode(
@@ -285,7 +296,7 @@ export function createResponsesToolBridge(
     custom: route.toolPolicy.custom === "translate",
     search: route.toolPolicy.tool_search === "translate",
   };
-  return modes.custom || modes.search
+  return modes.custom || modes.search || hasEncryptedCollaborationMessageTool(declarations)
     ? new ResponsesToolBridge(route.model.slug, declarations, modes)
     : undefined;
 }

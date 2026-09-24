@@ -1372,6 +1372,117 @@ describe("model routing and config bundle override", () => {
     }
   });
 
+  it("refuses encrypted child messages over HTTP and forwards readable ones with agent identity", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const forwarded: Record<string, unknown>[] = [];
+      const gateway = await startHttpServer(async (request, response) => {
+        forwarded.push(JSON.parse((await readBody(request)).toString()) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end('data: {"type":"response.completed","response":{"output":[]}}\n\n');
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const agentMessage = {
+        type: "agent_message",
+        author: "/root",
+        recipient: "/root/worker",
+        content: [
+          { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
+          { type: "encrypted_content", encrypted_content: "opaque" },
+        ],
+      };
+      const encrypted = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "kimi-k3", input: [agentMessage] }),
+      });
+      expect(encrypted.status).toBe(422);
+      expect(await encrypted.text()).toContain(
+        'model route "kimi-k3" cannot read encrypted V2 agent_message',
+      );
+      expect(forwarded).toHaveLength(0);
+
+      const readable = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          input: [
+            {
+              ...agentMessage,
+              content: [{ type: "input_text", text: "Message Type: NEW_TASK\nPayload:\nDo it" }],
+            },
+          ],
+        }),
+      });
+      expect(readable.status).toBe(200);
+      expect(forwarded[0]?.input).toMatchObject([
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: expect.stringContaining("/root to /root/worker") }],
+        },
+      ]);
+      expect(JSON.stringify(forwarded[0]?.input)).toContain("Do it");
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("refuses encrypted child messages on the WebSocket-to-HTTP bridge", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let deliveries = 0;
+      const gateway = await startHttpServer((_request, response) => {
+        deliveries += 1;
+        response.end("unexpected");
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "kimi-k3",
+          input: [
+            {
+              type: "agent_message",
+              author: "/root",
+              recipient: "/root/worker",
+              content: [
+                { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
+                { type: "encrypted_content", encrypted_content: "opaque" },
+              ],
+            },
+          ],
+        }),
+      );
+      expect(JSON.parse(await nextMessage(client))).toMatchObject({
+        type: "error",
+        status: 422,
+        error: { message: expect.stringContaining("encrypted V2 agent_message") },
+      });
+      expect(deliveries).toBe(0);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
   it("omits legacy-disallowed tools on the WebSocket-to-HTTP bridge", async () => {
     process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
     try {

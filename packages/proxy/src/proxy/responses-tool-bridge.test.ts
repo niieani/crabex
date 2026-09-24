@@ -17,6 +17,70 @@ const route = modelRouteFromConfig({
 });
 
 describe("Responses tool discovery bridge", () => {
+  it("marks encrypted collaboration message calls as plaintext in streamed and completed output", () => {
+    const passRoute = modelRouteFromConfig({
+      authorization_env: "TEST_KEY",
+      transport: "http",
+      model: {
+        slug: "collaboration-test",
+        display_name: "Collaboration test",
+        description: "Test Responses bridge",
+        priority: 1,
+        template_slug: "gpt-6-astra",
+      },
+      upstream: "https://gateway.example/v1",
+    });
+    const declaration = {
+      type: "namespace",
+      name: "collaboration",
+      tools: [
+        {
+          type: "function",
+          name: "spawn_agent",
+          parameters: {
+            type: "object",
+            properties: { message: { type: "string", encrypted: true } },
+          },
+        },
+        {
+          type: "function",
+          name: "wait_agent",
+          parameters: { type: "object", properties: { timeout_ms: { type: "integer" } } },
+        },
+      ],
+    };
+    const bridge = createResponsesToolBridge(passRoute, [declaration])!;
+    const call = {
+      type: "function_call",
+      id: "fc_spawn",
+      call_id: "call_spawn",
+      namespace: "collaboration",
+      name: "spawn_agent",
+      arguments: '{"message":"Read this task"}',
+    };
+    const added = bridge.event(
+      JSON.stringify({ type: "response.output_item.added", output_index: 0, item: call }),
+    );
+    expect(JSON.parse(added[0]!).item.encrypted_function_args).toEqual([]);
+    const done = bridge.event(
+      JSON.stringify({ type: "response.output_item.done", output_index: 0, item: call }),
+    );
+    expect(JSON.parse(done[0]!).item.encrypted_function_args).toEqual([]);
+    const completed = bridge.event(
+      JSON.stringify({ type: "response.completed", response: { output: [call] } }),
+    );
+    expect(JSON.parse(completed[0]!).response.output[0].encrypted_function_args).toEqual([]);
+    expect(bridge.response({ output: [call] })).toMatchObject({
+      output: [{ encrypted_function_args: [] }],
+    });
+    const wait = bridge.event(
+      JSON.stringify({
+        type: "response.output_item.done",
+        item: { ...call, name: "wait_agent" },
+      }),
+    );
+    expect(JSON.parse(wait[0]!).item).not.toHaveProperty("encrypted_function_args");
+  });
   const searchRoute = modelRouteFromConfig({
     authorization_env: "TEST_KEY",
     transport: "http",

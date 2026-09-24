@@ -52,6 +52,7 @@ import {
   type ResponsesToolBridge,
 } from "./responses-tool-bridge.ts";
 import { LoadedToolRegistry } from "./tool-search.ts";
+import { prepareCustomAgentMessages, UnreadableAgentMessage } from "./multi-agent-handoff.ts";
 import {
   completedStoredResponse,
   continuationSessionKey,
@@ -584,8 +585,10 @@ async function proxyHttpRequest(
       if (policy.omittedTypes.length > 0) {
         captureEffectivePayload = JSON.stringify(policy.payload);
       }
+      const agentPayload = prepareCustomAgentMessages(policy.payload, route.model.slug);
+      if (agentPayload !== policy.payload) captureEffectivePayload = JSON.stringify(agentPayload);
       const authorization = authorizationFor(route, process.env);
-      brokerRoute = needsSearchBroker(route, policy.payload.tools)
+      brokerRoute = needsSearchBroker(route, agentPayload.tools)
         ? brokerRouteFor(
             routes,
             route.searchBrokerRoute ?? proxyConfigSource?.get().search_broker.route ?? "gpt-6-luna",
@@ -593,7 +596,7 @@ async function proxyHttpRequest(
           )
         : undefined;
       headers = routedHeaders(headers, authorization);
-      routedPayload = httpPayloadFor(policy.payload, {
+      routedPayload = httpPayloadFor(agentPayload, {
         forwardAccessPrograms: route.forwardAccessPrograms,
         storeResponses: route.bridgeResponseState === "stored",
       });
@@ -872,11 +875,13 @@ async function proxyHttpRequest(
       status:
         error instanceof RequestTooLarge
           ? 413
-          : error instanceof ToolPolicyError || error instanceof SearchBrokerRouteError
-            ? 400
-            : error instanceof RouteUnavailable
-              ? 502
-              : 500,
+          : error instanceof UnreadableAgentMessage
+            ? 422
+            : error instanceof ToolPolicyError || error instanceof SearchBrokerRouteError
+              ? 400
+              : error instanceof RouteUnavailable
+                ? 502
+                : 500,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
@@ -1195,6 +1200,20 @@ async function runBridgedCreate(
     });
 
   const policy = applyRouteToolPolicy(route, inspected.payload);
+  let agentPayload: Record<string, unknown>;
+  try {
+    agentPayload = prepareCustomAgentMessages(policy.payload, route.model.slug);
+  } catch (error) {
+    if (!(error instanceof UnreadableAgentMessage)) throw error;
+    await recordRequest(routingBase);
+    await queueBridgedMessage(data, wrappedErrorEvent(422, error.message), origin);
+    data.liveRequests.finish(liveRequestId, {
+      state: "failed",
+      status: 422,
+      detail: error.message,
+    });
+    return;
+  }
 
   // Warmup creates (generate: false) are answered locally: forwarding them
   // would bill a real generation for a response the client ignores.
@@ -1212,12 +1231,13 @@ async function runBridgedCreate(
     routingBase.omittedToolTypes = policy.omittedTypes;
     captureEffectivePayload = JSON.stringify(policy.payload);
   }
+  if (agentPayload !== policy.payload) captureEffectivePayload = JSON.stringify(agentPayload);
 
   let authorization: string;
   let brokerRoute: ModelRoute | undefined;
   try {
     authorization = authorizationFor(route, process.env);
-    if (needsSearchBroker(route, policy.payload.tools))
+    if (needsSearchBroker(route, agentPayload.tools))
       brokerRoute = brokerRouteFor(
         bridge.routes,
         route.searchBrokerRoute ??
@@ -1239,7 +1259,7 @@ async function runBridgedCreate(
     return;
   }
 
-  const forwardedPayload = httpPayloadFor(policy.payload, {
+  const forwardedPayload = httpPayloadFor(agentPayload, {
     forwardAccessPrograms: route.forwardAccessPrograms,
     storeResponses: route.bridgeResponseState === "stored",
   });
