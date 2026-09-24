@@ -4,7 +4,13 @@ import { parseSseEvents, wrappedErrorEvent } from "./responses-bridge.ts";
 
 type JsonObject = Record<string, unknown>;
 type PendingSpawn = { taskName: string; model: string };
-type AgentScope = { pending: Record<string, PendingSpawn>; targets: Record<string, string> };
+type AgentScope = {
+  pending: Record<string, PendingSpawn>;
+  targets: Record<string, string>;
+  root?: string;
+  path?: string;
+  model?: string;
+};
 
 const NAMES = new Set(["spawn_agent", "send_message", "followup_task"]);
 const TTL_MS = 30 * 60_000;
@@ -18,9 +24,13 @@ export class RoutedAgentsError extends Error {}
 function agentScope(value: unknown): value is AgentScope {
   if (!record(value) || !record(value.pending) || !record(value.targets)) return false;
   return (
+    (value.root === undefined || typeof value.root === "string") &&
+    (value.path === undefined || typeof value.path === "string") &&
+    (value.model === undefined || typeof value.model === "string") &&
     Object.values(value.pending).every(
       (item) => record(item) && typeof item.taskName === "string" && typeof item.model === "string",
-    ) && Object.values(value.targets).every((item) => typeof item === "string")
+    ) &&
+    Object.values(value.targets).every((item) => typeof item === "string")
   );
 }
 
@@ -34,6 +44,40 @@ export class RoutedAgentRegistry {
 
   static async open(path: string): Promise<RoutedAgentRegistry> {
     return new RoutedAgentRegistry(await PersistentLruCache.open(path, cacheOptions()));
+  }
+
+  sourceModel(headers: Headers, payload: JsonObject): string | undefined {
+    const parent = agentId(headers, payload, "x-codex-parent-thread-id");
+    const thread = agentId(headers, payload, "thread-id", "thread_id");
+    const own = agentThreadKey(headers, thread);
+    const ownModel = own === undefined ? undefined : this.entries.get(own)?.model;
+    if (ownModel && !hasForkTask(payload.input)) return ownModel;
+    const parentKey = agentThreadKey(headers, parent);
+    return (parentKey === undefined ? undefined : this.entries.get(parentKey)?.model) ?? ownModel;
+  }
+
+  /** Link a Codex thread to its tree using the parent-thread header and readable agent path. */
+  observeAgent(headers: Headers, model: string, payload: JsonObject): string | undefined {
+    const thread = agentId(headers, payload, "thread-id", "thread_id");
+    const threadKey = agentThreadKey(headers, thread);
+    if (threadKey === undefined) return undefined;
+    const parentId = agentId(headers, payload, "x-codex-parent-thread-id");
+    const parentKey = agentThreadKey(headers, parentId);
+    const parent = parentKey ? this.entries.get(parentKey) : undefined;
+    const existing: AgentScope = this.entries.get(threadKey) ?? { pending: {}, targets: {} };
+    const root = existing.root ?? parent?.root ?? parentKey ?? threadKey;
+    const path = agentPath(payload.input) ?? existing.path ?? (parentKey ? undefined : "/root");
+    existing.root = root;
+    existing.model = model;
+    if (path) existing.path = path;
+    this.entries.set(threadKey, existing);
+    if (path) {
+      const tree: AgentScope = this.entries.get(root) ?? { pending: {}, targets: {} };
+      tree.targets[path] = model;
+      trim(tree.targets);
+      this.entries.set(root, tree);
+    }
+    return root;
   }
 
   rememberSpawn(scope: string, callId: string, taskName: string, model: string): void {
@@ -62,9 +106,69 @@ export class RoutedAgentRegistry {
     return Object.entries(value.targets).find(([path]) => path.endsWith(`/${target}`))?.[1];
   }
 
+  routedTargets(scope: string, models: readonly string[]): string[] {
+    const value = this.entries.get(scope);
+    return value === undefined
+      ? []
+      : Object.entries(value.targets)
+          .filter(([, model]) => models.includes(model))
+          .map(([path]) => path)
+          .sort()
+          .slice(0, 16);
+  }
+
   flush(): Promise<void> {
     return this.entries.flush();
   }
+}
+
+function agentId(
+  headers: Headers,
+  payload: JsonObject,
+  headerName: string,
+  metadataName = headerName,
+): string | undefined {
+  const header = headers.get(headerName)?.trim();
+  if (header) return header;
+  const metadata = record(payload.client_metadata)
+    ? payload.client_metadata[metadataName]
+    : undefined;
+  return typeof metadata === "string" && metadata.trim() ? metadata.trim() : undefined;
+}
+
+function agentThreadKey(headers: Headers, thread: string | undefined): string | undefined {
+  const account = headers.get("chatgpt-account-id")?.trim() || headers.get("authorization")?.trim();
+  return thread && account
+    ? createHash("sha256")
+        .update(JSON.stringify([account, thread]))
+        .digest("hex")
+    : undefined;
+}
+
+function agentPath(input: unknown): string | undefined {
+  if (!Array.isArray(input)) return undefined;
+  return input.findLast(
+    (item) => record(item) && item.type === "agent_message" && typeof item.recipient === "string",
+  )?.recipient as string | undefined;
+}
+
+function hasForkTask(input: unknown): boolean {
+  return (
+    Array.isArray(input) &&
+    input.some(
+      (item) =>
+        record(item) &&
+        item.type === "agent_message" &&
+        Array.isArray(item.content) &&
+        item.content.some(
+          (part) =>
+            record(part) &&
+            part.type === "input_text" &&
+            typeof part.text === "string" &&
+            part.text.startsWith("Message Type: NEW_TASK"),
+        ),
+    )
+  );
 }
 
 function cacheOptions() {
@@ -97,7 +201,11 @@ function parseOutput(output: unknown): unknown {
   return output;
 }
 
-function variantTools(tools: unknown[], models: string[]): JsonObject[] | undefined {
+function variantTools(
+  tools: unknown[],
+  models: string[],
+  targets: string[],
+): JsonObject[] | undefined {
   if (
     tools.some((tool) => record(tool) && tool.type === "namespace" && tool.name === "routed_agents")
   )
@@ -139,7 +247,7 @@ function variantTools(tools: unknown[], models: string[]): JsonObject[] | undefi
       member.description =
         "Spawn a routed custom-model child. Use collaboration.spawn_agent for a native OpenAI child.";
     } else {
-      member.description = `Send plaintext to a routed custom-model child. Use collaboration.${String(member.name)} for a native OpenAI child.`;
+      member.description = `Send plaintext to a routed custom-model agent, including a parent or sibling. Use collaboration.${String(member.name)} for a native OpenAI agent.${targets.length ? ` Known routed targets: ${targets.join(", ")}.` : ""}`;
     }
   }
   return [
@@ -147,8 +255,7 @@ function variantTools(tools: unknown[], models: string[]): JsonObject[] | undefi
     {
       type: "namespace",
       name: "routed_agents",
-      description:
-        "Plaintext agent tools for routed custom-model children only. Use collaboration for native OpenAI children.",
+      description: `Plaintext agent tools for routed custom-model agents. Use collaboration for native OpenAI agents.${targets.length ? ` Known routed targets: ${targets.join(", ")}.` : ""}`,
       tools: copies,
     },
   ] as JsonObject[];
@@ -180,10 +287,11 @@ export class NativeRoutedAgentsBridge {
 
   request(payload: JsonObject): JsonObject {
     if (this.models.length === 0) return payload;
+    const targets = this.registry.routedTargets(this.scope, this.models);
     let changed = false;
     let tools = payload.tools;
     if (Array.isArray(tools)) {
-      const variant = variantTools(tools, this.models);
+      const variant = variantTools(tools, this.models, targets);
       if (variant !== undefined) {
         tools = variant;
         changed = true;
@@ -194,7 +302,7 @@ export class NativeRoutedAgentsBridge {
       input = input.map((raw) => {
         if (!record(raw)) return raw;
         if (raw.type === "additional_tools" && Array.isArray(raw.tools)) {
-          const variant = variantTools(raw.tools, this.models);
+          const variant = variantTools(raw.tools, this.models, targets);
           if (variant !== undefined) {
             changed = true;
             return {
@@ -287,9 +395,12 @@ export class NativeRoutedAgentsBridge {
       if (typeof item.call_id === "string")
         this.registry.rememberSpawn(this.scope, item.call_id, args.task_name, args.model);
     } else {
-      if (typeof args.target !== "string" || !this.registry.targetModel(this.scope, args.target))
+      if (
+        typeof args.target !== "string" ||
+        !this.models.includes(this.registry.targetModel(this.scope, args.target) ?? "")
+      )
         throw new RoutedAgentsError(
-          `routed_agents.${String(item.name)} target "${String(args.target)}" is not a known routed child`,
+          `routed_agents.${String(item.name)} target "${String(args.target)}" is not a known routed custom-model agent`,
         );
     }
   }

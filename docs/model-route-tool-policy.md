@@ -162,14 +162,30 @@ children. The extra namespace appears only when at least one enabled custom
 HTTP route exists and Codex supplies the V2 collaboration declarations.
 Its `spawn_agent.model` choices are the enabled routed model slugs. Use
 `routed_agents.spawn_agent`, `send_message`, and `followup_task` for routed
-children; use `collaboration` for native children. The proxy checks that a
-routed message target belongs to a successfully spawned routed child, then
+agents, including a routed parent or sibling; use `collaboration` for native
+agents. The proxy checks that a routed message target belongs to a known
+routed custom-model agent in the same tree, then
 maps the call back to Codex's `collaboration` name with a plaintext marker.
 On later native turns it restores the `routed_agents` name in replay history.
+The agent tree is linked through Codex's parent-thread metadata, including
+Responses Lite `client_metadata`. A native child needs a V2-capable model
+catalog entry to receive collaboration tools and spawn its own children.
 
 The parent-thread target map persists in `routed-agents-cache.json` beside the
-other session caches. It expires after 30 minutes and is limited to 512 parent
-threads and 2 MiB. Cache keys hash session, thread, and account identity;
-values contain task names, child paths, and model slugs, but no credentials or
-message text. A missing session/thread/account scope leaves the extra
-namespace unadvertised for that request.
+other session caches. It expires after 30 minutes and is limited to 512 entries
+and 2 MiB. Cache keys hash thread and account identity; values contain task
+names, agent paths, and model slugs, but no credentials or message text. A
+missing thread/account scope leaves the extra namespace unadvertised for that
+request. If the opt-in is off, encrypted messages to a custom-model child fail
+visibly with an instruction to enable it. Codex does not allow
+`followup_task` to target `/root`; use `send_message` for a routed root parent.
+
+On a cross-model full-history fork, the proxy removes inherited reasoning
+items before the new child's task and removes opaque reasoning from a foreign
+provider at the receiving route boundary. Plain assistant and user messages
+remain. Native passthrough requests receive the same handling. A foreign
+opaque compaction is refused with 422 because dropping it would lose the
+conversation summary. Same-model replay and stored continuation retain their
+reasoning state. Full-history forks can also copy a parent's instruction to
+spawn agents into its child; use a short child task or `fork_turns: "none"` when
+that inherited instruction would be misleading.

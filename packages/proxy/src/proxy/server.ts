@@ -53,6 +53,7 @@ import {
 } from "./responses-tool-bridge.ts";
 import { LoadedToolRegistry } from "./tool-search.ts";
 import { prepareCustomAgentMessages, UnreadableAgentMessage } from "./multi-agent-handoff.ts";
+import { ForeignHistoryError, sanitizeMixedProviderHistory } from "./mixed-provider-history.ts";
 import {
   NativeRoutedAgentsBridge,
   RoutedAgentRegistry,
@@ -183,6 +184,7 @@ interface SocketData {
   liveRequests: LiveRequestStore;
   activeRequestId?: string;
   continuationSession?: string;
+  agentHeaders: Headers;
   storedResponses: StoredResponseRegistry;
   storedResponse?: StoredResponseState;
   loadedTools: LoadedToolRegistry;
@@ -388,6 +390,19 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             let routing: CaptureRouting | undefined;
             let captureEffectivePayload = processed.effectivePayload;
             let omittedTypes: string[] = [];
+            const agentInspected = inspectResponseModel(processed.value);
+            const historySource =
+              agentInspected === undefined
+                ? undefined
+                : data.routedAgentRegistry.sourceModel(data.agentHeaders, agentInspected.payload);
+            const agentScope =
+              agentInspected !== undefined
+                ? data.routedAgentRegistry.observeAgent(
+                    data.agentHeaders,
+                    agentInspected.model,
+                    agentInspected.payload,
+                  )
+                : undefined;
             const bridged = matchBridgeRoute(data.bridge, processed.value);
             if (bridged !== undefined) {
               try {
@@ -398,6 +413,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                   message,
                   encoding,
                   processed,
+                  historySource,
                 );
               } catch (error) {
                 if (!data.bridgeAbort?.signal.aborted) throw error;
@@ -434,6 +450,10 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
               const policyRoute = data.connectedRoute ?? route;
               if (policyRoute !== undefined) {
                 const policy = applyRouteToolPolicy(policyRoute, liveInspected.payload);
+                const sanitized = sanitizeMixedProviderHistory(policy.payload, {
+                  target: policyRoute.api === "anthropic-messages" ? "anthropic" : "responses",
+                  sourceModel: historySource,
+                });
                 omittedTypes = policy.omittedTypes;
                 noteToolOmissions(
                   policyRoute,
@@ -441,9 +461,11 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                   data.liveRequests,
                   data.activeRequestId,
                 );
-                if (omittedTypes.length > 0) {
-                  outbound = JSON.stringify(policy.payload);
+                if (sanitized !== liveInspected.payload) {
+                  outbound = JSON.stringify(sanitized);
                   captureEffectivePayload = outbound;
+                }
+                if (omittedTypes.length > 0) {
                   routing = {
                     action: "routed",
                     routeSlugs: [policyRoute.model.slug],
@@ -453,16 +475,21 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                     omittedToolTypes: omittedTypes,
                   };
                 }
-              } else if (
-                data.proxyConfigSource?.get().routed_agents.enabled &&
-                data.continuationSession !== undefined
-              ) {
-                const nativeBridge = new NativeRoutedAgentsBridge(
-                  routedAgentModels(data.bridge?.routes ?? []),
-                  data.continuationSession,
-                  data.routedAgentRegistry,
-                );
-                const translated = nativeBridge.request(liveInspected.payload);
+              } else {
+                const sanitized = sanitizeMixedProviderHistory(liveInspected.payload, {
+                  target: "native",
+                  sourceModel: historySource,
+                });
+                const scope = agentScope ?? data.continuationSession;
+                const nativeBridge =
+                  data.proxyConfigSource?.get().routed_agents.enabled && scope !== undefined
+                    ? new NativeRoutedAgentsBridge(
+                        routedAgentModels(data.bridge?.routes ?? []),
+                        scope,
+                        data.routedAgentRegistry,
+                      )
+                    : undefined;
+                const translated = nativeBridge?.request(sanitized) ?? sanitized;
                 data.nativeRoutedAgents = nativeBridge;
                 if (translated !== liveInspected.payload) {
                   outbound = JSON.stringify(translated);
@@ -502,18 +529,21 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             upstream.send(outbound);
           })
           .catch((error) => {
-            if (error instanceof ToolPolicyError || error instanceof RoutedAgentsError) {
+            if (
+              error instanceof ToolPolicyError ||
+              error instanceof RoutedAgentsError ||
+              error instanceof ForeignHistoryError
+            ) {
+              const status = error instanceof ToolPolicyError ? 400 : 422;
               if (data.activeRequestId !== undefined) {
                 data.liveRequests.finish(data.activeRequestId, {
                   state: "failed",
-                  status: error instanceof RoutedAgentsError ? 422 : 400,
+                  status,
                   detail: error.message,
                 });
               }
               if (client.readyState === WebSocket.OPEN) {
-                client.send(
-                  wrappedErrorEvent(error instanceof RoutedAgentsError ? 422 : 400, error.message),
-                );
+                client.send(wrappedErrorEvent(status, error.message));
               }
               return;
             }
@@ -611,6 +641,21 @@ async function proxyHttpRequest(
       const route = inspected === undefined ? undefined : modelRouteFor(routes, inspected.model);
       return inspected === undefined || route === undefined ? undefined : { inspected, route };
     })();
+    const inspectedAgent = isResponsesRequest(request.method, requestUrl.pathname)
+      ? inspectResponseModel(processed.value)
+      : undefined;
+    const historySource =
+      inspectedAgent === undefined
+        ? undefined
+        : routedAgentRegistry.sourceModel(request.headers, inspectedAgent.payload);
+    const agentScope =
+      inspectedAgent !== undefined
+        ? routedAgentRegistry.observeAgent(
+            request.headers,
+            inspectedAgent.model,
+            inspectedAgent.payload,
+          )
+        : undefined;
     if (isResponsesRequest(request.method, requestUrl.pathname)) {
       const inspected = inspectResponseModel(processed.value);
       const route = routedRequest?.route;
@@ -634,8 +679,17 @@ async function proxyHttpRequest(
       if (policy.omittedTypes.length > 0) {
         captureEffectivePayload = JSON.stringify(policy.payload);
       }
-      const agentPayload = prepareCustomAgentMessages(policy.payload, route.model.slug);
-      if (agentPayload !== policy.payload) captureEffectivePayload = JSON.stringify(agentPayload);
+      const sanitized = sanitizeMixedProviderHistory(policy.payload, {
+        target: route.api === "anthropic-messages" ? "anthropic" : "responses",
+        sourceModel: historySource,
+      });
+      if (sanitized !== policy.payload) captureEffectivePayload = JSON.stringify(sanitized);
+      const agentPayload = prepareCustomAgentMessages(
+        sanitized,
+        route.model.slug,
+        proxyConfigSource?.get().routed_agents.enabled,
+      );
+      if (agentPayload !== sanitized) captureEffectivePayload = JSON.stringify(agentPayload);
       const authorization = authorizationFor(route, process.env);
       brokerRoute = needsSearchBroker(route, agentPayload.tools)
         ? brokerRouteFor(
@@ -681,28 +735,26 @@ async function proxyHttpRequest(
         upstreamModel: route.targets[0]?.upstreamModel ?? route.model.slug,
         ...(policy.omittedTypes.length === 0 ? {} : { omittedToolTypes: policy.omittedTypes }),
       };
-    } else if (
-      isResponsesRequest(request.method, requestUrl.pathname) &&
-      proxyConfigSource?.get().routed_agents.enabled
-    ) {
-      const scope = continuationSessionKey(request.headers);
-      if (scope !== undefined) {
-        const inspected = inspectResponseModel(processed.value);
-        if (inspected !== undefined) {
-          nativeStreamRequested = inspected.payload.stream === true;
-          nativeRoutedAgents = new NativeRoutedAgentsBridge(
-            routedAgentModels(routes),
-            scope,
-            routedAgentRegistry,
-          );
-          const converted = nativeRoutedAgents.request(inspected.payload);
-          if (converted !== inspected.payload) {
-            outbound = JSON.stringify(converted);
-            captureEffectivePayload = outbound;
-            delete headers["content-encoding"];
-            delete headers["content-length"];
-          }
-        }
+    } else if (inspectedAgent !== undefined) {
+      const sanitized = sanitizeMixedProviderHistory(inspectedAgent.payload, {
+        target: "native",
+        sourceModel: historySource,
+      });
+      const scope = agentScope ?? continuationSessionKey(request.headers);
+      if (scope !== undefined && proxyConfigSource?.get().routed_agents.enabled) {
+        nativeStreamRequested = inspectedAgent.payload.stream === true;
+        nativeRoutedAgents = new NativeRoutedAgentsBridge(
+          routedAgentModels(routes),
+          scope,
+          routedAgentRegistry,
+        );
+      }
+      const converted = nativeRoutedAgents?.request(sanitized) ?? sanitized;
+      if (converted !== inspectedAgent.payload) {
+        outbound = JSON.stringify(converted);
+        captureEffectivePayload = outbound;
+        delete headers["content-encoding"];
+        delete headers["content-length"];
       }
     } else if (routes.length > 0 && isModelsRequest(request.method, requestUrl.pathname)) {
       routing = {
@@ -968,7 +1020,9 @@ async function proxyHttpRequest(
       status:
         error instanceof RequestTooLarge
           ? 413
-          : error instanceof UnreadableAgentMessage || error instanceof RoutedAgentsError
+          : error instanceof UnreadableAgentMessage ||
+              error instanceof RoutedAgentsError ||
+              error instanceof ForeignHistoryError
             ? 422
             : error instanceof ToolPolicyError || error instanceof SearchBrokerRouteError
               ? 400
@@ -1129,6 +1183,7 @@ async function upgradeWebSocket(
       transformationSource,
       liveRequests,
       continuationSession: continuationSessionKey(request.headers),
+      agentHeaders: request.headers,
       storedResponses,
       loadedTools,
       routedAgentRegistry,
@@ -1283,6 +1338,7 @@ async function runBridgedCreate(
   rawMessage: string | ArrayBuffer | Uint8Array,
   encoding: "utf8" | "base64",
   processed: ReturnType<typeof processClientPayload>,
+  historySource?: string,
 ): Promise<void> {
   const bridge = data.bridge;
   if (bridge === undefined) return;
@@ -1321,9 +1377,19 @@ async function runBridgedCreate(
   const policy = applyRouteToolPolicy(route, inspected.payload);
   let agentPayload: Record<string, unknown>;
   try {
-    agentPayload = prepareCustomAgentMessages(policy.payload, route.model.slug);
+    const sanitized = sanitizeMixedProviderHistory(policy.payload, {
+      target: route.api === "anthropic-messages" ? "anthropic" : "responses",
+      sourceModel: historySource,
+    });
+    agentPayload = prepareCustomAgentMessages(
+      sanitized,
+      route.model.slug,
+      data.proxyConfigSource?.get().routed_agents.enabled,
+    );
+    if (agentPayload !== policy.payload) captureEffectivePayload = JSON.stringify(agentPayload);
   } catch (error) {
-    if (!(error instanceof UnreadableAgentMessage)) throw error;
+    if (!(error instanceof UnreadableAgentMessage || error instanceof ForeignHistoryError))
+      throw error;
     await recordRequest(routingBase);
     await queueBridgedMessage(data, wrappedErrorEvent(422, error.message), origin);
     data.liveRequests.finish(liveRequestId, {

@@ -6,7 +6,11 @@ const record = (value: unknown): value is JsonObject =>
 export class UnreadableAgentMessage extends Error {}
 
 /** Give custom providers a readable user turn while retaining the agent envelope. */
-export function prepareCustomAgentMessages(payload: JsonObject, routeSlug: string): JsonObject {
+export function prepareCustomAgentMessages(
+  payload: JsonObject,
+  routeSlug: string,
+  plaintextHandoffEnabled = false,
+): JsonObject {
   if (!Array.isArray(payload.input)) return payload;
   let changed = false;
   const input = payload.input.map((raw) => {
@@ -17,7 +21,9 @@ export function prepareCustomAgentMessages(payload: JsonObject, routeSlug: strin
     const content = raw.content;
     if (!Array.isArray(content)) return fail("has an invalid V2 agent_message");
     if (content.some((part: unknown) => record(part) && part.type === "encrypted_content"))
-      return fail("cannot read encrypted V2 agent_message; refusing to forward");
+      return fail(
+        `cannot read encrypted V2 agent_message; refusing to forward. ${plaintextHandoffEnabled ? "Use routed_agents plaintext tools when messaging a routed custom-model agent." : "Enable proxy routed_agents.enabled to offer native agents plaintext tools for routed custom-model targets."}`,
+      );
     const author = raw.author;
     const recipient = raw.recipient;
     if (typeof author !== "string" || typeof recipient !== "string")

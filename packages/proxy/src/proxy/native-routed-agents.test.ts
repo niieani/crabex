@@ -145,7 +145,9 @@ describe("native routed-agent variant", () => {
           item("followup_task", "call_bad", { target: "/root/native", message: "Wrong child" }),
         ),
       ),
-    ).toThrow('routed_agents.followup_task target "/root/native" is not a known routed child');
+    ).toThrow(
+      'routed_agents.followup_task target "/root/native" is not a known routed custom-model agent',
+    );
     const native = {
       ...spawn,
       namespace: "collaboration",
@@ -199,5 +201,110 @@ describe("routed-agent registry", () => {
     ).toMatchObject({ namespace: "collaboration", encrypted_function_args: [] });
     const content = await Bun.file(path).text();
     expect(content).not.toContain(scope);
+  });
+
+  it("shares custom parent and sibling paths with a native child without exposing native targets", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "act-routed-tree-"));
+    dirs.push(dir);
+    const path = join(dir, "routed-agents-cache.json");
+    const rootHeaders = new Headers({
+      "chatgpt-account-id": "account-a",
+      "thread-id": "root-thread",
+      "session-id": "root-thread",
+    });
+    const childHeaders = new Headers({
+      "chatgpt-account-id": "account-a",
+      "thread-id": "child-thread",
+      "session-id": "child-thread",
+      "x-codex-parent-thread-id": "root-thread",
+    });
+    const first = await RoutedAgentRegistry.open(path);
+    const rootScope = first.observeAgent(rootHeaders, "glm-5.3-flash", { input: [] });
+    const childScope = first.observeAgent(childHeaders, "gpt-5.6-luna", {
+      input: [
+        {
+          type: "agent_message",
+          author: "/root",
+          recipient: "/root/native_child",
+          content: [{ type: "input_text", text: "Reply OK" }],
+        },
+      ],
+    });
+    expect(childScope).toBe(rootScope);
+    expect(first.targetModel(childScope!, "/root")).toBe("glm-5.3-flash");
+    expect(first.targetModel(childScope!, "/root/native_child")).toBe("gpt-5.6-luna");
+    await first.flush();
+
+    const second = await RoutedAgentRegistry.open(path);
+    const bridge = new NativeRoutedAgentsBridge(models, childScope!, second);
+    const mapped = JSON.parse(
+      bridge.event(
+        event(
+          "response.output_item.done",
+          item("send_message", "call_parent", { target: "/root", message: "Plain reply" }),
+        ),
+      ),
+    );
+    expect(mapped.item).toMatchObject({
+      namespace: "collaboration",
+      name: "send_message",
+      encrypted_function_args: [],
+    });
+    expect(() =>
+      bridge.event(
+        event(
+          "response.output_item.done",
+          item("followup_task", "call_native", {
+            target: "/root/native_child",
+            message: "Wrong target",
+          }),
+        ),
+      ),
+    ).toThrow("is not a known routed custom-model agent");
+    expect(await Bun.file(path).text()).not.toContain("account-a");
+  });
+
+  it("links Responses Lite child metadata to a routed parent after restart", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "routed-agent-lite-"));
+    const path = join(directory, "agents.json");
+    try {
+      const headers = new Headers({ authorization: "Bearer account-secret" });
+      const first = await RoutedAgentRegistry.open(path);
+      const root = first.observeAgent(headers, "glm-5.3-flash", {
+        client_metadata: { thread_id: "root-thread" },
+        input: [],
+      });
+      await first.flush();
+      const second = await RoutedAgentRegistry.open(path);
+      const child = {
+        client_metadata: {
+          thread_id: "native-child",
+          "x-codex-parent-thread-id": "root-thread",
+        },
+        input: [
+          {
+            type: "agent_message",
+            author: "/root",
+            recipient: "/root/native_child",
+            content: [
+              { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\nReport back" },
+            ],
+          },
+        ],
+      };
+      expect(second.sourceModel(headers, child)).toBe("glm-5.3-flash");
+      expect(second.observeAgent(headers, "gpt-5.6-luna", child)).toBe(root);
+      expect(second.targetModel(root!, "/root")).toBe("glm-5.3-flash");
+      expect(second.sourceModel(headers, child)).toBe("glm-5.3-flash");
+      expect(
+        second.sourceModel(headers, {
+          client_metadata: child.client_metadata,
+          input: [{ type: "function_call_output", call_id: "call_1", output: "done" }],
+        }),
+      ).toBe("gpt-5.6-luna");
+      expect(await Bun.file(path).text()).not.toContain("account-secret");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
