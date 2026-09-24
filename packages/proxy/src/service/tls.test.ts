@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,11 +6,14 @@ import { describe, it, expect } from "vite-plus/test";
 import WebSocket from "ws";
 import {
   configuredCustomCaBundle,
+  originalCodexCaValue,
   resolveCustomCaSource,
   prepareCodexCaBundle,
+  pruneCodexCaBundles,
   prepareTls,
   readTls,
   syncPublishedCodexCa,
+  syncProxyStartupCodexCa,
 } from "./tls.ts";
 import { startReverseProxy } from "../proxy/server.ts";
 
@@ -181,11 +184,97 @@ describe("managed local TLS", () => {
     syncPublishedCodexCa(managed, false, environment);
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe("/user-choice.pem");
   });
+
+  it("accepts the previous managed bundle while publishing an updated bundle", () => {
+    const root = "/installation/tls";
+    const directory = join(root, "codex-ca-bundles");
+    const oldPath = join(directory, "old.pem");
+    const newPath = join(directory, "new.pem");
+    const values = new Map<string, string>([["CODEX_CA_CERTIFICATE", oldPath]]);
+    const environment = {
+      get: (name: string) => values.get(name),
+      set: (name: string, value: string) => values.set(name, value),
+      unset: (name: string) => values.delete(name),
+    };
+    expect(() => syncPublishedCodexCa({ path: newPath }, true, environment)).not.toThrow();
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(newPath);
+
+    values.set("CODEX_CA_CERTIFICATE", join(root, "codex-ca-bundle.pem"));
+    syncPublishedCodexCa({ path: newPath }, true, environment);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(newPath);
+
+    values.set("CODEX_CA_CERTIFICATE", "/user-changed.pem");
+    expect(() => syncPublishedCodexCa({ path: newPath }, true, environment)).toThrow("changed");
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe("/user-changed.pem");
+  });
+
+  it("leaves CA publication to the installer worker in a managed proxy process", () => {
+    const oldPath = "/installation/tls/codex-ca-bundles/old.pem";
+    const newPath = "/installation/tls/codex-ca-bundles/new.pem";
+    const values = new Map<string, string>([["CODEX_CA_CERTIFICATE", oldPath]]);
+    const environment = {
+      get: (name: string) => values.get(name),
+      set: (name: string, value: string) => values.set(name, value),
+      unset: (name: string) => values.delete(name),
+    };
+    syncProxyStartupCodexCa({ path: newPath }, { RELAYDECK_MANAGED_SERVICE: "1" }, environment);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(oldPath);
+    syncPublishedCodexCa({ path: newPath, previous: oldPath }, true, environment);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(newPath);
+
+    values.set("CODEX_CA_CERTIFICATE", "/user-choice.pem");
+    expect(() => syncProxyStartupCodexCa({ path: newPath }, {}, environment)).toThrow("changed");
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe("/user-choice.pem");
+  });
+
+  it("prunes old unreferenced bundles while keeping state, launchd, and three recent paths", async () => {
+    const root = await mkdtemp(join(tmpdir(), "act-ca-prune-"));
+    const directory = join(root, "codex-ca-bundles");
+    try {
+      await mkdir(directory);
+      const paths = Array.from({ length: 9 }, (_, index) => join(directory, `${index}.pem`));
+      for (const [index, path] of paths.entries()) {
+        await writeFile(path, `bundle ${index}`);
+        const modified = new Date(Date.UTC(2026, 0, 1, 0, 0, index));
+        await utimes(path, modified, modified);
+      }
+      const external = join(root, "external.pem");
+      await writeFile(external, "external");
+      await symlink(external, join(directory, "linked.pem"));
+      await writeFile(join(directory, "note.txt"), "keep");
+      const environment = {
+        get: () => paths[2],
+        set: () => {},
+        unset: () => {},
+      };
+      await pruneCodexCaBundles(root, [paths[0], paths[1], paths[3]], environment);
+      for (const index of [0, 1, 2, 3, 6, 7, 8])
+        expect(await Bun.file(paths[index]!).exists()).toBe(true);
+      for (const index of [4, 5]) expect(await Bun.file(paths[index]!).exists()).toBe(false);
+      expect(await Bun.file(external).exists()).toBe(true);
+      expect(await Bun.file(join(directory, "linked.pem")).exists()).toBe(true);
+      expect(await Bun.file(join(directory, "note.txt")).exists()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("original custom CA source", () => {
   const root = "/installation/tls";
   const managed = { path: `${root}/codex-ca-bundles/current.pem`, source: "/enterprise/roots.pem" };
+  it("does not record a stale managed path as the user's original override", () => {
+    expect(originalCodexCaValue(root, `${root}/codex-ca-bundles/old.pem`)).toBeUndefined();
+    expect(originalCodexCaValue(root, `${root}/codex-ca-bundles/older/old.pem`)).toBeUndefined();
+    expect(originalCodexCaValue(root, `${root}/codex-ca-bundle.pem`)).toBeUndefined();
+    expect(
+      originalCodexCaValue(root, "/current.pem", {
+        path: managed.path,
+        previous: `${root}/codex-ca-bundles/older.pem`,
+      }),
+    ).toBeUndefined();
+    expect(originalCodexCaValue(root, "/user-choice.pem")).toBe("/user-choice.pem");
+  });
   it("resolves an inherited managed override back to its original source", () => {
     expect(
       resolveCustomCaSource(

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
-import { readTls, syncPublishedCodexCa, tlsStatus } from "./service/tls.ts";
+import { readTls, syncProxyStartupCodexCa, tlsStatus } from "./service/tls.ts";
 import { serviceCommand } from "./service/launch-agent.ts";
 import { createLocalApi } from "./api/local-api.ts";
 import { createWebUi, findUiDirectory } from "./api/web-ui.ts";
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
   const options = parseCliOptions(args);
   if (options.codexCaBundlePath !== undefined) {
     try {
-      syncPublishedCodexCa({ path: options.codexCaBundlePath }, true);
+      syncProxyStartupCodexCa({ path: options.codexCaBundlePath });
     } catch (error) {
       // A user may deliberately replace this value after installation. Keep the
       // proxy available and leave that explicit choice untouched.

@@ -54,6 +54,7 @@ describe("LaunchAgent service", () => {
     expect(plist).toContain("&lt;secret&gt;&amp;&quot;");
     expect(plist).toContain("<key>KeepAlive</key><true/>");
     expect(plist).toContain("<key>Umask</key><integer>63</integer>");
+    expect(plist).toContain("<key>RELAYDECK_MANAGED_SERVICE</key><string>1</string>");
   });
 
   it("persists a new release only after it becomes ready", async () => {

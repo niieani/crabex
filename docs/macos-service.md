@@ -74,7 +74,11 @@ not change the launchd environment. Each update stages a separate bundle without
 changing the roots used by the running installation. After readiness succeeds, the worker publishes the new
 bundle path. Rollback restores the previous service's bundle; uninstall restores
 the original user value. Both leave a concurrently changed value untouched.
-Previous bundles remain available for rollback until TLS cleanup.
+New terminals and apps inherit the current bundle path after publication. Existing shells keep
+their earlier value; the installer retains the current bundle, the rollback bundle, any path still
+published in launchd, and the three newest bundles as a grace window. Older unreferenced bundles
+are removed after a successful install or restart. A user override outside the managed bundle
+directory remains untouched.
 
 The original external CA source path is recorded in service state. Reinstallation
 reads that source again, even when the installer inherits a managed

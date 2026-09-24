@@ -15,9 +15,12 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   resolveCustomCaSource,
+  originalCodexCaValue,
   launchctlEnvironment,
+  MANAGED_SERVICE_ENV,
   prepareCodexCaBundle,
   prepareTls,
+  pruneCodexCaBundles,
   removeTls,
   syncPublishedCodexCa,
   syncCodexCaTransition,
@@ -59,7 +62,10 @@ export function launchAgentPlist(state: ServiceState, root = ROOT, logs = LOGS):
 <key>Label</key><string>${LABEL}</string>
 <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>
 <key>WorkingDirectory</key><string>${xml(root)}</string>
-<key>EnvironmentVariables</key><dict>${Object.entries(state.environment)
+<key>EnvironmentVariables</key><dict>${Object.entries({
+    ...state.environment,
+    [MANAGED_SERVICE_ENV]: "1",
+  })
     .map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`)
     .join("")}</dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
@@ -291,6 +297,22 @@ async function worker(operationPath: string): Promise<void> {
         await symlink(candidate.release, temporary);
         await rename(temporary, join(ROOT, "current"));
         await save(STATE, JSON.stringify(candidate, null, 2));
+        if (candidate === operation.next) {
+          try {
+            await pruneCodexCaBundles(TLS_ROOT, [
+              candidate.desktopCodexCa?.path,
+              candidate.desktopCodexCa?.previous,
+              candidate.desktopCodexCa?.source,
+              operation.previous?.desktopCodexCa?.path,
+              operation.previous?.desktopCodexCa?.previous,
+              operation.previous?.desktopCodexCa?.source,
+            ]);
+          } catch (error) {
+            console.warn(
+              `Could not prune managed Codex CA bundles: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
       },
       remove: async () => {
         if (operation.next.desktopCodexCa !== undefined)
@@ -553,10 +575,13 @@ export async function serviceCommand(args: string[]): Promise<void> {
     let desktopCodexCa: PublishedCodexCa | undefined;
     if (codexCaBundle !== undefined) {
       launchArgs = [...launchArgs, "--codex-ca-bundle", codexCaBundle];
-      const prior =
-        previous?.desktopCodexCa !== undefined
-          ? previous.desktopCodexCa.previous || undefined
-          : launchctlEnvironment().get("CODEX_CA_CERTIFICATE");
+      const prior = originalCodexCaValue(
+        TLS_ROOT,
+        previous?.desktopCodexCa === undefined
+          ? launchctlEnvironment().get("CODEX_CA_CERTIFICATE")
+          : undefined,
+        previous?.desktopCodexCa,
+      );
       desktopCodexCa = {
         path: codexCaBundle,
         ...(prior === undefined ? {} : { previous: prior }),

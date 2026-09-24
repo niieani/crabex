@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID, X509Certificate, createPrivateKey, createPublicKey } from "node:crypto";
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
-import { join, resolve, dirname } from "node:path";
+import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile, rm } from "node:fs/promises";
+import { basename, join, resolve, dirname, sep } from "node:path";
 import { homedir } from "node:os";
 
 const DAY = 86_400_000;
+export const MANAGED_SERVICE_ENV = "RELAYDECK_MANAGED_SERVICE";
 export interface TlsStatus {
   enabled: boolean;
   expiresAt?: string;
@@ -41,6 +42,23 @@ export function configuredCustomCaBundle(environment: Record<string, string>): s
   );
 }
 
+export function isManagedCodexCaPath(root: string, path: string): boolean {
+  const absolute = resolve(path);
+  const directory = resolve(root, "codex-ca-bundles");
+  return (
+    absolute === resolve(root, "codex-ca-bundle.pem") || absolute.startsWith(`${directory}${sep}`)
+  );
+}
+
+export function originalCodexCaValue(
+  root: string,
+  current: string | undefined,
+  previous?: PublishedCodexCa,
+): string | undefined {
+  const value = previous === undefined ? current : previous.previous;
+  return value && !isManagedCodexCaPath(root, value) ? value : undefined;
+}
+
 /** Resolve inherited managed outputs back to their input, including pre-source service state. */
 export function resolveCustomCaSource(
   root: string,
@@ -50,8 +68,7 @@ export function resolveCustomCaSource(
   const isManaged = (path: string) => {
     const absolute = resolve(path);
     return (
-      absolute === resolve(root, "codex-ca-bundle.pem") ||
-      dirname(absolute) === resolve(root, "codex-ca-bundles") ||
+      isManagedCodexCaPath(root, path) ||
       (previous !== undefined && absolute === resolve(previous.path))
     );
   };
@@ -99,6 +116,46 @@ export async function prepareCodexCaBundle(
   return path;
 }
 
+/** Keep active/rollback references and a few recent bundles for inherited shell environments. */
+export async function pruneCodexCaBundles(
+  root: string,
+  referencedPaths: readonly (string | undefined)[],
+  environment: EnvironmentController = launchctlEnvironment(),
+): Promise<void> {
+  const directory = resolve(root, "codex-ca-bundles");
+  try {
+    if (!(await lstat(directory)).isDirectory())
+      throw new Error(`Managed CA bundle path is not a directory: ${directory}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const protectedPaths = new Set<string>();
+  for (const path of [...referencedPaths, environment.get("CODEX_CA_CERTIFICATE")]) {
+    if (!path) continue;
+    protectedPaths.add(resolve(path));
+    try {
+      protectedPaths.add(await realpath(path));
+    } catch {
+      // A stale external path still cannot make an in-directory file eligible.
+    }
+  }
+  const candidates = await Promise.all(
+    (await readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".pem"))
+      .map(async (entry) => {
+        const path = join(directory, entry.name);
+        return { path, modified: (await stat(path)).mtimeMs };
+      }),
+  );
+  candidates.sort(
+    (left, right) => right.modified - left.modified || left.path.localeCompare(right.path),
+  );
+  for (const { path } of candidates.slice(3)) {
+    if (!protectedPaths.has(path)) await rm(path);
+  }
+}
+
 export function launchctlEnvironment(): EnvironmentController {
   return {
     get(name) {
@@ -123,14 +180,34 @@ export function syncPublishedCodexCa(
   environment: EnvironmentController = launchctlEnvironment(),
 ): void {
   const current = environment.get("CODEX_CA_CERTIFICATE");
+  const managedDirectory = dirname(resolve(managed.path));
+  const currentIsManaged =
+    current !== undefined &&
+    basename(managedDirectory) === "codex-ca-bundles" &&
+    isManagedCodexCaPath(dirname(managedDirectory), current);
   if (enable) {
-    if (current !== undefined && current !== managed.previous && current !== managed.path)
+    if (
+      current !== undefined &&
+      current !== managed.previous &&
+      current !== managed.path &&
+      !currentIsManaged
+    )
       throw new Error("CODEX_CA_CERTIFICATE changed during service installation; left unchanged");
     if (current !== managed.path) environment.set("CODEX_CA_CERTIFICATE", managed.path);
-  } else if (current === managed.path) {
+  } else if (current === managed.path || currentIsManaged) {
     if (managed.previous === undefined) environment.unset("CODEX_CA_CERTIFICATE");
     else environment.set("CODEX_CA_CERTIFICATE", managed.previous);
   }
+}
+
+/** The managed LaunchAgent's worker publishes after readiness; a standalone proxy may publish now. */
+export function syncProxyStartupCodexCa(
+  managed: PublishedCodexCa,
+  processEnvironment: Record<string, string | undefined> = process.env,
+  environment: EnvironmentController = launchctlEnvironment(),
+): void {
+  if (processEnvironment[MANAGED_SERVICE_ENV] === "1") return;
+  syncPublishedCodexCa(managed, true, environment);
 }
 
 /** Rollback restores the previous service, whereas uninstall restores the user's original value. */
