@@ -52,6 +52,8 @@ can override it with its own `search_broker: {"route": "search-model"}`.
 The proxy checks that the named route is enabled, uses the Responses API,
 accepts native web search, and has an available authorization environment
 variable. A missing or unusable route returns an error naming both routes.
+The check applies when a request declares `web_search`; ordinary Anthropic
+turns use the plain adapter even when the route enables brokerage.
 The broker calls the configured gateway directly with low reasoning effort,
 a 45-second timeout, at most three Claude search rounds, and six broker calls
 per response.

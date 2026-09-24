@@ -1,5 +1,10 @@
 import { anthropicFetch } from "./anthropic/adapter.ts";
-import { brokerRouteFor, SearchBrokerRouteError, type BrokerResult } from "./search-broker.ts";
+import {
+  brokerRouteFor,
+  needsSearchBroker,
+  SearchBrokerRouteError,
+  type BrokerResult,
+} from "./search-broker.ts";
 import { randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 
@@ -580,16 +585,13 @@ async function proxyHttpRequest(
         captureEffectivePayload = JSON.stringify(policy.payload);
       }
       const authorization = authorizationFor(route, process.env);
-      brokerRoute =
-        route.toolPolicy.web_search === "broker"
-          ? brokerRouteFor(
-              routes,
-              route.searchBrokerRoute ??
-                proxyConfigSource?.get().search_broker.route ??
-                "gpt-6-luna",
-              route.model.slug,
-            )
-          : undefined;
+      brokerRoute = needsSearchBroker(route, policy.payload.tools)
+        ? brokerRouteFor(
+            routes,
+            route.searchBrokerRoute ?? proxyConfigSource?.get().search_broker.route ?? "gpt-6-luna",
+            route.model.slug,
+          )
+        : undefined;
       headers = routedHeaders(headers, authorization);
       routedPayload = httpPayloadFor(policy.payload, {
         forwardAccessPrograms: route.forwardAccessPrograms,
@@ -1215,7 +1217,7 @@ async function runBridgedCreate(
   let brokerRoute: ModelRoute | undefined;
   try {
     authorization = authorizationFor(route, process.env);
-    if (route.toolPolicy.web_search === "broker")
+    if (needsSearchBroker(route, policy.payload.tools))
       brokerRoute = brokerRouteFor(
         bridge.routes,
         route.searchBrokerRoute ??

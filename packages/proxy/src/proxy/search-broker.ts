@@ -20,6 +20,15 @@ export interface BrokerResult {
 
 export class SearchBrokerRouteError extends Error {}
 
+/** The policy alone does not make ordinary Claude turns depend on the broker. */
+export function needsSearchBroker(route: ModelRoute, tools: unknown): boolean {
+  return (
+    route.toolPolicy.web_search === "broker" &&
+    Array.isArray(tools) &&
+    tools.some((tool) => record(tool) && tool.type === "web_search")
+  );
+}
+
 export function brokerRouteFor(
   routes: readonly ModelRoute[],
   slug: string,

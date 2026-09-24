@@ -10,6 +10,84 @@ afterEach(async () => {
 });
 
 describe("broker route validation on both client transports", () => {
+  it("uses the plain adapter when web_search is not declared", async () => {
+    process.env.CLAUDE_BROKER_TEST_KEY = "test-token";
+    let served = 0;
+    const gateway = Bun.serve({
+      port: 0,
+      async fetch() {
+        served++;
+        return Response.json({
+          type: "message",
+          content: [{ type: "text", text: "plain reply" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 2 },
+        });
+      },
+    });
+    closeables.push(() => gateway.stop(true));
+    const claude = modelRouteFromConfig({
+      api: "anthropic-messages",
+      authorization_env: "CLAUDE_BROKER_TEST_KEY",
+      upstream: `${gateway.url.origin}/anthropic`,
+      model: {
+        slug: "claude-test",
+        display_name: "Claude test",
+        description: "Test route",
+        template_slug: "gpt-6-astra",
+        priority: 1,
+      },
+      tool_policy: { web_search: "broker" },
+    });
+    const proxy = await startReverseProxy({
+      port: 0,
+      upstreamOrigin: "https://upstream.example",
+      captureSink: { async record() {} },
+      anthropicKey: new Uint8Array(32),
+      modelRouteSource: { get: () => ({ routes: [claude], adjustments: [], fixturePins: [] }) },
+      proxyConfigSource: {
+        get: () => ({
+          version: 1,
+          appsAuthRelay: false,
+          search_broker: { route: "missing-search" },
+        }),
+        subscribe: () => () => {},
+      },
+    });
+    closeables.push(() => proxy.close());
+    const payload = {
+      model: claude.model.slug,
+      input: [{ role: "user", content: "Say hello" }],
+      tools: [{ type: "function", name: "noop", parameters: { type: "object" } }],
+    };
+    const http = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...payload, stream: false }),
+    });
+    expect(http.status).toBe(200);
+    expect(JSON.stringify(await http.json())).toContain("plain reply");
+
+    const ws = new WebSocket(`${proxy.origin.replace("http:", "ws:")}/backend-api/codex/responses`);
+    closeables.push(() => ws.close());
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = reject;
+    });
+    const terminal = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("WebSocket timeout")), 5000);
+      ws.onmessage = (event) => {
+        const data = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (!["response.completed", "response.failed", "error"].includes(String(data.type))) return;
+        clearTimeout(timer);
+        resolve(data);
+      };
+      ws.send(JSON.stringify({ type: "response.create", ...payload, stream: true }));
+    });
+    expect(terminal.type).toBe("response.completed");
+    expect(served).toBe(2);
+  });
+
   it("reports a missing configured search route on HTTP and WebSocket", async () => {
     process.env.CLAUDE_BROKER_TEST_KEY = "test-token";
     const claude = modelRouteFromConfig({

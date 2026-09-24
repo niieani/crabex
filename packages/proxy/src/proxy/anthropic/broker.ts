@@ -33,29 +33,20 @@ export async function* brokeredAnthropicEvents(
   const emit = (event: Json) => JSON.stringify({ ...event, sequence_number: sequence++ });
   for (let round = 0; ; round++) {
     const state = new AnthropicResponse(prepared, slug);
-    const events = (await Array.fromAsync(anthropicEvents(response, prepared, slug, state))).map(
-      (event) => JSON.parse(event) as Json,
-    );
-    const terminal = events.findLast((event) =>
-      ["response.completed", "response.failed", "response.incomplete"].includes(String(event.type)),
-    );
-    if (!terminal || !record(terminal.response))
-      throw new Error("Anthropic broker turn ended without a terminal response");
-    const completed = terminal.response;
     const offset = output.length;
-    const roundOutput = Array.isArray(completed.output) ? (completed.output as Json[]) : [];
-    output.push(...roundOutput);
-    usage = sumUsage(usage, record(completed.usage) ? completed.usage : {});
-    const brokerIds = new Set(state.brokerUses.map((use) => use.itemId));
     const deferredDone: Json[] = [];
-    for (const event of events) {
-      if (event.type === "response.created" && round > 0) continue;
+    let terminal: Json | undefined;
+    for await (const raw of anthropicEvents(response, prepared, slug, state)) {
+      const event = JSON.parse(raw) as Json;
       if (
         event.type === "response.completed" ||
         event.type === "response.failed" ||
         event.type === "response.incomplete"
-      )
+      ) {
+        terminal = event;
         continue;
+      }
+      if (event.type === "response.created" && round > 0) continue;
       const shifted = {
         ...event,
         ...(typeof event.output_index === "number"
@@ -65,11 +56,17 @@ export async function* brokeredAnthropicEvents(
       if (
         event.type === "response.output_item.done" &&
         record(event.item) &&
-        brokerIds.has(String(event.item.id))
+        event.item.type === "web_search_call"
       )
         deferredDone.push(shifted);
       else yield emit(shifted);
     }
+    if (!terminal || !record(terminal.response))
+      throw new Error("Anthropic broker turn ended without a terminal response");
+    const completed = terminal.response;
+    const roundOutput = Array.isArray(completed.output) ? (completed.output as Json[]) : [];
+    output.push(...roundOutput);
+    usage = sumUsage(usage, record(completed.usage) ? completed.usage : {});
     if (terminal.type !== "response.completed") {
       yield emit({ ...terminal, response: { ...completed, output, usage } });
       return;
