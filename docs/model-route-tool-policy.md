@@ -65,6 +65,9 @@ Codex's access mode, filters, location, context size, and requested content
 types are forwarded to the broker's native `web_search` declaration. The
 broker provider determines how those hints are honored.
 Broker errors become Claude tool results marked as errors so Claude can react.
+The tool result, service log, and live activity show only a proxy-defined
+failure code and the HTTP status when available; upstream error bodies are
+discarded.
 The answer and URL/title list come from the broker's text and native
 `url_citation` annotations. Citation offsets into that text are not applied to
 Claude's separate answer. Codex sees a `web_search_call` with the query, while

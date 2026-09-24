@@ -99,7 +99,7 @@ export async function* brokeredAnthropicEvents(
               text: "",
               sources: [],
               usage: { inputTokens: 0, outputTokens: 0 },
-              error: "Web search broker call limit reached",
+              error: { code: "call_limit" as const },
             }
           : await runSearchBroker(
               broker.route,

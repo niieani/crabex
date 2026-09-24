@@ -1,6 +1,7 @@
 import { anthropicFetch } from "./anthropic/adapter.ts";
 import {
   brokerRouteFor,
+  brokerFailureSummary,
   needsSearchBroker,
   SearchBrokerRouteError,
   type BrokerResult,
@@ -1085,7 +1086,8 @@ function noteBrokerResult(
   route: string,
   result: BrokerResult,
 ): void {
-  if (result.error) console.warn(`web search broker "${route}" failed: ${result.error}`);
+  if (result.error)
+    console.warn(`web search broker "${route}" failed: ${brokerFailureSummary(result.error)}`);
   if (liveRequestId !== undefined) liveRequests.recordBroker(liveRequestId, route, result);
 }
 

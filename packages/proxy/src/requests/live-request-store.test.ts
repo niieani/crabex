@@ -16,7 +16,7 @@ describe("LiveRequestStore", () => {
     });
     store.recordBroker(id, "gpt-6-luna", {
       usage: { inputTokens: 4, outputTokens: 0 },
-      error: "timeout",
+      error: { code: "timeout" },
     });
     expect(store.snapshot().active[0]).toMatchObject({
       brokerUsage: {

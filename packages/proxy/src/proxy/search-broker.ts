@@ -14,7 +14,33 @@ export interface BrokerResult {
   text: string;
   sources: { url: string; title: string }[];
   usage: { inputTokens: number; outputTokens: number };
-  error?: string;
+  error?: BrokerFailure;
+}
+
+export interface BrokerFailure {
+  code:
+    | "http_error"
+    | "timeout"
+    | "broker_error"
+    | "response_failed"
+    | "response_incomplete"
+    | "response_too_large"
+    | "incomplete_stream"
+    | "call_limit";
+  status?: number;
+}
+
+class BrokerCallError extends Error {
+  readonly failure: BrokerFailure;
+
+  constructor(failure: BrokerFailure) {
+    super(failure.code);
+    this.failure = failure;
+  }
+}
+
+export function brokerFailureSummary(failure: BrokerFailure): string {
+  return failure.status === undefined ? failure.code : `HTTP ${failure.status} (${failure.code})`;
 }
 
 export class SearchBrokerRouteError extends Error {}
@@ -134,8 +160,8 @@ export async function runSearchBroker(
       }),
     });
     if (!response.response.ok) {
-      const detail = (await response.response.text()).slice(0, 500);
-      throw new Error(`HTTP ${response.response.status}: ${detail}`);
+      await response.response.body?.cancel();
+      throw new BrokerCallError({ code: "http_error", status: response.response.status });
     }
     const completed = await completedResponse(response.response);
     return brokerResult(completed);
@@ -145,7 +171,12 @@ export async function runSearchBroker(
       text: "",
       sources: [],
       usage: { inputTokens: 0, outputTokens: 0 },
-      error: error instanceof Error ? error.message : String(error),
+      error:
+        error instanceof BrokerCallError
+          ? error.failure
+          : combined.aborted
+            ? { code: "timeout" }
+            : { code: "broker_error" },
     };
   }
 }
@@ -180,14 +211,15 @@ async function completedResponse(response: Response): Promise<Record<string, unk
   let bytes = 0;
   for await (const data of parseSseEvents(response.body)) {
     bytes += Buffer.byteLength(data);
-    if (bytes > MAX_BROKER_BYTES) throw new Error("Broker response exceeds 4 MiB");
+    if (bytes > MAX_BROKER_BYTES) throw new BrokerCallError({ code: "response_too_large" });
     const event: unknown = JSON.parse(data);
     if (!record(event)) continue;
     if (event.type === "response.completed" && record(event.response)) return event.response;
-    if (event.type === "response.failed" || event.type === "response.incomplete")
-      throw new Error(`Broker ${event.type}: ${JSON.stringify(event.response).slice(0, 500)}`);
+    if (event.type === "response.failed") throw new BrokerCallError({ code: "response_failed" });
+    if (event.type === "response.incomplete")
+      throw new BrokerCallError({ code: "response_incomplete" });
   }
-  throw new Error("Broker stream ended without response.completed");
+  throw new BrokerCallError({ code: "incomplete_stream" });
 }
 
 export function brokerResult(response: Record<string, unknown>): BrokerResult {
@@ -220,7 +252,7 @@ export function brokerResult(response: Record<string, unknown>): BrokerResult {
 }
 
 export function brokerToolResult(result: BrokerResult): string {
-  if (result.error) return `Web search failed: ${result.error}`;
+  if (result.error) return `Web search failed: ${brokerFailureSummary(result.error)}`;
   const sources = result.sources.map(({ title, url }) => `- ${title}: ${url}`).join("\n");
   return `${result.text || "No answer text returned."}${sources ? `\n\nSources:\n${sources}` : "\n\nNo source URLs returned."}`;
 }

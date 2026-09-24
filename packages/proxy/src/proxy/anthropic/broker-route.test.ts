@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { modelRouteFromConfig } from "../../routing/model-routes.ts";
+import { LiveRequestStore } from "../../requests/live-request-store.ts";
 import { startReverseProxy, type RunningProxy } from "../server.ts";
 
 const closeables: (() => Promise<unknown> | void)[] = [];
@@ -7,6 +8,7 @@ afterEach(async () => {
   for (const close of closeables.splice(0).reverse()) await close();
   delete process.env.CLAUDE_BROKER_TEST_KEY;
   delete process.env.OPENAI_BROKER_TEST_KEY;
+  vi.restoreAllMocks();
 });
 
 describe("broker route validation on both client transports", () => {
@@ -156,6 +158,9 @@ describe("broker route validation on both client transports", () => {
     process.env.CLAUDE_BROKER_TEST_KEY = "claude-token";
     process.env.OPENAI_BROKER_TEST_KEY = "search-token";
     const seen: Record<string, unknown>[] = [];
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const liveRequests = new LiveRequestStore();
+    const privateError = "private-search-query-and-internal-url";
     const gateway = Bun.serve({
       port: 0,
       async fetch(request) {
@@ -163,7 +168,7 @@ describe("broker route validation on both client transports", () => {
         const body = (await request.json()) as Record<string, unknown>;
         if (path === "/openai/responses") {
           expect(request.headers.get("authorization")).toBe("Bearer search-token");
-          return Response.json({ error: { message: "search unavailable" } }, { status: 503 });
+          return Response.json({ error: { message: privateError } }, { status: 503 });
         }
         expect(request.headers.get("authorization")).toBe("Bearer claude-token");
         seen.push(body);
@@ -218,6 +223,7 @@ describe("broker route validation on both client transports", () => {
       modelRouteSource: {
         get: () => ({ routes: [claude, search], adjustments: [], fixturePins: [] }),
       },
+      liveRequests,
     });
     closeables.push(() => proxy.close());
     const post = (input: unknown[]) =>
@@ -240,8 +246,14 @@ describe("broker route validation on both client transports", () => {
       "reasoning",
       "message",
     ]);
-    expect(JSON.stringify(seen[1]!.messages)).toContain("search unavailable");
+    expect(JSON.stringify(seen[1]!.messages)).toContain("HTTP 503");
     expect(JSON.stringify(seen[1]!.messages)).toContain('"is_error":true');
+    expect(JSON.stringify(seen[1]!.messages)).not.toContain(privateError);
+    expect(JSON.stringify(liveRequests.snapshot())).not.toContain(privateError);
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(privateError);
+    expect(
+      liveRequests.snapshot().recent[0]?.events.some((entry) => entry.detail?.includes("HTTP 503")),
+    ).toBe(true);
     const followup = await post([
       ...initialInput,
       ...completed.output,

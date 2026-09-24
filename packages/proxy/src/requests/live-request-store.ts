@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { brokerFailureSummary, type BrokerFailure } from "../proxy/search-broker.ts";
 
 export type LiveRequestState =
   | "routing"
@@ -118,7 +119,7 @@ export class LiveRequestStore {
   recordBroker(
     id: string,
     route: string,
-    result: { usage: { inputTokens: number; outputTokens: number }; error?: string },
+    result: { usage: { inputTokens: number; outputTokens: number }; error?: BrokerFailure },
   ): void {
     const current = this.#requests.get(id);
     if (!current) return;
@@ -132,7 +133,7 @@ export class LiveRequestStore {
         errors: (previous?.errors ?? 0) + (result.error ? 1 : 0),
       },
       detail: result.error
-        ? `Web search broker ${route} failed: ${result.error}`
+        ? `Web search broker ${route} failed: ${brokerFailureSummary(result.error)}`
         : `Web search broker ${route} completed`,
     });
   }
