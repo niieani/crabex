@@ -260,12 +260,12 @@ describe("modelRouteFromConfig", () => {
         routes: [{ ...routeConfig[0], allowed_tool_types: ["function"], tool_policy: {} }],
       }),
     ).toThrow("route[0] cannot set both tool_policy and allowed_tool_types");
-    expect(() =>
+    expect(
       parseModelRouteSet({
         version: 1,
         routes: [{ ...routeConfig[0], allowed_tool_types: ["unknown"] }],
-      }),
-    ).toThrow('route[0].allowed_tool_types contains unsupported tool type "unknown"');
+      }).routes[0]?.allowed_tool_types,
+    ).toEqual(["unknown"]);
     expect(() =>
       parseModelRouteSet({
         version: 1,

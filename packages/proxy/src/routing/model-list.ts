@@ -230,14 +230,18 @@ export async function transformModelsResponse(
 }
 
 function gateModelCapabilities(model: ModelDefinition, route: ModelRoute): ModelDefinition {
-  const translatedSearch = route.toolPolicy.tool_search === "translate";
+  const searchAction = route.toolPolicy.tool_search;
   const customUnavailable =
     route.toolPolicy.custom === "reject" || route.toolPolicy.custom === "omit";
   const translatedCustom =
     (route.api ?? "responses") === "responses" && route.toolPolicy.custom === "translate";
   return {
     ...model,
-    supports_search_tool: translatedSearch,
+    ...(searchAction === "translate"
+      ? { supports_search_tool: true }
+      : searchAction === "omit" || searchAction === "reject"
+        ? { supports_search_tool: false }
+        : {}),
     ...(customUnavailable ? { apply_patch_tool_type: null, tool_mode: "direct" } : {}),
     ...(translatedCustom ? { apply_patch_tool_type: "freeform" } : {}),
   };

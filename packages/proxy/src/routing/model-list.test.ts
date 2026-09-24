@@ -45,7 +45,6 @@ describe("transformModels", () => {
         multi_agent_version: null,
         priority: 1,
         slug: "kimi-k3",
-        supports_search_tool: false,
       },
       template,
     ]);
@@ -157,7 +156,7 @@ describe("transformModels", () => {
     });
   });
 
-  it("advertises tool discovery only for translated search routes", () => {
+  it("preserves tool discovery on pass routes and gates omitted or rejected routes", () => {
     const config = {
       authorization_env: "TEST_KEY",
       transport: "http" as const,
@@ -176,9 +175,24 @@ describe("transformModels", () => {
       tool_policy: { tool_search: "translate" },
     });
     const passed = modelRouteFromConfig({ ...config, tool_policy: { tool_search: "pass" } });
+    const omitted = modelRouteFromConfig({ ...config, tool_policy: { tool_search: "omit" } });
+    const rejected = modelRouteFromConfig({ ...config, tool_policy: { tool_search: "reject" } });
     const upstream = { models: [{ ...template, supports_search_tool: true }] };
     expect(transformModels(upstream, [translated]).models[0]?.supports_search_tool).toBe(true);
     expect(transformModels(upstream, [passed]).models[0]?.supports_search_tool).toBe(false);
+    const enabledPass = modelRouteFromConfig({
+      ...config,
+      model: { ...config.model, overrides: { supports_search_tool: true } },
+      tool_policy: { tool_search: "pass" },
+    });
+    expect(transformModels(upstream, [enabledPass]).models[0]?.supports_search_tool).toBe(true);
+    const inheritedPass = modelRouteFromConfig({
+      ...config,
+      model: { ...config.model, overrides: undefined },
+    });
+    expect(transformModels(upstream, [inheritedPass]).models[0]?.supports_search_tool).toBe(true);
+    expect(transformModels(upstream, [omitted]).models[0]?.supports_search_tool).toBe(false);
+    expect(transformModels(upstream, [rejected]).models[0]?.supports_search_tool).toBe(false);
   });
 
   it("replaces one exact instruction span and updates the legacy field", () => {

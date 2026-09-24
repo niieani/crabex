@@ -108,6 +108,39 @@ describe("applyRouteToolPolicy", () => {
     expect(payload.tools).toHaveLength(4);
   });
 
+  it("filters legacy allowlists by exact top-level type without emptying allowed namespaces", () => {
+    const route = modelRouteFromConfig({
+      ...base,
+      allowed_tool_types: ["namespace", "future_tool"],
+    });
+    const namespace = {
+      type: "namespace",
+      name: "mcp",
+      tools: [{ type: "function", name: "search" }],
+    };
+    const future = { type: "future_tool", name: "future" };
+    const payload = {
+      tools: [namespace, future, { type: "function", name: "read" }],
+      tool_choice: { type: "function", namespace: "mcp", name: "search" },
+    };
+
+    expect(applyRouteToolPolicy(route, payload)).toEqual({
+      payload: { tools: [namespace, future], tool_choice: payload.tool_choice },
+      omittedTypes: ["function"],
+    });
+  });
+
+  it("keeps function children when the legacy allowlist contains only namespace", () => {
+    const route = modelRouteFromConfig({ ...base, allowed_tool_types: ["namespace"] });
+    const namespace = {
+      type: "namespace",
+      name: "mcp",
+      tools: [{ type: "function", name: "search" }],
+    };
+    const payload = { tools: [namespace] };
+    expect(applyRouteToolPolicy(route, payload)).toEqual({ payload, omittedTypes: [] });
+  });
+
   it("passes future declarations on a default Responses route", () => {
     const route = modelRouteFromConfig(base);
     const payload = {

@@ -73,6 +73,39 @@ describe("route capability controls", () => {
     expect(onUpdate.mock.calls[0]![0]).not.toHaveProperty("allowed_tool_types");
   });
 
+  it.each([["future_tool"], ["namespace"]])(
+    "does not offer a lossy migration for legacy %s",
+    (type) => {
+      const legacy = route();
+      legacy.allowed_tool_types = [type];
+      legacy.effective_tool_policy = {
+        function: "omit",
+        namespace: type === "namespace" ? "pass" : "omit",
+        custom: "omit",
+        web_search: "omit",
+        tool_search: "omit",
+        other: "omit",
+      };
+      render(
+        <RouteCapabilities
+          route={legacy}
+          routes={[legacy]}
+          defaultBroker="gpt-6-luna"
+          pending={false}
+          onUpdate={vi.fn()}
+        />,
+      );
+      fireEvent.click(screen.getByText("Tools, search, and agents"));
+      expect(
+        screen
+          .getByRole("button", { name: "Convert allowlist to policy" })
+          .hasAttribute("disabled"),
+      ).toBe(true);
+      expect(screen.getByText(/exact allowlist cannot be represented/)).toBeTruthy();
+      cleanup();
+    },
+  );
+
   it("shows allowed actions and stores only the selected override", () => {
     const onUpdate = vi.fn();
     const configured = route();

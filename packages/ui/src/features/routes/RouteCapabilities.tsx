@@ -64,6 +64,14 @@ export function RouteCapabilities({
   const legacy = route.allowed_tool_types !== undefined;
   const effective = route.effective_tool_policy;
   const actions = route.tool_policy_actions;
+  const migratable =
+    legacy &&
+    effective !== undefined &&
+    actions !== undefined &&
+    route.allowed_tool_types?.every(
+      (type) => type !== "namespace" && TOOL_KEYS.some((key) => key !== "other" && key === type),
+    ) === true &&
+    TOOL_KEYS.every((type) => actions[type].includes(effective[type]));
   const broker = route.search_broker?.route ?? defaultBroker;
   const brokerIssue =
     route.api === "anthropic-messages" &&
@@ -83,7 +91,7 @@ export function RouteCapabilities({
   }
 
   function migrateAllowlist() {
-    if (!effective) return;
+    if (!effective || !migratable) return;
     const converted = { ...route, tool_policy: { ...effective } };
     delete converted.allowed_tool_types;
     onUpdate(converted);
@@ -120,7 +128,7 @@ export function RouteCapabilities({
             {legacy ? (
               <button
                 type="button"
-                disabled={pending || !effective}
+                disabled={pending || !migratable}
                 onClick={migrateAllowlist}
                 className="rounded-lg border border-accent/40 px-2.5 py-1.5 text-[11px] text-accent disabled:opacity-50"
               >
@@ -130,8 +138,10 @@ export function RouteCapabilities({
           </div>
           {legacy ? (
             <p className="mt-2 text-[11px] text-warning">
-              Legacy allowed_tool_types is active. Convert it to edit actions without changing the
-              effective policy.
+              Legacy allowed_tool_types is active.{" "}
+              {migratable
+                ? "Convert it to edit actions without changing the effective policy."
+                : "This exact allowlist cannot be represented by the typed policy; keep it until its tool types are migrated."}
             </p>
           ) : null}
           {!effective || !actions ? (
@@ -149,6 +159,9 @@ export function RouteCapabilities({
                     onChange={(event) => setToolAction(type, event.target.value)}
                   >
                     {!legacy ? <option value="inherit">Inherit provider default</option> : null}
+                    {legacy && !actions[type].includes(effective[type]) ? (
+                      <option value={effective[type]}>{effective[type]} (legacy)</option>
+                    ) : null}
                     {actions[type].map((action) => (
                       <option key={action} value={action}>
                         {action}

@@ -140,6 +140,7 @@ export interface ModelRoute {
   transport: "http" | "ws";
   bridgeResponseState: "replay" | "stored";
   toolPolicy: ToolPolicy;
+  allowedToolTypes?: readonly string[];
   forwardAccessPrograms: boolean;
 }
 
@@ -207,6 +208,9 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
     transport,
     bridgeResponseState: config.bridge_response_state ?? "replay",
     toolPolicy,
+    ...(config.allowed_tool_types === undefined
+      ? {}
+      : { allowedToolTypes: config.allowed_tool_types }),
     forwardAccessPrograms: config.forward_access_programs === true,
   };
 }

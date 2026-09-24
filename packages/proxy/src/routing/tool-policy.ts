@@ -91,17 +91,6 @@ export function parseToolConfiguration(
     ) {
       throw new Error(`${source}.allowed_tool_types must be an array of unique non-empty strings`);
     }
-    for (const type of legacyValue) {
-      if (!isToolType(type)) {
-        throw new Error(`${source}.allowed_tool_types contains unsupported tool type "${type}"`);
-      }
-      const defaultAction = defaultsFor(api)[type];
-      if (defaultAction === "reject") {
-        throw new Error(
-          `${source}.allowed_tool_types cannot enable unsupported tool type "${type}"`,
-        );
-      }
-    }
     allowed_tool_types = legacyValue;
   }
   return {
@@ -127,7 +116,10 @@ export function effectiveToolPolicy(config: {
   if (allowed !== undefined) {
     return {
       ...Object.fromEntries(
-        TOOL_TYPES.map((type) => [type, allowed.includes(type) ? defaults[type] : "omit"]),
+        TOOL_TYPES.map((type) => [
+          type,
+          allowed.includes(type) ? (defaults[type] === "reject" ? "pass" : defaults[type]) : "omit",
+        ]),
       ),
       other: "omit",
     } as ToolPolicy;
@@ -136,7 +128,7 @@ export function effectiveToolPolicy(config: {
 }
 
 export function applyRouteToolPolicy(
-  route: { model: { slug: string }; toolPolicy: ToolPolicy },
+  route: { model: { slug: string }; toolPolicy: ToolPolicy; allowedToolTypes?: readonly string[] },
   payload: Record<string, unknown>,
 ): { payload: Record<string, unknown>; omittedTypes: string[] } {
   const omittedTypes: string[] = [];
@@ -154,12 +146,15 @@ export function applyRouteToolPolicy(
   let omitChoice = false;
   if (isRecord(choice)) {
     const type = declarationType(route, choice);
-    const action = actionFor(route.toolPolicy, type);
+    const matchedOriginal = Array.isArray(declarations) && choiceMatches(choice, declarations);
+    const matchedRetained = tools !== undefined && choiceMatches(choice, tools);
+    const action =
+      route.allowedToolTypes !== undefined && matchedOriginal && matchedRetained
+        ? "pass"
+        : actionFor(route, type);
     if (action === "reject") reject(route, type);
     omitChoice = action === "omit";
-    if (declarations !== undefined && tools !== undefined) {
-      omitChoice ||= choiceMatches(choice, declarations) && !choiceMatches(choice, tools);
-    }
+    omitChoice ||= matchedOriginal && !matchedRetained;
     if (omitChoice) addOmission(omittedTypes, type);
   }
   if (omittedTypes.length === 0) return { payload, omittedTypes };
@@ -179,7 +174,7 @@ export function warnOmittedToolTypes(routeSlug: string, omittedTypes: readonly s
 }
 
 function applyDeclaration(
-  route: { model: { slug: string }; toolPolicy: ToolPolicy },
+  route: { model: { slug: string }; toolPolicy: ToolPolicy; allowedToolTypes?: readonly string[] },
   declaration: unknown,
   omittedTypes: string[],
 ): Record<string, unknown> | undefined {
@@ -189,12 +184,13 @@ function applyDeclaration(
     );
   }
   const type = declarationType(route, declaration);
-  const action = actionFor(route.toolPolicy, type);
+  const action = actionFor(route, type);
   if (action === "reject") reject(route, type);
   if (action === "omit") {
     addOmission(omittedTypes, type);
     return undefined;
   }
+  if (route.allowedToolTypes !== undefined) return declaration;
   if (type !== "namespace") return declaration;
   const children = declaration.tools;
   if (!Array.isArray(children)) {
@@ -213,10 +209,7 @@ function applyDeclaration(
   return { ...declaration, tools: retained };
 }
 
-function declarationType(
-  route: { model: { slug: string }; toolPolicy: ToolPolicy },
-  declaration: unknown,
-): string {
+function declarationType(route: { model: { slug: string } }, declaration: unknown): string {
   const type = isRecord(declaration) ? declaration.type : undefined;
   if (typeof type !== "string" || type.length === 0) {
     throw new ToolPolicyError(
@@ -226,8 +219,17 @@ function declarationType(
   return type;
 }
 
-function actionFor(policy: ToolPolicy, type: string): ToolAction {
-  return isToolType(type) ? policy[type] : policy.other;
+function actionFor(
+  route: { toolPolicy: ToolPolicy; allowedToolTypes?: readonly string[] },
+  type: string,
+): ToolAction {
+  if (route.allowedToolTypes !== undefined)
+    return route.allowedToolTypes.includes(type)
+      ? isToolType(type)
+        ? route.toolPolicy[type]
+        : "pass"
+      : "omit";
+  return isToolType(type) ? route.toolPolicy[type] : route.toolPolicy.other;
 }
 
 function reject(route: { model: { slug: string } }, type: string): never {

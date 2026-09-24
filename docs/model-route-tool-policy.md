@@ -79,8 +79,8 @@ returns a Codex `tool_search_call` with JSON arguments; Codex executes the
 search and sends `tool_search_output`. The proxy summarizes the result for the
 model and adds the discovered function or namespace declarations to subsequent
 requests. Anthropic receives flattened wire names; Responses routes keep native
-namespaces. Codex's catalog advertises `supports_search_tool: true` only when
-the route translates discovery.
+namespaces. Codex's catalog advertises `supports_search_tool: true` when the
+route translates discovery. A `pass` route keeps the template or override value.
 
 Loaded declarations are scoped to the account, thread, and route, expire after
 30 minutes, and are bounded to 256 tools and 1 MiB of declarations per scope.
@@ -123,26 +123,30 @@ logs each omitted route/type pair once and records omitted types on the live
 request and capture routing metadata. Unknown string types follow `other`;
 missing or non-string declaration types are invalid.
 
-Codex's model list advertises `supports_search_tool: false` unless the route
-translates `tool_search`. Omitting or rejecting `custom` also disables the
+Codex's model list advertises `supports_search_tool: false` when the route
+omits or rejects `tool_search`; translation forces it on, and `pass` preserves
+the template or override value. Omitting or rejecting `custom` also disables the
 catalog's `apply_patch_tool_type` and forces direct tool mode. Responses routes
 with `custom: "translate"` advertise freeform `apply_patch` so Codex can call it.
 Codex has no model-level switch for hosted `web_search` or all
 namespace/function tools. The user can disable hosted web search in Codex with
 `web_search = "disabled"`.
 
-The old `allowed_tool_types` list still loads. Listed supported types receive
-their provider's default action; all unlisted and unknown types become `omit`,
-preserving the previous outbound tool list. Listing a type the provider cannot
-handle fails validation. The proxy logs a deprecation warning when it loads or
-saves such a route. New configurations should use `tool_policy`. Do not set
+The old `allowed_tool_types` list still loads with arbitrary unique strings.
+It filters only top-level declarations by exact type, keeping the children of
+an allowed namespace intact. Unlisted top-level types are omitted. The proxy
+logs a deprecation warning when it loads or saves such a route. New
+configurations should use `tool_policy`. Do not set
 both fields on one route. The local
 `/__agent-context-trimmer/api/model-routes` response includes an
 `effective_tool_policy` for each route alongside the editable `tool_policy`;
 this derived field is not saved. It also returns `tool_policy_actions`, the
 actions valid for each type under that route's API and transport. The Model
 routes page uses these fields to show inherited actions, edit overrides, and
-convert a legacy allowlist to an equivalent explicit policy. It also edits the
+convert a legacy allowlist to an equivalent explicit policy where possible.
+Exact matching for future tool types and top-level-only namespace matching
+cannot be represented by the typed policy, so those allowlists remain legacy.
+The page also edits the
 proxy-wide search broker and native-to-routed agent opt-in, plus per-Anthropic
 broker overrides and each route's advertised `multi_agent_version`.
 

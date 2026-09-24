@@ -100,4 +100,20 @@ describe("model route store", () => {
       warning.mockRestore();
     }
   });
+
+  it("loads a legacy allowlist containing a future declaration type", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-routes-"));
+    const path = join(directory, "routes.json");
+    const legacy = [{ ...routes[0]!, allowed_tool_types: ["future_tool"] }];
+    await Bun.write(path, JSON.stringify({ version: 1, routes: legacy }));
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await openModelRouteStore(path)).get().routes).toEqual(legacy);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining('model route "kimi-k3": allowed_tool_types is deprecated'),
+      );
+    } finally {
+      warning.mockRestore();
+    }
+  });
 });
