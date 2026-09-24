@@ -106,6 +106,21 @@ Not verified: long-context compaction in a live session; provider search freshne
 
 For V2 smoke tests, use a persistent isolated `CODEX_HOME` and omit `codex exec --ephemeral`. An ephemeral run cannot register a child thread and failed `spawn_agent` with `no thread with id`. Plain, single-agent OAuth probes may still use `--ephemeral`.
 
+```sh
+home=$(mktemp -d)   # outside the repository
+ln -s ~/.codex/auth.json "$home/auth.json"   # existing ChatGPT login, never an API key
+cat > "$home/config.toml" <<'EOF'
+openai_base_url = "http://127.0.0.1:<port>/backend-api/codex"
+chatgpt_base_url = "http://127.0.0.1:<port>/backend-api"
+
+[features]
+multi_agent_v2 = true
+EOF
+CODEX_HOME="$home" codex exec --skip-git-repo-check -m <model> 'Spawn one agent that replies child-ok' < /dev/null
+ls "$home/sessions"   # parent and child rollouts
+rm -rf "$home"
+```
+
 ## Persistent state and failure recovery
 
 The proxy stores `loaded-tools-cache.json`, `stored-responses-cache.json`, and `routed-agents-cache.json` beside `snapshot-cache.json` (or beside the configured snapshot cache path). Keys hash account/thread/session scope; no bearer tokens or raw account IDs are persisted. Files have a 30-minute TTL, a 512-entry LRU limit, and size caps of 16 MiB, 8 MiB, and 2 MiB respectively. Writes are debounced and atomically renamed. Corrupt or version-mismatched files produce a warning and start empty.

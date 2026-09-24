@@ -42,7 +42,7 @@ Keep machine-specific route configuration, private upstream URLs, internal hostn
 - Build with `vp run build`; put logs/captures under `temp.local/$(date +%F)/`.
 - Start `./packages/proxy/dist/cli.mjs proxy` on an unused localhost port, preferably in tmux.
 - Run `codex exec --ephemeral --model <model> -c 'model_reasoning_effort="<effort>"' -c 'openai_base_url="http://127.0.0.1:<port>/backend-api/codex"' 'Reply with exactly: audit-ok'` using the existing ChatGPT login—never an API key.
-- For V2 subagent tests, use a persistent isolated `CODEX_HOME` and omit `--ephemeral`; ephemeral spawn fails with `no thread with id`.
+- For V2 subagent tests, use a persistent isolated `CODEX_HOME` and omit `--ephemeral`; ephemeral spawn fails with `no thread with id`. Create a temporary home outside the repo, symlink `~/.codex/auth.json`, write a `config.toml` with the proxy's `openai_base_url`/`chatgpt_base_url` and `[features] multi_agent_v2 = true`, run with `< /dev/null`, read child rollouts under `$CODEX_HOME/sessions/`, then delete it. Recipe: `docs/codex-tool-compatibility.md`.
 - `codex exec` launched from Codex Desktop may inherit Desktop originator identity; trust captured harness metadata, and run outside Desktop when specifically validating TUI scope.
 - Inspect NDJSON with `jq`: confirm WebSocket `response.create`, requested model/effort, `generate:false` warmup, chained `previous_response_id`, and `response.completed`.
 - Stop the proxy after verification.
