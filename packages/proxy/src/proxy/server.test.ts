@@ -1,5 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import WebSocket, { type RawData, WebSocketServer } from "ws";
@@ -1802,6 +1805,138 @@ describe("model routing and config bundle override", () => {
     }
   });
 
+  it("continues a discovered tool call after a proxy restart using persisted route state", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    const cacheDirectory = await mkdtemp(join(tmpdir(), "act-route-session-cache-"));
+    try {
+      const seen: Record<string, unknown>[] = [];
+      const searchCall = {
+        type: "function_call",
+        id: "fc_search",
+        call_id: "search_1",
+        name: "tool_search",
+        arguments: '{"query":"inventory lookup"}',
+        status: "completed",
+      };
+      const lookupCall = {
+        type: "function_call",
+        id: "fc_lookup",
+        call_id: "lookup_1",
+        namespace: "inventory",
+        name: "lookup_item",
+        arguments: '{"sku":"A"}',
+        status: "completed",
+      };
+      const gateway = await startHttpServer(async (request, response) => {
+        const payload = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+        seen.push(payload);
+        const output = seen.length === 1 ? [searchCall] : seen.length === 2 ? [lookupCall] : [];
+        response.setHeader("content-type", "text/event-stream");
+        response.end(
+          `data: ${JSON.stringify({ type: "response.created", response: { id: `resp_${seen.length}` } })}\n\n` +
+            `data: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${seen.length}`, output } })}\n\n`,
+        );
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        bridge_response_state: "stored",
+        tool_policy: { tool_search: "translate", custom: "omit", other: "omit" },
+      });
+      const identity = {
+        authorization: "Bearer oauth-secret",
+        "chatgpt-account-id": "account-1",
+        "session-id": "session-1",
+        "thread-id": "thread-1",
+        "content-type": "application/json",
+      };
+      const search = {
+        type: "tool_search",
+        execution: "client",
+        description: "Find deferred tools",
+        parameters: { type: "object", properties: { query: { type: "string" } } },
+      };
+      const discovered = {
+        type: "namespace",
+        name: "inventory",
+        tools: [
+          {
+            type: "function",
+            name: "lookup_item",
+            description: "Look up a SKU",
+            defer_loading: true,
+            parameters: { type: "object" },
+          },
+        ],
+      };
+      const user = message("user", "Find an inventory lookup tool and look up A");
+      const visibleSearchCall = {
+        type: "tool_search_call",
+        id: "fc_search",
+        call_id: "search_1",
+        execution: "client",
+        arguments: { query: "inventory lookup" },
+        status: "completed",
+      };
+      const discovery = {
+        type: "tool_search_output",
+        call_id: "search_1",
+        status: "completed",
+        execution: "client",
+        tools: [discovered],
+      };
+      const send = async (origin: string, input: unknown[]) => {
+        const response = await fetch(`${origin}/backend-api/codex/responses`, {
+          method: "POST",
+          headers: identity,
+          body: JSON.stringify({ model: "kimi-k3", stream: true, input, tools: [search] }),
+        });
+        expect(response.status).toBe(200);
+        await response.text();
+      };
+      const first = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+        sessionCacheDirectory: cacheDirectory,
+      });
+      await send(first.origin, [user]);
+      await send(first.origin, [user, visibleSearchCall, discovery]);
+      await first.close();
+      const persisted = (
+        await Promise.all([
+          readFile(join(cacheDirectory, "loaded-tools-cache.json"), "utf8"),
+          readFile(join(cacheDirectory, "stored-responses-cache.json"), "utf8"),
+        ])
+      ).join("\n");
+      for (const secret of ["oauth-secret", "local-api-key", "account-1", gateway.origin]) {
+        expect(persisted).not.toContain(secret);
+      }
+
+      const restarted = await startRoutingProxy("http://127.0.0.1:1", new MemoryCaptureSink(), {
+        routes: [route],
+        sessionCacheDirectory: cacheDirectory,
+      });
+      await send(restarted.origin, [
+        user,
+        visibleSearchCall,
+        discovery,
+        lookupCall,
+        { type: "function_call_output", call_id: "lookup_1", output: "found" },
+      ]);
+      expect(seen[2]).toMatchObject({
+        previous_response_id: "resp_2",
+        input: [{ type: "function_call_output", call_id: "lookup_1", output: "found" }],
+        tools: [
+          { type: "function", name: "tool_search" },
+          { type: "namespace", name: "inventory", tools: [{ name: "lookup_item" }] },
+        ],
+      });
+      await restarted.close();
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+      await rm(cacheDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("reports missing loaded-tool state for delta-only continuations on both transports", async () => {
     process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
     try {
@@ -2775,6 +2910,7 @@ async function startRoutingProxy(
     upstreamCache?: MemoryUpstreamCache;
     transformations?: Transformation[];
     liveRequests?: LiveRequestStore;
+    sessionCacheDirectory?: string;
   } = {},
 ): Promise<RunningProxy> {
   const proxy = await startReverseProxy({
@@ -2796,6 +2932,9 @@ async function startRoutingProxy(
     },
     ...(options.upstreamCache === undefined ? {} : { upstreamCache: options.upstreamCache }),
     ...(options.liveRequests === undefined ? {} : { liveRequests: options.liveRequests }),
+    ...(options.sessionCacheDirectory === undefined
+      ? {}
+      : { sessionCacheDirectory: options.sessionCacheDirectory }),
   });
   closeables.push(() => proxy.close());
   return proxy;

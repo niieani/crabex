@@ -61,6 +61,17 @@ a replacement full replay with no discovery outputs, clears it; the model must
 search again. A stored, delta-only continuation with no matching loaded state
 fails visibly instead of calling a discovered tool without its declaration.
 
+The proxy persists loaded declarations in `loaded-tools-cache.json` and stored
+response correlation markers in `stored-responses-cache.json`, beside its
+`snapshot-cache.json` (in the installed service's data directory, or beside a
+custom `--snapshot-cache` path). Both caches have a 30-minute TTL and a 512-entry
+LRU limit. The loaded-tools file is capped at 16 MiB and the stored-response
+file at 8 MiB. Writes are debounced and atomically renamed; clean shutdown
+flushes pending writes. Keys are SHA-256 digests of the scoped identity, so raw
+session/account IDs and bearer tokens are not written to either file. Invalid
+or version-mismatched cache files produce a warning and start empty. A later
+delta-only continuation then reports lost loaded-tool state as above.
+
 For a Fireworks Responses route verified with native web search, set
 `web_search: "pass"`. The proxy forwards Codex's `web_search` declaration,
 including `external_web_access` and `indexed_web_access`, unchanged. Fireworks

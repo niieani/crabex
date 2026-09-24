@@ -1,9 +1,10 @@
+import { PersistentLruCache } from "../config/persistent-lru-cache.ts";
 import { ToolPolicyError } from "../routing/tool-policy.ts";
 
 type JsonObject = Record<string, unknown>;
-type Entry = { declarations: JsonObject[]; expiresAt: number };
 
 const MAX_SESSIONS = 512;
+const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 const MAX_TOOLS = 256;
 const MAX_DECLARATION_BYTES = 1024 * 1024;
 const STATE_TTL_MS = 30 * 60_000;
@@ -14,11 +15,20 @@ const record = (value: unknown): value is JsonObject =>
 
 /** Loaded client tools for one account, thread, and model route. */
 export class LoadedToolRegistry {
-  private readonly entries = new Map<string, Entry>();
-  private readonly now: () => number;
+  private readonly entries: PersistentLruCache<JsonObject[]>;
 
-  constructor(now: () => number = Date.now) {
-    this.now = now;
+  constructor(
+    now: () => number = Date.now,
+    entries = new PersistentLruCache(declarationCacheOptions(now)),
+  ) {
+    this.entries = entries;
+  }
+
+  static async open(path: string, now: () => number = Date.now): Promise<LoadedToolRegistry> {
+    return new LoadedToolRegistry(
+      now,
+      await PersistentLruCache.open(path, declarationCacheOptions(now)),
+    );
   }
 
   /** Reconcile full history or merge a stored delta, then inject live declarations. */
@@ -41,7 +51,7 @@ export class LoadedToolRegistry {
     const outputs = visibleHistory.filter(
       (item): item is JsonObject => record(item) && item.type === "tool_search_output",
     );
-    const prior = key === undefined ? undefined : this.get(key);
+    const prior = key === undefined ? undefined : this.entries.get(key);
     if (deltaOnly && prior === undefined && outputs.length === 0) {
       throw new ToolPolicyError(
         `model route "${routeSlug}" lost loaded tools for a delta-only continuation; replay full history or start a new turn`,
@@ -50,7 +60,7 @@ export class LoadedToolRegistry {
 
     // A full replay is authoritative. An explicit compaction item is a boundary;
     // local compaction is detected when its replacement full replay has no outputs.
-    let declarations = !deltaOnly || lastCompaction >= 0 ? [] : (prior?.declarations ?? []);
+    let declarations = !deltaOnly || lastCompaction >= 0 ? [] : (prior ?? []);
     for (const output of outputs) {
       if (!Array.isArray(output.tools)) {
         throw new ToolPolicyError(
@@ -69,7 +79,7 @@ export class LoadedToolRegistry {
     ) {
       throw new ToolPolicyError(`model route "${routeSlug}" exceeded the loaded-tool limit`);
     }
-    if (key !== undefined) this.set(key, declarations);
+    if (key !== undefined) this.entries.set(key, declarations);
 
     const tools = mergeDeclarations(
       Array.isArray(outboundPayload.tools) ? outboundPayload.tools.filter(record) : [],
@@ -83,28 +93,27 @@ export class LoadedToolRegistry {
     this.entries.delete(key);
   }
 
-  private get(key: string): Entry | undefined {
-    const entry = this.entries.get(key);
-    if (entry === undefined) return undefined;
-    if (entry.expiresAt <= this.now()) {
-      this.entries.delete(key);
-      return undefined;
-    }
-    return entry;
+  flush(): Promise<void> {
+    return this.entries.flush();
   }
+}
 
-  private set(key: string, declarations: JsonObject[]): void {
-    const now = this.now();
-    this.entries.delete(key);
-    this.entries.set(key, {
-      declarations: structuredClone(declarations),
-      expiresAt: now + STATE_TTL_MS,
-    });
-    for (const [candidate, entry] of this.entries) {
-      if (entry.expiresAt <= now) this.entries.delete(candidate);
-    }
-    while (this.entries.size > MAX_SESSIONS) this.entries.delete(this.entries.keys().next().value!);
-  }
+function declarationCacheOptions(now: () => number) {
+  return {
+    now,
+    ttlMs: STATE_TTL_MS,
+    maxEntries: MAX_SESSIONS,
+    maxBytes: MAX_CACHE_BYTES,
+    isValue: (value: unknown): value is JsonObject[] =>
+      Array.isArray(value) && value.every(validDeclaration),
+  };
+}
+
+function validDeclaration(value: unknown): value is JsonObject {
+  if (!record(value) || typeof value.name !== "string") return false;
+  if (value.type === "namespace")
+    return Array.isArray(value.tools) && value.tools.every(validDeclaration);
+  return value.type === "function";
 }
 
 /** Brief result text; the complete discovered schemas are injected as declarations. */

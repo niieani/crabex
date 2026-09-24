@@ -34,6 +34,7 @@ describe("LaunchAgent service", () => {
     ]);
     expect(args).toContain("/stable/data/model-routes.json");
     expect(args).toContain("/stable/data/captures");
+    expect(args).toContain("/stable/data/snapshot-cache.json");
     expect(args).toContain("127.0.0.1:9000");
   });
 

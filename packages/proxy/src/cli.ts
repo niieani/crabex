@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
 import { readTls, syncPublishedCodexCa, tlsStatus } from "./service/tls.ts";
@@ -133,6 +133,7 @@ async function main(): Promise<void> {
     },
     configBundleSource: { get: () => configBundleStore.get() },
     upstreamCache: upstreamCacheStore,
+    sessionCacheDirectory: dirname(options.snapshotCachePath),
     breakers: targetBreakers,
     stats: statsStore,
     liveRequests,

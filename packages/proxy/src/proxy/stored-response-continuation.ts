@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { PersistentLruCache } from "../config/persistent-lru-cache.ts";
 
 type ExactMarker = { kind: "exact"; digest: string };
 type InputMarker = ExactMarker | OutputMarker;
@@ -23,6 +24,7 @@ export interface PreparedStoredRequest {
 
 const STATE_TTL_MS = 30 * 60_000;
 const MAX_STORED_RESPONSES = 512;
+const MAX_CACHE_BYTES = 8 * 1024 * 1024;
 // Codex parses unknown response item types as Other and excludes them from replay.
 // Fireworks can add a completion-only tool_output after a native web search.
 const REPLAYED_OUTPUT_TYPES = new Set([
@@ -68,36 +70,74 @@ export function storedResponseKey(
 
 /** Bounded, short-lived state shared by WebSocket bridges and routed HTTP. */
 export class StoredResponseRegistry {
-  private readonly entries = new Map<string, { state: StoredResponseState; expiresAt: number }>();
-  private readonly now: () => number;
+  private readonly entries: PersistentLruCache<StoredResponseState>;
 
-  constructor(now: () => number = Date.now) {
-    this.now = now;
+  constructor(
+    now: () => number = Date.now,
+    entries = new PersistentLruCache(responseCacheOptions(now)),
+  ) {
+    this.entries = entries;
+  }
+
+  static async open(path: string, now: () => number = Date.now): Promise<StoredResponseRegistry> {
+    return new StoredResponseRegistry(
+      now,
+      await PersistentLruCache.open(path, responseCacheOptions(now)),
+    );
   }
 
   get(key: string | undefined): StoredResponseState | undefined {
     if (key === undefined) return undefined;
-    const entry = this.entries.get(key);
-    if (entry === undefined) return undefined;
-    if (entry.expiresAt <= this.now()) {
-      this.entries.delete(key);
-      return undefined;
-    }
-    return entry.state;
+    return this.entries.get(key);
   }
 
   set(key: string | undefined, state: StoredResponseState): void {
     if (key === undefined) return;
-    const now = this.now();
-    this.entries.delete(key);
-    this.entries.set(key, { state, expiresAt: now + STATE_TTL_MS });
-    for (const [candidate, entry] of this.entries) {
-      if (entry.expiresAt <= now) this.entries.delete(candidate);
-    }
-    while (this.entries.size > MAX_STORED_RESPONSES) {
-      this.entries.delete(this.entries.keys().next().value!);
-    }
+    this.entries.set(key, state);
   }
+
+  flush(): Promise<void> {
+    return this.entries.flush();
+  }
+}
+
+function responseCacheOptions(now: () => number) {
+  return {
+    now,
+    ttlMs: STATE_TTL_MS,
+    maxEntries: MAX_STORED_RESPONSES,
+    maxBytes: MAX_CACHE_BYTES,
+    isValue: validStoredResponse,
+  };
+}
+
+function validStoredResponse(value: unknown): value is StoredResponseState {
+  return (
+    isRecord(value) &&
+    typeof value.routeSlug === "string" &&
+    typeof value.responseId === "string" &&
+    Array.isArray(value.inputMarkers) &&
+    value.inputMarkers.every(validMarker) &&
+    Array.isArray(value.outputMarkers) &&
+    value.outputMarkers.every(validOutputMarker)
+  );
+}
+
+function validMarker(value: unknown): value is InputMarker {
+  return (
+    isRecord(value) &&
+    ((value.kind === "exact" && typeof value.digest === "string") || validOutputMarker(value))
+  );
+}
+
+function validOutputMarker(value: unknown): value is OutputMarker {
+  return (
+    isRecord(value) &&
+    value.kind === "output" &&
+    typeof value.type === "string" &&
+    typeof value.id === "string" &&
+    (value.callId === undefined || typeof value.callId === "string")
+  );
 }
 
 /**

@@ -1,5 +1,6 @@
 import { anthropicFetch } from "./anthropic/adapter.ts";
 import { randomBytes, randomUUID } from "node:crypto";
+import { join } from "node:path";
 
 import type { CaptureRouting, CaptureSink, CaptureUpstreamOrigin } from "../recording/capture.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
@@ -115,6 +116,8 @@ export interface ReverseProxyOptions {
   localApi?: LocalApi;
   webUi?: (request: Request) => Promise<Response | undefined>;
   liveRequests?: LiveRequestStore;
+  /** Persist route continuation state beside the proxy's other data files. */
+  sessionCacheDirectory?: string;
 }
 
 export interface TransformationSource {
@@ -205,8 +208,14 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
   const fixtureModels = options.fixtureModels ?? modelsFixture();
   const breakers = options.breakers ?? new TargetBreakers();
   const liveRequests = options.liveRequests ?? new LiveRequestStore();
-  const storedResponses = new StoredResponseRegistry();
-  const loadedTools = new LoadedToolRegistry();
+  const storedResponses = options.sessionCacheDirectory
+    ? await StoredResponseRegistry.open(
+        join(options.sessionCacheDirectory, "stored-responses-cache.json"),
+      )
+    : new StoredResponseRegistry();
+  const loadedTools = options.sessionCacheDirectory
+    ? await LoadedToolRegistry.open(join(options.sessionCacheDirectory, "loaded-tools-cache.json"))
+    : new LoadedToolRegistry();
   const configBundleSource = options.configBundleSource;
   const upstreamCache = options.upstreamCache;
   let lastBundleObservation = 0;
@@ -466,13 +475,19 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     },
   });
 
+  let closePromise: Promise<void> | undefined;
   return {
     origin: server.url.origin,
-    close: () => {
-      unsubscribeProxyConfig?.();
-      appsAuthRelay?.close();
-      return server.stop(true);
-    },
+    close: () =>
+      (closePromise ??= (async () => {
+        unsubscribeProxyConfig?.();
+        appsAuthRelay?.close();
+        try {
+          await server.stop(true);
+        } finally {
+          await Promise.all([storedResponses.flush(), loadedTools.flush()]);
+        }
+      })()),
   };
 }
 
