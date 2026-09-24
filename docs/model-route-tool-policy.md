@@ -135,7 +135,12 @@ saves such a route. New configurations should use `tool_policy`. Do not set
 both fields on one route. The local
 `/__agent-context-trimmer/api/model-routes` response includes an
 `effective_tool_policy` for each route alongside the editable `tool_policy`;
-this derived field is not saved.
+this derived field is not saved. It also returns `tool_policy_actions`, the
+actions valid for each type under that route's API and transport. The Model
+routes page uses these fields to show inherited actions, edit overrides, and
+convert a legacy allowlist to an equivalent explicit policy. It also edits the
+proxy-wide search broker and native-to-routed agent opt-in, plus per-Anthropic
+broker overrides and each route's advertised `multi_agent_version`.
 
 ## V2 agent handoff through routed models
 

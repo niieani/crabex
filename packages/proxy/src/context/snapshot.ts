@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { CaptureEvent, CaptureRouting } from "../recording/capture.ts";
+import type { CaptureErrorSummary, CaptureEvent, CaptureRouting } from "../recording/capture.ts";
 import type { ModelDefinition } from "../routing/model-list.ts";
 import { classifyMessage, markdownSections, type ContentSection } from "./classification.ts";
 import type { HarnessIdentity } from "./harness.ts";
@@ -51,6 +51,7 @@ export interface ContextSnapshot {
   harness: HarnessIdentity;
   project?: string;
   routing?: CaptureRouting;
+  errorSummary?: CaptureErrorSummary;
   requestSequences: number[];
   parts: ContextPart[];
   usage?: { inputTokens: number; cachedTokens: number };
@@ -62,6 +63,7 @@ interface RequestRecord {
   originalPayload: Record<string, unknown>;
   responseId?: string;
   usage?: { inputTokens: number; cachedTokens: number };
+  errorSummary?: CaptureErrorSummary;
 }
 
 /**
@@ -98,6 +100,9 @@ export function buildSnapshots(
       continue;
     }
     if (event.direction !== "upstream_to_client") continue;
+    if (pending !== undefined && event.errorSummary !== undefined) {
+      pending.errorSummary = event.errorSummary;
+    }
     const response = objectValue(payload?.response);
     const responseSummary = "responseSummary" in event ? event.responseSummary : undefined;
     const responseId = stringValue(response?.id) ?? responseSummary?.id;
@@ -142,6 +147,7 @@ function snapshotFrom(
     harness: inference.event.harness ?? { kind: "unknown" },
     ...(inference.event.project === undefined ? {} : { project: inference.event.project }),
     ...(inference.event.routing === undefined ? {} : { routing: inference.event.routing }),
+    ...(inference.errorSummary === undefined ? {} : { errorSummary: inference.errorSummary }),
     requestSequences: chain.map((item) => item.event.sequence),
     parts,
     ...(inference.usage === undefined ? {} : { usage: inference.usage }),

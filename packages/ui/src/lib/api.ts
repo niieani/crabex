@@ -20,10 +20,16 @@ export async function getProxyConfig(): Promise<ProxyConfigState> {
 }
 
 export async function putProxyConfig(appsAuthRelay: boolean): Promise<ProxyConfigState> {
+  return patchProxyConfig({ appsAuthRelay });
+}
+
+export async function patchProxyConfig(
+  update: Partial<Pick<ProxyConfigState, "appsAuthRelay" | "search_broker" | "routed_agents">>,
+): Promise<ProxyConfigState> {
   const response = await request(`${API}/proxy-config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ version: 1, appsAuthRelay }),
+    body: JSON.stringify({ version: 1, ...update }),
   });
   return (await response.json()) as ProxyConfigState;
 }

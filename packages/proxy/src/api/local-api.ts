@@ -12,7 +12,7 @@ import {
 import type { ModelRouteStore } from "../config/model-route-store.ts";
 import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
 import { parseModelRouteSet, type ModelRouteSetData } from "../routing/model-routes.ts";
-import { effectiveToolPolicy } from "../routing/tool-policy.ts";
+import { allowedToolActions, effectiveToolPolicy } from "../routing/tool-policy.ts";
 import { modelsFixture } from "../routing/models-fixture.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
@@ -50,15 +50,22 @@ export function createLocalApi(options: {
         }
         if (url.pathname === `${API_PREFIX}/proxy-config` && options.proxyConfig !== undefined) {
           if (request.method === "PUT") {
-            if (options.appsAuthRelayOverride !== undefined)
-              throw new Error(
-                "Apps authentication relay is overridden by the command line; restart without the override to edit it",
-              );
             const update: unknown = await request.json();
             if (typeof update !== "object" || update === null || Array.isArray(update))
               throw new Error("invalid proxy config");
+            if (
+              options.appsAuthRelayOverride !== undefined &&
+              Object.hasOwn(update, "appsAuthRelay")
+            )
+              throw new Error(
+                "Apps authentication relay is overridden by the command line; restart without the override to edit it",
+              );
             const config = parseProxyConfig({ ...options.proxyConfig.get(), ...update });
-            if (config.appsAuthRelay && options.allowAppsAuthRelay === false)
+            if (
+              Object.hasOwn(update, "appsAuthRelay") &&
+              config.appsAuthRelay &&
+              options.allowAppsAuthRelay === false
+            )
               throw new Error("Apps authentication relay requires a loopback listener");
             await options.proxyConfig.replace(config);
           } else if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
@@ -192,6 +199,10 @@ function modelRoutesResponse(set: ModelRouteSetData): Record<string, unknown> {
     routes: set.routes.map((route) => ({
       ...route,
       effective_tool_policy: effectiveToolPolicy(route),
+      tool_policy_actions: allowedToolActions(
+        route.api ?? "responses",
+        route.transport ?? (route.api === "anthropic-messages" ? "http" : "ws"),
+      ),
     })),
   };
 }

@@ -27,6 +27,13 @@ vi.mock("../lib/api.ts", () => ({
     fixture_pins: ["other"],
   }),
   getModelRouteEnvStatus: async () => ({ GATEWAY_KEY: true }),
+  getProxyConfig: async () => ({
+    version: 1,
+    appsAuthRelay: true,
+    search_broker: { route: "gpt-6-luna" },
+    routed_agents: { enabled: false },
+  }),
+  patchProxyConfig: vi.fn(),
   getRoutingTelemetry: async () => ({ telemetry: [], breakers: {} }),
   getUpstreamCache: async () => ({}),
   getModelsFixture: async () => ({ models: [] }),

@@ -358,6 +358,20 @@ export function CatalogPage() {
               </button>
             </div>
           </header>
+          {snapshot?.routing?.omittedToolTypes?.length ? (
+            <p className="mx-5 mt-3 rounded-md bg-warning/10 px-3 py-2 text-xs text-warning">
+              Omitted tool types: {snapshot.routing.omittedToolTypes.join(", ")}
+            </p>
+          ) : null}
+          {snapshot?.errorSummary ? (
+            <p
+              role="alert"
+              className="mx-5 mt-3 rounded-md bg-danger-dim px-3 py-2 text-xs text-danger"
+            >
+              {snapshot.errorSummary.status ? `HTTP ${snapshot.errorSummary.status} · ` : ""}
+              {snapshot.errorSummary.message ?? snapshot.errorSummary.eventType}
+            </p>
+          ) : null}
           {snapshot === undefined ? (
             <EmptyState
               title={preview ? "Previewing transformations" : "Opening capture"}

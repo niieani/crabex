@@ -248,6 +248,30 @@ describe("buildSnapshots", () => {
     });
   });
 
+  it("keeps a captured refusal summary on its request snapshot", () => {
+    const request = event(1, "client_to_upstream", {
+      type: "response.create",
+      model: "glm-5.3-flash",
+      input: [message("user", "delegate")],
+    });
+    const refusal: CaptureEvent = {
+      sessionId: "session-1",
+      sequence: 2,
+      timestamp: new Date(2000).toISOString(),
+      transport: "websocket",
+      direction: "upstream_to_client",
+      encoding: "utf8",
+      payloadMode: "metadata",
+      payloadBytes: 80,
+      errorSummary: {
+        eventType: "error",
+        status: 422,
+        message: "Unreadable encrypted_content in agent_message",
+      },
+    };
+    expect(buildSnapshots([request, refusal])[0]?.errorSummary).toEqual(refusal.errorSummary);
+  });
+
   it("counts snapshot text with o200k_base", () => {
     const snapshot = buildSnapshots([
       event(1, "client_to_upstream", {

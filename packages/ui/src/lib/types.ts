@@ -56,6 +56,7 @@ export interface CaptureRoutingAttempt {
 export interface CaptureRouting {
   action: "routed" | "bundle-override" | "models-advertised";
   routeSlugs?: string[];
+  omittedToolTypes?: string[];
   upstream?: string;
   requestedModel?: string;
   upstreamModel?: string;
@@ -137,6 +138,13 @@ export interface LiveRequest {
   maxAttempts?: number;
   status?: number;
   detail?: string;
+  brokerUsage?: {
+    route: string;
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    errors: number;
+  };
   events: LiveRequestEvent[];
 }
 
@@ -154,6 +162,13 @@ export interface ContextSnapshot {
   harness: HarnessIdentity;
   project?: string;
   routing?: CaptureRouting;
+  errorSummary?: {
+    eventType: string;
+    status?: number;
+    code?: string;
+    message?: string;
+    model?: string;
+  };
   requestSequences: number[];
   parts: ContextPart[];
   usage?: { inputTokens: number; cachedTokens: number };
@@ -228,6 +243,16 @@ export interface RouteRetryConfig {
   breaker?: { failures?: number; cooldown_ms?: number };
 }
 
+export type ToolPolicyKey =
+  | "function"
+  | "namespace"
+  | "custom"
+  | "web_search"
+  | "tool_search"
+  | "other";
+export type ToolAction = "pass" | "translate" | "broker" | "omit" | "reject";
+export type ToolPolicy = Record<ToolPolicyKey, ToolAction>;
+
 export interface ModelRouteConfig {
   api?: "responses" | "anthropic-messages";
   anthropic?: {
@@ -240,6 +265,7 @@ export interface ModelRouteConfig {
     cache_prompt?: boolean;
     beta?: string[];
   };
+  search_broker?: { route: string };
   authorization_env: string;
   enabled?: boolean;
   model: AdvertisedModelConfig;
@@ -250,6 +276,10 @@ export interface ModelRouteConfig {
   transport?: "http" | "ws";
   bridge_response_state?: "replay" | "stored";
   allowed_tool_types?: string[];
+  tool_policy?: Partial<ToolPolicy>;
+  /** Read-only fields returned by GET/PUT for the route editor. */
+  effective_tool_policy?: ToolPolicy;
+  tool_policy_actions?: Record<ToolPolicyKey, ToolAction[]>;
   forward_access_programs?: boolean;
 }
 
@@ -310,4 +340,6 @@ export interface ProxyConfigState {
   appsAuthRelay: boolean;
   appsAuthRelayOverride?: boolean;
   allowAppsAuthRelay: boolean;
+  search_broker: { route: string };
+  routed_agents: { enabled: boolean };
 }

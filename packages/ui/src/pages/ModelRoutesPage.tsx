@@ -3,10 +3,13 @@ import { ArrowDown, ArrowUp } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
+import { RouteCapabilities } from "../features/routes/RouteCapabilities.tsx";
+import { RouteProxySettings } from "../features/routes/RouteProxySettings.tsx";
 import {
   getModelRouteEnvStatus,
   getModelRoutes,
   getModelsFixture,
+  getProxyConfig,
   getRoutingTelemetry,
   getUpstreamCache,
   putModelRoutes,
@@ -24,6 +27,7 @@ export function ModelRoutesPage() {
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["model-routes"], queryFn: getModelRoutes });
   const envQuery = useQuery({ queryKey: ["model-route-env"], queryFn: getModelRouteEnvStatus });
+  const proxyQuery = useQuery({ queryKey: ["proxy-config"], queryFn: getProxyConfig });
   const telemetryQuery = useQuery({
     queryKey: ["routing-telemetry"],
     queryFn: getRoutingTelemetry,
@@ -130,6 +134,7 @@ export function ModelRoutesPage() {
             {mutation.error.message}
           </p>
         ) : null}
+        <RouteProxySettings routes={set.routes} envStatus={envQuery.data} />
         <div className="space-y-2">
           {set.routes.length === 0 ? (
             <div className="rounded-xl border border-dashed border-line p-10 text-center text-sm text-muted">
@@ -146,6 +151,9 @@ export function ModelRoutesPage() {
                 onMoveUp={() => move(index, -1)}
                 onMoveDown={() => move(index, 1)}
                 envSet={envQuery.data?.[route.authorization_env]}
+                envStatus={envQuery.data}
+                routes={set.routes}
+                defaultBroker={proxyQuery.data?.search_broker.route ?? "gpt-6-luna"}
                 breakerUntil={breakerUntilFor(route, openBreakers)}
                 telemetry={telemetry.find(
                   (entry) => entry.action === "routed" && entry.routeSlug === route.model.slug,
@@ -153,6 +161,7 @@ export function ModelRoutesPage() {
                 onToggle={() =>
                   replace(updateRoute(set, index, { ...route, enabled: !(route.enabled ?? true) }))
                 }
+                onUpdate={(next) => replace(updateRoute(set, index, next))}
                 onDelete={() =>
                   replace({ ...set, routes: set.routes.filter((_, i) => i !== index) })
                 }
@@ -276,9 +285,13 @@ function breakerUntilFor(
 function RouteCard({
   route,
   envSet,
+  envStatus,
+  routes,
+  defaultBroker,
   breakerUntil,
   telemetry,
   onToggle,
+  onUpdate,
   onDelete,
   pending,
   canMoveUp,
@@ -288,9 +301,13 @@ function RouteCard({
 }: {
   route: ModelRouteConfig;
   envSet?: boolean;
+  envStatus?: Record<string, boolean>;
+  routes: ModelRouteConfig[];
+  defaultBroker: string;
   breakerUntil?: string;
   telemetry?: RoutingTelemetry;
   onToggle: () => void;
+  onUpdate: (route: ModelRouteConfig) => void;
   onDelete: () => void;
   pending: boolean;
   canMoveUp: boolean;
@@ -385,6 +402,14 @@ function RouteCard({
               {JSON.stringify(route.model.overrides, null, 2)}
             </pre>
           )}
+          <RouteCapabilities
+            route={route}
+            routes={routes}
+            defaultBroker={defaultBroker}
+            envStatus={envStatus}
+            pending={pending}
+            onUpdate={onUpdate}
+          />
         </div>
       </div>
     </article>

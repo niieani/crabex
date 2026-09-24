@@ -6,6 +6,7 @@ export type ToolAction = "pass" | "translate" | "broker" | "omit" | "reject";
 export type ToolPolicy = Record<ToolPolicyKey, ToolAction>;
 export type ToolPolicyConfig = Partial<ToolPolicy>;
 export type ToolPolicyApi = "responses" | "anthropic-messages";
+export type ToolPolicyActions = Record<ToolPolicyKey, ToolAction[]>;
 
 export class ToolPolicyError extends Error {}
 
@@ -27,6 +28,33 @@ const ANTHROPIC_DEFAULTS: ToolPolicy = {
   tool_search: "reject",
   other: "reject",
 };
+
+/** The same implementation rules used by route validation, exposed for the editor. */
+export function allowedToolActions(
+  api: ToolPolicyApi,
+  transport: "http" | "ws",
+): ToolPolicyActions {
+  const keys: ToolPolicyKey[] = [...TOOL_TYPES, "other"];
+  const actions: ToolAction[] = ["pass", "translate", "broker", "omit", "reject"];
+  return Object.fromEntries(
+    keys.map((type) => [
+      type,
+      actions.filter((action) => {
+        try {
+          assertImplemented(api, type, action, "tool policy");
+          return !(
+            api === "responses" &&
+            transport !== "http" &&
+            action === "translate" &&
+            (type === "custom" || type === "tool_search")
+          );
+        } catch {
+          return false;
+        }
+      }),
+    ]),
+  ) as ToolPolicyActions;
+}
 
 export function parseToolConfiguration(
   policyValue: unknown,

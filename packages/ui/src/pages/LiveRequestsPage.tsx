@@ -77,6 +77,9 @@ export function LiveRequestsPage() {
 
 function RequestCard({ request, active }: { request: LiveRequest; active: boolean }) {
   const host = safeHost(request.upstream);
+  const omission = request.events.findLast((event) =>
+    event.detail?.startsWith("Omitted tool types:"),
+  )?.detail;
   return (
     <article className="rounded-xl border border-line bg-panel p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -118,9 +121,24 @@ function RequestCard({ request, active }: { request: LiveRequest; active: boolea
         )}
       </div>
 
-      {request.detail === undefined ? null : (
-        <p className="mt-3 text-xs text-muted">{friendlyDetail(request.detail)}</p>
+      {omission ? (
+        <p className="mt-3 rounded-md bg-warning/10 px-3 py-2 text-xs text-warning">{omission}</p>
+      ) : null}
+      {request.detail === undefined || request.detail === omission ? null : (
+        <p
+          role={request.state === "failed" ? "alert" : undefined}
+          className={`mt-3 text-xs ${request.state === "failed" ? "text-danger" : "text-muted"}`}
+        >
+          {friendlyDetail(request.detail)}
+        </p>
       )}
+      {request.brokerUsage ? (
+        <p className="mt-3 rounded-md bg-canvas px-3 py-2 font-mono text-[11px] text-content">
+          Web search broker {request.brokerUsage.route} · {request.brokerUsage.calls} call(s) ·{" "}
+          {request.brokerUsage.inputTokens} in / {request.brokerUsage.outputTokens} out tokens
+          {request.brokerUsage.errors ? ` · ${request.brokerUsage.errors} error(s)` : ""}
+        </p>
+      ) : null}
       {request.events.length <= 1 ? null : (
         <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t border-line/60 pt-3">
           {request.events.map((event, index) => (

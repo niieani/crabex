@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { modelRouteFromConfig, parseModelRouteSet, type ModelRouteConfig } from "./model-routes.ts";
-import { applyRouteToolPolicy } from "./tool-policy.ts";
+import { allowedToolActions, applyRouteToolPolicy } from "./tool-policy.ts";
 
 const base: ModelRouteConfig = {
   authorization_env: "TEST_KEY",
@@ -16,6 +16,22 @@ const base: ModelRouteConfig = {
 };
 
 describe("applyRouteToolPolicy", () => {
+  it("offers only actions accepted for each API and transport", () => {
+    expect(allowedToolActions("responses", "ws").custom).toEqual(["pass", "omit", "reject"]);
+    expect(allowedToolActions("responses", "http").custom).toEqual([
+      "pass",
+      "translate",
+      "omit",
+      "reject",
+    ]);
+    expect(allowedToolActions("responses", "http").web_search).toEqual(["pass", "omit", "reject"]);
+    expect(allowedToolActions("anthropic-messages", "http").web_search).toEqual([
+      "broker",
+      "omit",
+      "reject",
+    ]);
+    expect(allowedToolActions("anthropic-messages", "http").other).toEqual(["omit", "reject"]);
+  });
   it("accepts custom translation only on an HTTP Responses bridge", () => {
     const bridged = { ...base, transport: "http", tool_policy: { custom: "translate" } };
     expect(parseModelRouteSet([bridged]).routes[0]?.tool_policy).toEqual({ custom: "translate" });

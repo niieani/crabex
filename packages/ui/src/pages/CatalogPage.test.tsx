@@ -35,7 +35,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function setup() {
+function setup(detailOverrides: Record<string, unknown> = {}) {
   const summary = {
     id: "s:1",
     sessionId: "s",
@@ -47,7 +47,7 @@ function setup() {
     revision: "one",
   };
   mocks.index.mockResolvedValue([summary]);
-  mocks.detail.mockResolvedValue({ ...summary, parts: [] });
+  mocks.detail.mockResolvedValue({ ...summary, parts: [], ...detailOverrides });
   mocks.preview.mockResolvedValue({ ...summary, model: "preview-model", parts: [] });
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -92,5 +92,15 @@ describe("capture browser", () => {
     expect(await screen.findByText("Inspecting preview-model")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Captures" }));
     expect(mocks.navigate).toHaveBeenCalledWith({ search: { capture: undefined } });
+  });
+
+  it("shows omitted tool types from the selected capture", async () => {
+    mocks.capture = "s:1";
+    setup({
+      routing: { action: "routed", omittedToolTypes: ["namespace", "web_search"] },
+      errorSummary: { eventType: "error", status: 422, message: "Foreign history compaction" },
+    });
+    expect(await screen.findByText("Omitted tool types: namespace, web_search")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Foreign history compaction");
   });
 });

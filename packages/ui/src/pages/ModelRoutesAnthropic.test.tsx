@@ -7,6 +7,13 @@ import { ModelRoutesPage } from "./ModelRoutesPage.tsx";
 vi.mock("../lib/api.ts", () => ({
   getModelRoutes: async () => ({ version: 1, routes: [], adjustments: [], fixture_pins: [] }),
   getModelRouteEnvStatus: async () => ({}),
+  getProxyConfig: async () => ({
+    version: 1,
+    appsAuthRelay: true,
+    search_broker: { route: "gpt-6-luna" },
+    routed_agents: { enabled: false },
+  }),
+  patchProxyConfig: vi.fn(),
   getRoutingTelemetry: async () => ({ telemetry: [], breakers: {} }),
   getUpstreamCache: async () => ({}),
   getModelsFixture: async () => ({ models: [] }),

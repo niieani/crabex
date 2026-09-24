@@ -12,6 +12,7 @@ import type { ModelRouteConfig, ModelRouteSetData } from "../routing/model-route
 import { StatsStore } from "../recording/stats-store.ts";
 import { createLocalApi } from "./local-api.ts";
 import { openProxyConfigStore } from "../config/proxy-config-store.ts";
+import { allowedToolActions } from "../routing/tool-policy.ts";
 
 const routeConfigs: ModelRouteConfig[] = [
   {
@@ -163,7 +164,24 @@ describe("local context API", () => {
         )
       )?.status,
     ).toBe(400);
+    expect(
+      (
+        await createLocalApi({ ...options, appsAuthRelayOverride: true }).handle(
+          update({ version: 1, routed_agents: { enabled: false } }),
+        )
+      )?.status,
+    ).toBe(200);
     expect(proxyConfig.get().appsAuthRelay).toBe(false);
+    await proxyConfig.replace({ version: 1, appsAuthRelay: true });
+    expect(
+      (
+        await createLocalApi({
+          ...options,
+          appsAuthRelayOverride: false,
+          allowAppsAuthRelay: false,
+        }).handle(update({ version: 1, search_broker: { route: "still-editable" } }))
+      )?.status,
+    ).toBe(200);
   });
   it("serves snapshots and updates transformations", async () => {
     let set: TransformationSet = { version: 1, transformations: [] };
@@ -393,6 +411,7 @@ describe("local context API", () => {
             tool_search: "pass",
             other: "pass",
           },
+          tool_policy_actions: allowedToolActions("responses", "ws"),
         },
       ],
       adjustments: [],
