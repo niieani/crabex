@@ -54,6 +54,12 @@ import {
 import { LoadedToolRegistry } from "./tool-search.ts";
 import { prepareCustomAgentMessages, UnreadableAgentMessage } from "./multi-agent-handoff.ts";
 import {
+  NativeRoutedAgentsBridge,
+  RoutedAgentRegistry,
+  RoutedAgentsError,
+  translateNativeRoutedAgentsStream,
+} from "./native-routed-agents.ts";
+import {
   completedStoredResponse,
   continuationSessionKey,
   prepareStoredRequest,
@@ -180,6 +186,8 @@ interface SocketData {
   storedResponses: StoredResponseRegistry;
   storedResponse?: StoredResponseState;
   loadedTools: LoadedToolRegistry;
+  routedAgentRegistry: RoutedAgentRegistry;
+  nativeRoutedAgents?: NativeRoutedAgentsBridge;
 }
 
 export async function startReverseProxy(options: ReverseProxyOptions): Promise<RunningProxy> {
@@ -200,8 +208,18 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
       appsAuthRelay = undefined;
     }
   };
-  syncAppsAuthRelay();
-  const unsubscribeProxyConfig = options.proxyConfigSource?.subscribe(syncAppsAuthRelay);
+  let routedAgentsWarningLogged = false;
+  const syncProxyConfig = () => {
+    syncAppsAuthRelay();
+    if (options.proxyConfigSource?.get().routed_agents.enabled && !routedAgentsWarningLogged) {
+      console.warn(
+        "Experimental routed_agents plaintext handoff is enabled; native backend behavior is undocumented",
+      );
+      routedAgentsWarningLogged = true;
+    }
+  };
+  syncProxyConfig();
+  const unsubscribeProxyConfig = options.proxyConfigSource?.subscribe(syncProxyConfig);
   const recorder = new EventRecorder(
     options.captureSink,
     options.now ?? (() => new Date()),
@@ -224,6 +242,11 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
   const loadedTools = options.sessionCacheDirectory
     ? await LoadedToolRegistry.open(join(options.sessionCacheDirectory, "loaded-tools-cache.json"))
     : new LoadedToolRegistry();
+  const routedAgentRegistry = options.sessionCacheDirectory
+    ? await RoutedAgentRegistry.open(
+        join(options.sessionCacheDirectory, "routed-agents-cache.json"),
+      )
+    : new RoutedAgentRegistry();
   const configBundleSource = options.configBundleSource;
   const upstreamCache = options.upstreamCache;
   let lastBundleObservation = 0;
@@ -303,6 +326,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           liveRequests,
           storedResponses,
           loadedTools,
+          routedAgentRegistry,
           anthropicKey,
           options.proxyConfigSource,
         );
@@ -322,6 +346,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         liveRequests,
         storedResponses,
         loadedTools,
+        routedAgentRegistry,
         anthropicKey,
         options.proxyConfigSource,
       );
@@ -428,6 +453,21 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                     omittedToolTypes: omittedTypes,
                   };
                 }
+              } else if (
+                data.proxyConfigSource?.get().routed_agents.enabled &&
+                data.continuationSession !== undefined
+              ) {
+                const nativeBridge = new NativeRoutedAgentsBridge(
+                  routedAgentModels(data.bridge?.routes ?? []),
+                  data.continuationSession,
+                  data.routedAgentRegistry,
+                );
+                const translated = nativeBridge.request(liveInspected.payload);
+                data.nativeRoutedAgents = nativeBridge;
+                if (translated !== liveInspected.payload) {
+                  outbound = JSON.stringify(translated);
+                  captureEffectivePayload = outbound;
+                }
               }
             }
             if (data.upstream === undefined) {
@@ -462,16 +502,18 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             upstream.send(outbound);
           })
           .catch((error) => {
-            if (error instanceof ToolPolicyError) {
+            if (error instanceof ToolPolicyError || error instanceof RoutedAgentsError) {
               if (data.activeRequestId !== undefined) {
                 data.liveRequests.finish(data.activeRequestId, {
                   state: "failed",
-                  status: 400,
+                  status: error instanceof RoutedAgentsError ? 422 : 400,
                   detail: error.message,
                 });
               }
               if (client.readyState === WebSocket.OPEN) {
-                client.send(wrappedErrorEvent(400, error.message));
+                client.send(
+                  wrappedErrorEvent(error instanceof RoutedAgentsError ? 422 : 400, error.message),
+                );
               }
               return;
             }
@@ -495,7 +537,11 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         try {
           await server.stop(true);
         } finally {
-          await Promise.all([storedResponses.flush(), loadedTools.flush()]);
+          await Promise.all([
+            storedResponses.flush(),
+            loadedTools.flush(),
+            routedAgentRegistry.flush(),
+          ]);
         }
       })()),
   };
@@ -516,6 +562,7 @@ async function proxyHttpRequest(
   liveRequests: LiveRequestStore,
   storedResponses: StoredResponseRegistry,
   loadedTools: LoadedToolRegistry,
+  routedAgentRegistry: RoutedAgentRegistry,
   anthropicKey: Uint8Array,
   proxyConfigSource?: Pick<ProxyConfigStore, "get">,
 ): Promise<Response> {
@@ -545,7 +592,7 @@ async function proxyHttpRequest(
       delete headers["content-encoding"];
       delete headers["content-length"];
     }
-    const outbound = processed.value;
+    let outbound = processed.value;
     let routing: CaptureRouting | undefined;
     let routedPayload: Record<string, unknown> | undefined;
     let translatedPayload: Record<string, unknown> | undefined;
@@ -554,6 +601,8 @@ async function proxyHttpRequest(
     let preparedStoredRequest: PreparedStoredRequest | undefined;
     let responseStateKey: string | undefined;
     let brokerRoute: ModelRoute | undefined;
+    let nativeRoutedAgents: NativeRoutedAgentsBridge | undefined;
+    let nativeStreamRequested = false;
     const routedRequest = (() => {
       if (routes.length === 0 || !isResponsesRequest(request.method, requestUrl.pathname)) {
         return undefined;
@@ -632,6 +681,29 @@ async function proxyHttpRequest(
         upstreamModel: route.targets[0]?.upstreamModel ?? route.model.slug,
         ...(policy.omittedTypes.length === 0 ? {} : { omittedToolTypes: policy.omittedTypes }),
       };
+    } else if (
+      isResponsesRequest(request.method, requestUrl.pathname) &&
+      proxyConfigSource?.get().routed_agents.enabled
+    ) {
+      const scope = continuationSessionKey(request.headers);
+      if (scope !== undefined) {
+        const inspected = inspectResponseModel(processed.value);
+        if (inspected !== undefined) {
+          nativeStreamRequested = inspected.payload.stream === true;
+          nativeRoutedAgents = new NativeRoutedAgentsBridge(
+            routedAgentModels(routes),
+            scope,
+            routedAgentRegistry,
+          );
+          const converted = nativeRoutedAgents.request(inspected.payload);
+          if (converted !== inspected.payload) {
+            outbound = JSON.stringify(converted);
+            captureEffectivePayload = outbound;
+            delete headers["content-encoding"];
+            delete headers["content-length"];
+          }
+        }
+      }
     } else if (routes.length > 0 && isModelsRequest(request.method, requestUrl.pathname)) {
       routing = {
         action: "models-advertised",
@@ -758,6 +830,14 @@ async function proxyHttpRequest(
     }
 
     let routedBody = response.body;
+    const translatedNativeStream =
+      nativeRoutedAgents !== undefined &&
+      response.ok &&
+      routedBody !== null &&
+      (nativeStreamRequested ||
+        response.headers.get("content-type")?.includes("text/event-stream"));
+    if (translatedNativeStream)
+      routedBody = translateNativeRoutedAgentsStream(routedBody!, nativeRoutedAgents!);
     const translatedStream =
       toolBridge !== undefined &&
       routedRequest?.route.api !== "anthropic-messages" &&
@@ -765,6 +845,16 @@ async function proxyHttpRequest(
       routedBody !== null &&
       response.headers.get("content-type")?.includes("text/event-stream");
     if (translatedStream) routedBody = translateResponsesStream(routedBody!, toolBridge!);
+    const translatedNativeJson =
+      nativeRoutedAgents !== undefined &&
+      response.ok &&
+      !translatedNativeStream &&
+      (!nativeStreamRequested ||
+        response.headers.get("content-type")?.includes("application/json"));
+    if (translatedNativeJson) {
+      const rewritten = nativeRoutedAgents!.response(await response.json());
+      routedBody = new Response(JSON.stringify(rewritten)).body;
+    }
     const translatedJson =
       toolBridge !== undefined &&
       routedRequest?.route.api !== "anthropic-messages" &&
@@ -841,13 +931,16 @@ async function proxyHttpRequest(
         );
       }
     }
+    const downstreamResponseHeaders =
+      translatedStream || translatedJson || translatedNativeStream || translatedNativeJson
+        ? translatedHeaders(response.headers)
+        : downstreamHeaders(response.headers);
+    if (translatedNativeStream && !downstreamResponseHeaders.has("content-type"))
+      downstreamResponseHeaders.set("content-type", "text/event-stream");
     const downstream = new Response(downstreamBody, {
       status: response.status,
       statusText: response.statusText,
-      headers:
-        translatedStream || translatedJson
-          ? translatedHeaders(response.headers)
-          : downstreamHeaders(response.headers),
+      headers: downstreamResponseHeaders,
     });
     if (isModelsRequest(request.method, requestUrl.pathname)) {
       return await transformModelsResponse(downstream, {
@@ -875,7 +968,7 @@ async function proxyHttpRequest(
       status:
         error instanceof RequestTooLarge
           ? 413
-          : error instanceof UnreadableAgentMessage
+          : error instanceof UnreadableAgentMessage || error instanceof RoutedAgentsError
             ? 422
             : error instanceof ToolPolicyError || error instanceof SearchBrokerRouteError
               ? 400
@@ -1016,6 +1109,7 @@ async function upgradeWebSocket(
   liveRequests: LiveRequestStore,
   storedResponses: StoredResponseRegistry,
   loadedTools: LoadedToolRegistry,
+  routedAgentRegistry: RoutedAgentRegistry,
   anthropicKey: Uint8Array,
   proxyConfigSource?: Pick<ProxyConfigStore, "get">,
 ): Promise<Response | undefined> {
@@ -1037,6 +1131,7 @@ async function upgradeWebSocket(
       continuationSession: continuationSessionKey(request.headers),
       storedResponses,
       loadedTools,
+      routedAgentRegistry,
       anthropicKey,
       proxyConfigSource,
     };
@@ -1119,9 +1214,16 @@ function webSocketTarget(target: URL): URL {
 function queueUpstreamMessage(data: SocketData, event: MessageEvent): void {
   data.upstreamToClient = data.upstreamToClient
     .then(async () => {
-      const message = await websocketMessage(event.data);
-      const encoding = typeof message === "string" ? "utf8" : "base64";
-      await data.recorder.record("websocket", "upstream_to_client", message, encoding, {
+      const original = await websocketMessage(event.data);
+      const message =
+        typeof original === "string" && data.nativeRoutedAgents !== undefined
+          ? data.nativeRoutedAgents.event(original)
+          : original;
+      const encoding = typeof original === "string" ? "utf8" : "base64";
+      await data.recorder.record("websocket", "upstream_to_client", original, encoding, {
+        ...(message === original || typeof message !== "string"
+          ? {}
+          : { effectivePayload: message }),
         harness: data.harness,
         project: data.project,
         ...(data.lastRouting === undefined ? {} : { usageFor: data.lastRouting }),
@@ -1134,7 +1236,18 @@ function queueUpstreamMessage(data: SocketData, event: MessageEvent): void {
       if (client.send(message) === 0) throw new Error("client websocket send failed");
       observeResponseEvent(data, message);
     })
-    .catch(() => closePair(data, 1011, "capture failed"));
+    .catch((error) => {
+      if (error instanceof RoutedAgentsError && data.client?.readyState === WebSocket.OPEN) {
+        data.client.send(wrappedErrorEvent(422, error.message));
+        if (data.activeRequestId !== undefined)
+          data.liveRequests.finish(data.activeRequestId, {
+            state: "failed",
+            status: 422,
+            detail: error.message,
+          });
+        closePair(data, 1011, "routed agent call rejected");
+      } else closePair(data, 1011, "capture failed");
+    });
 }
 
 function matchBridgeRoute(
@@ -1149,6 +1262,12 @@ function matchBridgeRoute(
   const route = modelRouteFor(bridge.routes, inspected.model);
   if (route === undefined || route.transport !== "http") return undefined;
   return { route, inspected };
+}
+
+function routedAgentModels(routes: readonly ModelRoute[]): string[] {
+  return routes
+    .filter((route) => route.enabled && route.transport === "http")
+    .map((route) => route.model.slug);
 }
 
 /**

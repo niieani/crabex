@@ -6,6 +6,7 @@ export interface ProxyConfig {
   version: 1;
   appsAuthRelay: boolean;
   search_broker: { route: string };
+  routed_agents: { enabled: boolean };
 }
 
 export interface ProxyConfigStore {
@@ -28,10 +29,15 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
         config.search_broker === null ||
         Array.isArray(config.search_broker) ||
         typeof (config.search_broker as Record<string, unknown>).route !== "string" ||
-        !(config.search_broker as { route: string }).route.trim()))
+        !(config.search_broker as { route: string }).route.trim())) ||
+    (config.routed_agents !== undefined &&
+      (typeof config.routed_agents !== "object" ||
+        config.routed_agents === null ||
+        Array.isArray(config.routed_agents) ||
+        typeof (config.routed_agents as Record<string, unknown>).enabled !== "boolean"))
   ) {
     throw new Error(
-      "invalid proxy config: expected version 1, boolean appsAuthRelay, and search_broker.route",
+      "invalid proxy config: expected version 1, boolean appsAuthRelay, search_broker.route, and boolean routed_agents.enabled",
     );
   }
   return {
@@ -39,6 +45,9 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
     appsAuthRelay: config.appsAuthRelay ?? true,
     search_broker: {
       route: (config.search_broker as { route: string } | undefined)?.route ?? "gpt-6-luna",
+    },
+    routed_agents: {
+      enabled: (config.routed_agents as { enabled: boolean } | undefined)?.enabled ?? false,
     },
   };
 }
@@ -48,6 +57,7 @@ export async function openProxyConfigStore(path: string): Promise<ProxyConfigSto
     version: 1,
     appsAuthRelay: true,
     search_broker: { route: "gpt-6-luna" },
+    routed_agents: { enabled: false },
   };
   try {
     config = parseProxyConfig(JSON.parse(await readFile(path, "utf8")));
@@ -57,11 +67,16 @@ export async function openProxyConfigStore(path: string): Promise<ProxyConfigSto
   const listeners = new Set<() => void>();
   return {
     path,
-    get: () => ({ ...config, search_broker: { ...config.search_broker } }),
+    get: () => ({
+      ...config,
+      search_broker: { ...config.search_broker },
+      routed_agents: { ...config.routed_agents },
+    }),
     async replace(value) {
       const next = parseProxyConfig({
         ...value,
         search_broker: value.search_broker ?? config.search_broker,
+        routed_agents: value.routed_agents ?? config.routed_agents,
       });
       await mkdir(dirname(path), { recursive: true });
       const temporary = `${path}.${randomUUID()}.tmp`;

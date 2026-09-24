@@ -9,6 +9,7 @@ import WebSocket, { type RawData, WebSocketServer } from "ws";
 
 import type { CaptureEvent, CaptureSink } from "../recording/capture.ts";
 import type { ConfigBundleOverride } from "../config/config-bundle-store.ts";
+import type { ProxyConfigStore } from "../config/proxy-config-store.ts";
 import type {
   UpstreamCacheKind,
   UpstreamCacheState,
@@ -78,6 +79,180 @@ describe("subscription reverse proxy", () => {
       },
     ]);
     expect(JSON.stringify(captures.events)).not.toContain("oauth-secret");
+  });
+
+  it("adds routed agent tools on native HTTP and restores plaintext calls through replay", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const spawn = {
+      type: "function_call",
+      id: "fc_spawn",
+      call_id: "call_spawn",
+      namespace: "routed_agents",
+      name: "spawn_agent",
+      arguments: JSON.stringify({
+        task_name: "worker",
+        model: "glm-5.3-flash",
+        message: "Reply OK",
+      }),
+    };
+    const send = {
+      type: "function_call",
+      id: "fc_send",
+      call_id: "call_send",
+      namespace: "routed_agents",
+      name: "send_message",
+      arguments: JSON.stringify({ target: "/root/worker", message: "Follow up" }),
+    };
+    const upstream = await startHttpServer(async (request, response) => {
+      seen.push(JSON.parse((await readBody(request)).toString()) as Record<string, unknown>);
+      const call =
+        seen.length === 1
+          ? spawn
+          : seen.length === 2
+            ? send
+            : { ...send, arguments: '{"target":"/root/native","message":"Wrong target"}' };
+      response.writeHead(200);
+      for (const event of [
+        { type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } },
+        { type: "response.output_item.done", output_index: 0, item: call },
+        { type: "response.completed", response: { output: [call] } },
+      ])
+        response.write(`data: ${JSON.stringify(event)}\n\n`);
+      response.end();
+    });
+    const route = routedChildRoute(upstream.origin);
+    const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
+      routes: [route],
+      proxyConfigSource: routedAgentsConfig(),
+    });
+    const identity = {
+      authorization: "Bearer oauth-secret",
+      "chatgpt-account-id": "account-1",
+      "session-id": "session-1",
+      "thread-id": "thread-1",
+      "content-type": "application/json",
+    };
+    const tools = [collaborationDeclaration()];
+    const first = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+      method: "POST",
+      headers: identity,
+      body: JSON.stringify({ model: "gpt-5.6-luna", input: [], tools, stream: true }),
+    });
+    const firstEvents = (await Array.fromAsync(parseSseEvents(first.body!))).map((entry) =>
+      JSON.parse(entry),
+    );
+    const done = firstEvents.find((event) => event.type === "response.output_item.done")?.item;
+    expect(first.status).toBe(200);
+    expect((seen[0]!.tools as { name: string }[]).map((tool) => tool.name)).toEqual([
+      "collaboration",
+      "routed_agents",
+    ]);
+    expect(done).toMatchObject({ namespace: "collaboration", encrypted_function_args: [] });
+    expect(firstEvents.at(-1)?.response.output[0]).toMatchObject({
+      namespace: "collaboration",
+      encrypted_function_args: [],
+    });
+    const second = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+      method: "POST",
+      headers: identity,
+      body: JSON.stringify({
+        model: "gpt-5.6-luna",
+        input: [
+          done,
+          {
+            type: "function_call_output",
+            call_id: "call_spawn",
+            output: '{"task_name":"/root/worker"}',
+          },
+        ],
+        tools,
+        stream: true,
+      }),
+    });
+    const secondEvents = (await Array.fromAsync(parseSseEvents(second.body!))).map((entry) =>
+      JSON.parse(entry),
+    );
+    expect(second.status).toBe(200);
+    expect((seen[1]!.input as Record<string, unknown>[])[0]).toMatchObject({
+      namespace: "routed_agents",
+    });
+    expect(
+      secondEvents.find((event) => event.type === "response.output_item.done")?.item,
+    ).toMatchObject({
+      namespace: "collaboration",
+      name: "send_message",
+      encrypted_function_args: [],
+    });
+    const wrongTarget = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+      method: "POST",
+      headers: identity,
+      body: JSON.stringify({ model: "gpt-5.6-luna", input: [], tools, stream: true }),
+    });
+    const failure = (await Array.fromAsync(parseSseEvents(wrongTarget.body!))).map((entry) =>
+      JSON.parse(entry),
+    );
+    expect(failure.at(-1)).toMatchObject({
+      type: "error",
+      status: 422,
+      error: {
+        message: expect.stringContaining('target "/root/native" is not a known routed child'),
+      },
+    });
+  });
+
+  it("adds routed agent tools and marks calls on a native WebSocket", async () => {
+    let upstreamTools: unknown;
+    const upstream = await startWebSocketServer((socket) => {
+      socket.on("message", (raw) => {
+        const request = JSON.parse(rawDataText(raw));
+        upstreamTools = request.tools;
+        socket.send(
+          JSON.stringify({
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_spawn",
+              namespace: "routed_agents",
+              name: "spawn_agent",
+              arguments: '{"task_name":"worker","model":"glm-5.3-flash","message":"OK"}',
+            },
+          }),
+        );
+      });
+    });
+    const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
+      routes: [routedChildRoute(upstream.origin)],
+      proxyConfigSource: routedAgentsConfig(),
+    });
+    const client = new WebSocket(
+      proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+      {
+        headers: {
+          authorization: "Bearer oauth-secret",
+          "chatgpt-account-id": "account-1",
+          "session-id": "session-1",
+          "thread-id": "thread-1",
+        },
+      },
+    );
+    closeables.push(async () => client.close());
+    await opened(client);
+    client.send(
+      JSON.stringify({
+        type: "response.create",
+        model: "gpt-5.6-luna",
+        tools: [collaborationDeclaration()],
+        input: [],
+      }),
+    );
+    expect(JSON.parse(await nextMessage(client)).item).toMatchObject({
+      namespace: "collaboration",
+      encrypted_function_args: [],
+    });
+    expect((upstreamTools as { name: string }[]).map((tool) => tool.name)).toEqual([
+      "collaboration",
+      "routed_agents",
+    ]);
   });
 
   it("forwards and records WebSocket frames in both directions", async () => {
@@ -3022,6 +3197,7 @@ async function startRoutingProxy(
     transformations?: Transformation[];
     liveRequests?: LiveRequestStore;
     sessionCacheDirectory?: string;
+    proxyConfigSource?: Pick<ProxyConfigStore, "get" | "subscribe">;
   } = {},
 ): Promise<RunningProxy> {
   const proxy = await startReverseProxy({
@@ -3046,6 +3222,9 @@ async function startRoutingProxy(
     ...(options.sessionCacheDirectory === undefined
       ? {}
       : { sessionCacheDirectory: options.sessionCacheDirectory }),
+    ...(options.proxyConfigSource === undefined
+      ? {}
+      : { proxyConfigSource: options.proxyConfigSource }),
   });
   closeables.push(() => proxy.close());
   return proxy;
@@ -3079,6 +3258,48 @@ function routeConfigForTest(upstreamOrigin: string): ModelRouteConfig {
     },
     upstream: `${upstreamOrigin}/v1`,
     upstream_model: "moonshot-kimi-k3",
+  };
+}
+
+function routedChildRoute(upstreamOrigin: string): ModelRoute {
+  const config = routeConfigForTest(upstreamOrigin);
+  return modelRouteFromConfig({
+    ...config,
+    transport: "http",
+    model: { ...config.model, slug: "glm-5.3-flash" },
+  });
+}
+
+function routedAgentsConfig(): Pick<ProxyConfigStore, "get" | "subscribe"> {
+  return {
+    get: () => ({
+      version: 1,
+      appsAuthRelay: true,
+      search_broker: { route: "gpt-6-luna" },
+      routed_agents: { enabled: true },
+    }),
+    subscribe: () => () => {},
+  };
+}
+
+function collaborationDeclaration() {
+  return {
+    type: "namespace",
+    name: "collaboration",
+    tools: ["spawn_agent", "send_message", "followup_task"].map((name) => ({
+      type: "function",
+      name,
+      parameters: {
+        type: "object",
+        properties: {
+          message: { type: "string", encrypted: true },
+          ...(name === "spawn_agent"
+            ? { model: { type: "string" }, task_name: { type: "string" } }
+            : { target: { type: "string" } }),
+        },
+        required: name === "spawn_agent" ? ["task_name", "message"] : ["target", "message"],
+      },
+    })),
   };
 }
 

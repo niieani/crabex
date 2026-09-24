@@ -125,6 +125,7 @@ describe("local context API", () => {
       path,
       appsAuthRelay: true,
       search_broker: { route: "gpt-6-luna" },
+      routed_agents: { enabled: false },
     });
     const update = (value: unknown) =>
       new Request(url, {
@@ -138,6 +139,10 @@ describe("local context API", () => {
       (await api.handle(update({ version: 1, search_broker: { route: "search-route" } })))?.status,
     ).toBe(200);
     expect(proxyConfig.get().search_broker.route).toBe("search-route");
+    expect(
+      (await api.handle(update({ version: 1, routed_agents: { enabled: true } })))?.status,
+    ).toBe(200);
+    expect(proxyConfig.get().routed_agents.enabled).toBe(true);
     expect((await api.handle(update({ version: 1, appsAuthRelay: false })))?.status).toBe(200);
     expect(proxyConfig.get().search_broker.route).toBe("search-route");
     expect((await api.handle(update({ version: 1, search_broker: { route: "" } })))?.status).toBe(

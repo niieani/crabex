@@ -136,3 +136,40 @@ both fields on one route. The local
 `/__agent-context-trimmer/api/model-routes` response includes an
 `effective_tool_policy` for each route alongside the editable `tool_policy`;
 this derived field is not saved.
+
+## V2 agent handoff through routed models
+
+Custom Responses and Anthropic routes mark calls to Codex's encrypted
+`collaboration` message tools with `encrypted_function_args: []` when their
+declarations identify the `message` parameter as encrypted. This tells Codex
+that the provider's argument is readable text. A routed child receives a
+readable `agent_message` as a user message with sender and recipient context.
+If its task contains `encrypted_content`, the route refuses it with HTTP 422
+or a WebSocket 422 error event instead of forwarding unreadable ciphertext.
+
+Native ChatGPT parents can optionally receive an additional `routed_agents`
+namespace for routed custom-model children. Enable it in the proxy config
+file or through `PUT /__agent-context-trimmer/api/proxy-config`:
+
+```json
+{ "version": 1, "routed_agents": { "enabled": true } }
+```
+
+This setting is off by default and logs an experimental warning when enabled
+because the native backend's handling of extra tools is undocumented. The
+original encrypted `collaboration` declarations remain unchanged for native
+children. The extra namespace appears only when at least one enabled custom
+HTTP route exists and Codex supplies the V2 collaboration declarations.
+Its `spawn_agent.model` choices are the enabled routed model slugs. Use
+`routed_agents.spawn_agent`, `send_message`, and `followup_task` for routed
+children; use `collaboration` for native children. The proxy checks that a
+routed message target belongs to a successfully spawned routed child, then
+maps the call back to Codex's `collaboration` name with a plaintext marker.
+On later native turns it restores the `routed_agents` name in replay history.
+
+The parent-thread target map persists in `routed-agents-cache.json` beside the
+other session caches. It expires after 30 minutes and is limited to 512 parent
+threads and 2 MiB. Cache keys hash session, thread, and account identity;
+values contain task names, child paths, and model slugs, but no credentials or
+message text. A missing session/thread/account scope leaves the extra
+namespace unadvertised for that request.
