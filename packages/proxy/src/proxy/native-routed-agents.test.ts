@@ -270,10 +270,15 @@ describe("routed-agent registry", () => {
     try {
       const headers = new Headers({ authorization: "Bearer account-secret" });
       const first = await RoutedAgentRegistry.open(path);
-      const root = first.observeAgent(headers, "glm-5.3-flash", {
-        client_metadata: { thread_id: "root-thread" },
-        input: [],
-      });
+      const root = first.observeAgent(
+        headers,
+        "glm-5.3-flash",
+        {
+          client_metadata: { thread_id: "root-thread" },
+          input: [],
+        },
+        "responses:fireworks",
+      );
       await first.flush();
       const second = await RoutedAgentRegistry.open(path);
       const child = {
@@ -292,16 +297,16 @@ describe("routed-agent registry", () => {
           },
         ],
       };
-      expect(second.sourceModel(headers, child)).toBe("glm-5.3-flash");
-      expect(second.observeAgent(headers, "gpt-5.6-luna", child)).toBe(root);
+      expect(second.sourceFamily(headers, child)).toBe("responses:fireworks");
+      expect(second.observeAgent(headers, "gpt-5.6-luna", child, "native-chatgpt")).toBe(root);
       expect(second.targetModel(root!, "/root")).toBe("glm-5.3-flash");
-      expect(second.sourceModel(headers, child)).toBe("glm-5.3-flash");
+      expect(second.sourceFamily(headers, child)).toBe("responses:fireworks");
       expect(
-        second.sourceModel(headers, {
+        second.sourceFamily(headers, {
           client_metadata: child.client_metadata,
           input: [{ type: "function_call_output", call_id: "call_1", output: "done" }],
         }),
-      ).toBe("gpt-5.6-luna");
+      ).toBe("native-chatgpt");
       expect(await Bun.file(path).text()).not.toContain("account-secret");
     } finally {
       await rm(directory, { recursive: true, force: true });

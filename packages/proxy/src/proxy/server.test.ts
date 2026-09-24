@@ -425,6 +425,185 @@ describe("subscription reverse proxy", () => {
     }
   });
 
+  it("preserves encrypted replay on a non-agent routed Responses HTTP request", async () => {
+    let upstreamInput: unknown;
+    const gateway = await startHttpServer(async (request, response) => {
+      upstreamInput = (JSON.parse((await readBody(request)).toString()) as { input: unknown })
+        .input;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end('data: {"type":"response.completed","response":{"output":[]}}\n\n');
+    });
+    const previous = process.env.ACT_TEST_ROUTE_KEY;
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const config = routeConfigForTest(gateway.origin);
+      const route = modelRouteFromConfig({
+        ...config,
+        api: "responses",
+        transport: "http",
+        model: { ...config.model, slug: "gpt-6-luna" },
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const input = [
+        { type: "reasoning", encrypted_content: "gAAAA-provider-owned" },
+        message("user", "Continue"),
+      ];
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-6-luna", input, stream: true }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(upstreamInput).toEqual(input);
+    } finally {
+      if (previous === undefined) delete process.env.ACT_TEST_ROUTE_KEY;
+      else process.env.ACT_TEST_ROUTE_KEY = previous;
+    }
+  });
+
+  it("preserves encrypted replay on a routed Responses WebSocket connection", async () => {
+    const upstreamInputs: unknown[] = [];
+    const gateway = await startWebSocketServer((socket) => {
+      socket.on("message", (raw) => {
+        upstreamInputs.push(JSON.parse(rawDataText(raw)).input);
+        socket.send(JSON.stringify({ type: "response.completed", response: { output: [] } }));
+      });
+    });
+    const previous = process.env.ACT_TEST_ROUTE_KEY;
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const config = routeConfigForTest(gateway.origin);
+      const route = modelRouteFromConfig({
+        ...config,
+        api: "responses",
+        transport: "ws",
+        model: { ...config.model, slug: "gpt-6-luna" },
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      client.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "gpt-6-luna",
+          input: [message("user", "Open socket")],
+        }),
+      );
+      expect(JSON.parse(await nextMessage(client)).type).toBe("response.completed");
+      const input = [
+        { type: "reasoning", encrypted_content: "gAAAA-provider-owned" },
+        message("user", "Continue"),
+      ];
+      client.send(JSON.stringify({ type: "response.create", model: "gpt-6-luna", input }));
+      expect(JSON.parse(await nextMessage(client)).type).toBe("response.completed");
+      expect(upstreamInputs[1]).toEqual(input);
+    } finally {
+      if (previous === undefined) delete process.env.ACT_TEST_ROUTE_KEY;
+      else process.env.ACT_TEST_ROUTE_KEY = previous;
+    }
+  });
+
+  it("preserves native encrypted replay without agent lineage", async () => {
+    let upstreamInput: unknown;
+    const upstream = await startHttpServer(async (request, response) => {
+      upstreamInput = (JSON.parse((await readBody(request)).toString()) as { input: unknown })
+        .input;
+      response.end("ok");
+    });
+    const proxy = await startProxy(upstream.origin, new MemoryCaptureSink());
+    const input = [
+      { type: "reasoning", encrypted_content: "gAAAA-native-owned" },
+      message("user", "Continue"),
+    ];
+    const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-luna", input }),
+    });
+    expect(response.status).toBe(200);
+    expect(upstreamInput).toEqual(input);
+  });
+
+  it("keeps inherited reasoning across different models in the same provider family", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const upstream = await startHttpServer(async (request, response) => {
+      seen.push(JSON.parse((await readBody(request)).toString()) as Record<string, unknown>);
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end('data: {"type":"response.completed","response":{"output":[]}}\n\n');
+    });
+    const previous = process.env.ACT_TEST_ROUTE_KEY;
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      const routeA = routedChildRoute(upstream.origin);
+      const routeB = modelRouteFromConfig({
+        ...routeConfigForTest(upstream.origin),
+        transport: "http",
+        model: { ...routeConfigForTest(upstream.origin).model, slug: "glm-5.3" },
+      });
+      const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
+        routes: [routeA, routeB],
+      });
+      const headers = { authorization: "Bearer oauth-secret", "content-type": "application/json" };
+      const send = async (model: string, thread: string, input: unknown[], parent?: string) => {
+        const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model,
+            client_metadata: {
+              thread_id: thread,
+              ...(parent === undefined ? {} : { "x-codex-parent-thread-id": parent }),
+            },
+            input,
+            stream: true,
+          }),
+        });
+        expect(response.status).toBe(200);
+        await response.text();
+      };
+      const task = {
+        type: "agent_message",
+        author: "/root",
+        recipient: "/root/child",
+        content: [{ type: "input_text", text: "Message Type: NEW_TASK\nPayload:\nContinue" }],
+      };
+      await send("gpt-6-sol", "native-root", [message("user", "Start")]);
+      await send(
+        "gpt-5.6-luna",
+        "native-child",
+        [{ type: "reasoning", encrypted_content: "gAAAA-native" }, task],
+        "native-root",
+      );
+      expect(seen[1]!.input).toEqual([
+        { type: "reasoning", encrypted_content: "gAAAA-native" },
+        task,
+      ]);
+
+      await send("glm-5.3-flash", "fireworks-root", [message("user", "Start")]);
+      await send(
+        "glm-5.3",
+        "fireworks-child",
+        [{ type: "reasoning", summary: [{ text: "Fireworks thought" }] }, task],
+        "fireworks-root",
+      );
+      expect((seen[3]!.input as { type: string }[])[0]).toEqual({
+        type: "reasoning",
+        summary: [{ text: "Fireworks thought" }],
+      });
+    } finally {
+      if (previous === undefined) delete process.env.ACT_TEST_ROUTE_KEY;
+      else process.env.ACT_TEST_ROUTE_KEY = previous;
+    }
+  });
+
   it("removes native reasoning before Anthropic replay translation", async () => {
     let anthropicBody: Record<string, unknown> | undefined;
     const gateway = await startHttpServer(async (request, response) => {
@@ -534,7 +713,7 @@ describe("subscription reverse proxy", () => {
         JSON.stringify({
           type: "response.create",
           model: "glm-5.3-flash",
-          input: [{ type: "compaction", encrypted_content: "gAAAA-foreign" }],
+          input: [{ type: "compaction", encrypted_content: "acta1:foreign" }],
         }),
       );
       expect(JSON.parse(await nextMessage(client))).toMatchObject({
@@ -603,7 +782,7 @@ describe("subscription reverse proxy", () => {
     ]);
   });
 
-  it("sanitizes foreign reasoning on native WebSocket and the WebSocket-to-HTTP bridge", async () => {
+  it("sanitizes proven cross-family reasoning on native WebSocket and the WebSocket-to-HTTP bridge", async () => {
     let nativeInput: unknown;
     let routedInput: unknown;
     const native = await startWebSocketServer((socket) => {
@@ -624,13 +803,18 @@ describe("subscription reverse proxy", () => {
         routes: [routedChildRoute(gateway.origin)],
       });
       const url = proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses";
-      const nativeClient = new WebSocket(url);
+      const agentHeaders = {
+        authorization: "Bearer oauth-secret",
+        "chatgpt-account-id": "account-1",
+      };
+      const nativeClient = new WebSocket(url, { headers: agentHeaders });
       closeables.push(async () => nativeClient.close());
       await opened(nativeClient);
       nativeClient.send(
         JSON.stringify({
           type: "response.create",
           model: "gpt-5.6-luna",
+          client_metadata: { thread_id: "native-root" },
           input: [
             { type: "reasoning", encrypted_content: "acta1:foreign" },
             { type: "reasoning", encrypted_content: "gAAAA-own" },
@@ -644,25 +828,37 @@ describe("subscription reverse proxy", () => {
         message("user", "Reply"),
       ]);
 
-      const routedClient = new WebSocket(url);
+      const routedClient = new WebSocket(url, { headers: agentHeaders });
       closeables.push(async () => routedClient.close());
       await opened(routedClient);
       routedClient.send(
         JSON.stringify({
           type: "response.create",
           model: "glm-5.3-flash",
+          client_metadata: {
+            thread_id: "custom-child",
+            "x-codex-parent-thread-id": "native-root",
+          },
           input: [
             { type: "reasoning", encrypted_content: "gAAAA-foreign" },
-            { type: "reasoning", summary: [{ text: "Own summary" }] },
             message("user", "Reply"),
+            {
+              type: "agent_message",
+              author: "/root",
+              recipient: "/root/custom_child",
+              content: [{ type: "input_text", text: "Message Type: NEW_TASK\nPayload:\nReply" }],
+            },
+            { type: "reasoning", summary: [{ text: "Own summary" }] },
           ],
         }),
       );
       expect(JSON.parse(await nextMessage(routedClient)).type).toBe("response.completed");
-      expect(routedInput).toEqual([
-        { type: "reasoning", summary: [{ text: "Own summary" }] },
-        message("user", "Reply"),
+      expect((routedInput as { type: string }[]).map((item) => item.type)).toEqual([
+        "message",
+        "message",
+        "reasoning",
       ]);
+      expect(JSON.stringify(routedInput)).not.toContain("gAAAA-foreign");
     } finally {
       if (previous === undefined) delete process.env.ACT_TEST_ROUTE_KEY;
       else process.env.ACT_TEST_ROUTE_KEY = previous;

@@ -10,6 +10,7 @@ type AgentScope = {
   root?: string;
   path?: string;
   model?: string;
+  family?: string;
 };
 
 const NAMES = new Set(["spawn_agent", "send_message", "followup_task"]);
@@ -27,6 +28,7 @@ function agentScope(value: unknown): value is AgentScope {
     (value.root === undefined || typeof value.root === "string") &&
     (value.path === undefined || typeof value.path === "string") &&
     (value.model === undefined || typeof value.model === "string") &&
+    (value.family === undefined || typeof value.family === "string") &&
     Object.values(value.pending).every(
       (item) => record(item) && typeof item.taskName === "string" && typeof item.model === "string",
     ) &&
@@ -46,18 +48,23 @@ export class RoutedAgentRegistry {
     return new RoutedAgentRegistry(await PersistentLruCache.open(path, cacheOptions()));
   }
 
-  sourceModel(headers: Headers, payload: JsonObject): string | undefined {
+  sourceFamily(headers: Headers, payload: JsonObject): string | undefined {
     const parent = agentId(headers, payload, "x-codex-parent-thread-id");
     const thread = agentId(headers, payload, "thread-id", "thread_id");
     const own = agentThreadKey(headers, thread);
-    const ownModel = own === undefined ? undefined : this.entries.get(own)?.model;
-    if (ownModel && !hasForkTask(payload.input)) return ownModel;
+    const ownFamily = own === undefined ? undefined : this.entries.get(own)?.family;
+    if (ownFamily && !hasForkTask(payload.input)) return ownFamily;
     const parentKey = agentThreadKey(headers, parent);
-    return (parentKey === undefined ? undefined : this.entries.get(parentKey)?.model) ?? ownModel;
+    return (parentKey === undefined ? undefined : this.entries.get(parentKey)?.family) ?? ownFamily;
   }
 
   /** Link a Codex thread to its tree using the parent-thread header and readable agent path. */
-  observeAgent(headers: Headers, model: string, payload: JsonObject): string | undefined {
+  observeAgent(
+    headers: Headers,
+    model: string,
+    payload: JsonObject,
+    family?: string,
+  ): string | undefined {
     const thread = agentId(headers, payload, "thread-id", "thread_id");
     const threadKey = agentThreadKey(headers, thread);
     if (threadKey === undefined) return undefined;
@@ -69,6 +76,7 @@ export class RoutedAgentRegistry {
     const path = agentPath(payload.input) ?? existing.path ?? (parentKey ? undefined : "/root");
     existing.root = root;
     existing.model = model;
+    if (family) existing.family = family;
     if (path) existing.path = path;
     this.entries.set(threadKey, existing);
     if (path) {

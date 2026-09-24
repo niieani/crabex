@@ -53,7 +53,12 @@ import {
 } from "./responses-tool-bridge.ts";
 import { LoadedToolRegistry } from "./tool-search.ts";
 import { prepareCustomAgentMessages, UnreadableAgentMessage } from "./multi-agent-handoff.ts";
-import { ForeignHistoryError, sanitizeMixedProviderHistory } from "./mixed-provider-history.ts";
+import {
+  ForeignHistoryError,
+  NATIVE_REASONING_FAMILY,
+  routedReasoningFamily,
+  sanitizeMixedProviderHistory,
+} from "./mixed-provider-history.ts";
 import {
   NativeRoutedAgentsBridge,
   RoutedAgentRegistry,
@@ -391,16 +396,26 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             let captureEffectivePayload = processed.effectivePayload;
             let omittedTypes: string[] = [];
             const agentInspected = inspectResponseModel(processed.value);
-            const historySource =
+            const agentRoute =
               agentInspected === undefined
                 ? undefined
-                : data.routedAgentRegistry.sourceModel(data.agentHeaders, agentInspected.payload);
+                : (data.connectedRoute ??
+                  modelRouteFor(data.bridge?.routes ?? [], agentInspected.model));
+            const targetFamily =
+              agentRoute === undefined
+                ? NATIVE_REASONING_FAMILY
+                : routedReasoningFamily(agentRoute, process.env, data.anthropicKey);
+            const historySourceFamily =
+              agentInspected === undefined
+                ? undefined
+                : data.routedAgentRegistry.sourceFamily(data.agentHeaders, agentInspected.payload);
             const agentScope =
               agentInspected !== undefined
                 ? data.routedAgentRegistry.observeAgent(
                     data.agentHeaders,
                     agentInspected.model,
                     agentInspected.payload,
+                    targetFamily,
                   )
                 : undefined;
             const bridged = matchBridgeRoute(data.bridge, processed.value);
@@ -413,7 +428,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                   message,
                   encoding,
                   processed,
-                  historySource,
+                  historySourceFamily,
+                  targetFamily,
                 );
               } catch (error) {
                 if (!data.bridgeAbort?.signal.aborted) throw error;
@@ -452,7 +468,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                 const policy = applyRouteToolPolicy(policyRoute, liveInspected.payload);
                 const sanitized = sanitizeMixedProviderHistory(policy.payload, {
                   target: policyRoute.api === "anthropic-messages" ? "anthropic" : "responses",
-                  sourceModel: historySource,
+                  sourceFamily: historySourceFamily,
+                  targetFamily,
                 });
                 omittedTypes = policy.omittedTypes;
                 noteToolOmissions(
@@ -478,7 +495,8 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
               } else {
                 const sanitized = sanitizeMixedProviderHistory(liveInspected.payload, {
                   target: "native",
-                  sourceModel: historySource,
+                  sourceFamily: historySourceFamily,
+                  targetFamily,
                 });
                 const scope = agentScope ?? data.continuationSession;
                 const nativeBridge =
@@ -644,16 +662,21 @@ async function proxyHttpRequest(
     const inspectedAgent = isResponsesRequest(request.method, requestUrl.pathname)
       ? inspectResponseModel(processed.value)
       : undefined;
-    const historySource =
+    const targetFamily =
+      routedRequest === undefined
+        ? NATIVE_REASONING_FAMILY
+        : routedReasoningFamily(routedRequest.route, process.env, anthropicKey);
+    const historySourceFamily =
       inspectedAgent === undefined
         ? undefined
-        : routedAgentRegistry.sourceModel(request.headers, inspectedAgent.payload);
+        : routedAgentRegistry.sourceFamily(request.headers, inspectedAgent.payload);
     const agentScope =
       inspectedAgent !== undefined
         ? routedAgentRegistry.observeAgent(
             request.headers,
             inspectedAgent.model,
             inspectedAgent.payload,
+            targetFamily,
           )
         : undefined;
     if (isResponsesRequest(request.method, requestUrl.pathname)) {
@@ -681,7 +704,8 @@ async function proxyHttpRequest(
       }
       const sanitized = sanitizeMixedProviderHistory(policy.payload, {
         target: route.api === "anthropic-messages" ? "anthropic" : "responses",
-        sourceModel: historySource,
+        sourceFamily: historySourceFamily,
+        targetFamily,
       });
       if (sanitized !== policy.payload) captureEffectivePayload = JSON.stringify(sanitized);
       const agentPayload = prepareCustomAgentMessages(
@@ -738,7 +762,8 @@ async function proxyHttpRequest(
     } else if (inspectedAgent !== undefined) {
       const sanitized = sanitizeMixedProviderHistory(inspectedAgent.payload, {
         target: "native",
-        sourceModel: historySource,
+        sourceFamily: historySourceFamily,
+        targetFamily,
       });
       const scope = agentScope ?? continuationSessionKey(request.headers);
       if (scope !== undefined && proxyConfigSource?.get().routed_agents.enabled) {
@@ -1338,7 +1363,8 @@ async function runBridgedCreate(
   rawMessage: string | ArrayBuffer | Uint8Array,
   encoding: "utf8" | "base64",
   processed: ReturnType<typeof processClientPayload>,
-  historySource?: string,
+  sourceFamily?: string,
+  targetFamily?: string,
 ): Promise<void> {
   const bridge = data.bridge;
   if (bridge === undefined) return;
@@ -1379,7 +1405,8 @@ async function runBridgedCreate(
   try {
     const sanitized = sanitizeMixedProviderHistory(policy.payload, {
       target: route.api === "anthropic-messages" ? "anthropic" : "responses",
-      sourceModel: historySource,
+      sourceFamily,
+      targetFamily,
     });
     agentPayload = prepareCustomAgentMessages(
       sanitized,

@@ -693,6 +693,7 @@ describe("Anthropic protocol", () => {
       });
       const second = await openAnthropicKey(join(dir, "key"));
       expect(new AnthropicEnvelope(second, "scope").open(sealed).summary).toBe("hello");
+      expect(() => new AnthropicEnvelope(second, "other-scope").open(sealed)).toThrow("decrypt");
       expect(() => new AnthropicEnvelope(key, "scope").open(sealed)).toThrow("decrypt");
     } finally {
       await rm(dir, { recursive: true, force: true });
