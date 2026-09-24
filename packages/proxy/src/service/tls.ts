@@ -5,6 +5,7 @@ import { basename, join, resolve, dirname, sep } from "node:path";
 import { homedir } from "node:os";
 
 const DAY = 86_400_000;
+const CA_BUNDLE_GRACE_MS = 7 * DAY;
 export const MANAGED_SERVICE_ENV = "RELAYDECK_MANAGED_SERVICE";
 export interface TlsStatus {
   enabled: boolean;
@@ -116,7 +117,7 @@ export async function prepareCodexCaBundle(
   return path;
 }
 
-/** Keep active/rollback references and a few recent bundles for inherited shell environments. */
+/** Keep references, three newest bundles, and a seven-day window for inherited environments. */
 export async function pruneCodexCaBundles(
   root: string,
   referencedPaths: readonly (string | undefined)[],
@@ -151,8 +152,9 @@ export async function pruneCodexCaBundles(
   candidates.sort(
     (left, right) => right.modified - left.modified || left.path.localeCompare(right.path),
   );
-  for (const { path } of candidates.slice(3)) {
-    if (!protectedPaths.has(path)) await rm(path);
+  const graceCutoff = Date.now() - CA_BUNDLE_GRACE_MS;
+  for (const { path, modified } of candidates.slice(3)) {
+    if (!protectedPaths.has(path) && modified < graceCutoff) await rm(path);
   }
 }
 

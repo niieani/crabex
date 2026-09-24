@@ -227,15 +227,16 @@ describe("managed local TLS", () => {
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe("/user-choice.pem");
   });
 
-  it("prunes old unreferenced bundles while keeping state, launchd, and three recent paths", async () => {
+  it("prunes old unreferenced bundles while keeping state, launchd, and the grace window", async () => {
     const root = await mkdtemp(join(tmpdir(), "act-ca-prune-"));
     const directory = join(root, "codex-ca-bundles");
     try {
       await mkdir(directory);
       const paths = Array.from({ length: 9 }, (_, index) => join(directory, `${index}.pem`));
+      const agesInDays = [20, 19, 18, 17, 9, 6, 2, 1, 0];
       for (const [index, path] of paths.entries()) {
         await writeFile(path, `bundle ${index}`);
-        const modified = new Date(Date.UTC(2026, 0, 1, 0, 0, index));
+        const modified = new Date(Date.now() - agesInDays[index]! * 86_400_000);
         await utimes(path, modified, modified);
       }
       const external = join(root, "external.pem");
@@ -248,9 +249,9 @@ describe("managed local TLS", () => {
         unset: () => {},
       };
       await pruneCodexCaBundles(root, [paths[0], paths[1], paths[3]], environment);
-      for (const index of [0, 1, 2, 3, 6, 7, 8])
+      for (const index of [0, 1, 2, 3, 5, 6, 7, 8])
         expect(await Bun.file(paths[index]!).exists()).toBe(true);
-      for (const index of [4, 5]) expect(await Bun.file(paths[index]!).exists()).toBe(false);
+      expect(await Bun.file(paths[4]!).exists()).toBe(false);
       expect(await Bun.file(external).exists()).toBe(true);
       expect(await Bun.file(join(directory, "linked.pem")).exists()).toBe(true);
       expect(await Bun.file(join(directory, "note.txt")).exists()).toBe(true);
