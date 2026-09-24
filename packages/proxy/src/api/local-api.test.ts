@@ -372,6 +372,7 @@ describe("local context API", () => {
   });
 
   it("manages model routes and reports authorization env status", async () => {
+    delete process.env.ACT_TEST_ROUTE_KEY;
     const sources = stubSources({});
     const api = createLocalApi({
       snapshots: {
@@ -412,6 +413,11 @@ describe("local context API", () => {
             other: "pass",
           },
           tool_policy_actions: allowedToolActions("responses", "ws"),
+          search_broker_eligibility: {
+            eligible: false,
+            code: "authorization",
+            reason: 'Search broker route "kimi-k3" has no usable authorization.',
+          },
         },
       ],
       adjustments: [],
@@ -487,6 +493,55 @@ describe("local context API", () => {
       },
     });
     expect(sources.currentRoutes()[0]).not.toHaveProperty("effective_tool_policy");
+  });
+
+  it("reports broker eligibility from the effective route policy and proxy authorization", async () => {
+    const base = routeConfigs[0]!;
+    const route = (slug: string, changes: Partial<ModelRouteConfig> = {}): ModelRouteConfig => ({
+      ...base,
+      model: { ...base.model, slug },
+      ...changes,
+    });
+    const routes = [
+      route("eligible"),
+      route("legacy-omit", { allowed_tool_types: ["function"] }),
+      route("disabled", { enabled: false }),
+      route("unauthorized", { authorization_env: "ACT_MISSING_BROKER_TOKEN" }),
+      route("anthropic", { api: "anthropic-messages" }),
+    ];
+    const api = createLocalApi({
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...stubSources({ routes }),
+    });
+    const original = process.env.ACT_TEST_ROUTE_KEY;
+    const originalMissing = process.env.ACT_MISSING_BROKER_TOKEN;
+    process.env.ACT_TEST_ROUTE_KEY = "broker-token";
+    delete process.env.ACT_MISSING_BROKER_TOKEN;
+    try {
+      const response = await api.handle(
+        new Request("http://localhost/__agent-context-trimmer/api/model-routes"),
+      );
+      expect(response?.status).toBe(200);
+      const body = (await response?.json()) as {
+        routes: { search_broker_eligibility: { eligible: boolean; code?: string } }[];
+      };
+      expect(body.routes.map((item) => item.search_broker_eligibility)).toEqual([
+        { eligible: true },
+        expect.objectContaining({ eligible: false, code: "web_search" }),
+        expect.objectContaining({ eligible: false, code: "disabled" }),
+        expect.objectContaining({ eligible: false, code: "authorization" }),
+        expect.objectContaining({ eligible: false, code: "api" }),
+      ]);
+    } finally {
+      if (original === undefined) delete process.env.ACT_TEST_ROUTE_KEY;
+      else process.env.ACT_TEST_ROUTE_KEY = original;
+      if (originalMissing === undefined) delete process.env.ACT_MISSING_BROKER_TOKEN;
+      else process.env.ACT_MISSING_BROKER_TOKEN = originalMissing;
+    }
   });
 
   it("serves the observed upstream responses cache", async () => {

@@ -4,13 +4,7 @@ import { getProxyConfig, patchProxyConfig } from "../../lib/api.ts";
 import type { ModelRouteConfig } from "../../lib/types.ts";
 import { brokerRouteIssue, BrokerRouteOptions } from "./RouteCapabilities.tsx";
 
-export function RouteProxySettings({
-  routes,
-  envStatus,
-}: {
-  routes: ModelRouteConfig[];
-  envStatus?: Record<string, boolean>;
-}) {
+export function RouteProxySettings({ routes }: { routes: ModelRouteConfig[] }) {
   const client = useQueryClient();
   const query = useQuery({ queryKey: ["proxy-config"], queryFn: getProxyConfig });
   const mutation = useMutation({
@@ -21,7 +15,7 @@ export function RouteProxySettings({
   if (query.isError)
     return <p className="mb-4 text-xs text-danger">Proxy settings: {query.error.message}</p>;
   if (!state) return null;
-  const brokerIssue = brokerRouteIssue(state.search_broker.route, routes, envStatus);
+  const brokerIssue = brokerRouteIssue(state.search_broker.route, routes);
   return (
     <section className="mb-6 rounded-xl border border-line bg-panel p-4">
       <h3 className="text-sm font-semibold">Route-wide settings</h3>

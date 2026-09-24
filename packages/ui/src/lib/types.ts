@@ -280,6 +280,13 @@ export interface ModelRouteConfig {
   /** Read-only fields returned by GET/PUT for the route editor. */
   effective_tool_policy?: ToolPolicy;
   tool_policy_actions?: Record<ToolPolicyKey, ToolAction[]>;
+  search_broker_eligibility?:
+    | { eligible: true }
+    | {
+        eligible: false;
+        code: "disabled" | "api" | "web_search" | "authorization";
+        reason: string;
+      };
   forward_access_programs?: boolean;
 }
 

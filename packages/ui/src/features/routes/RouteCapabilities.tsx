@@ -18,21 +18,12 @@ const TOOL_LABELS: Record<ToolPolicyKey, string> = {
   other: "Other / unknown",
 };
 
-export function brokerRouteIssue(
-  slug: string,
-  routes: ModelRouteConfig[],
-  envStatus?: Record<string, boolean>,
-): string | undefined {
+export function brokerRouteIssue(slug: string, routes: ModelRouteConfig[]): string | undefined {
   const broker = routes.find((route) => route.model.slug === slug);
   if (!broker) return `Search broker route "${slug}" is missing.`;
-  if (broker.api === "anthropic-messages")
-    return `Search broker route "${slug}" must use OpenAI Responses.`;
-  if (broker.enabled === false) return `Search broker route "${slug}" is disabled.`;
-  if (broker.effective_tool_policy?.web_search !== "pass")
-    return `Search broker route "${slug}" needs web_search: pass.`;
-  if (envStatus?.[broker.authorization_env] === false)
-    return `Search broker route "${slug}" has no authorization in the proxy process.`;
-  return undefined;
+  const eligibility = broker.search_broker_eligibility;
+  if (eligibility?.eligible === true) return undefined;
+  return eligibility?.reason ?? `Search broker route "${slug}" eligibility is unavailable.`;
 }
 
 export function BrokerRouteOptions({
@@ -42,7 +33,7 @@ export function BrokerRouteOptions({
   routes: ModelRouteConfig[];
   selected: string;
 }) {
-  const choices = routes.filter((route) => route.api !== "anthropic-messages");
+  const choices = routes.filter((route) => route.search_broker_eligibility?.eligible === true);
   return (
     <>
       {selected && !choices.some((route) => route.model.slug === selected) ? (
@@ -61,14 +52,12 @@ export function RouteCapabilities({
   route,
   routes,
   defaultBroker,
-  envStatus,
   pending,
   onUpdate,
 }: {
   route: ModelRouteConfig;
   routes: ModelRouteConfig[];
   defaultBroker: string;
-  envStatus?: Record<string, boolean>;
   pending: boolean;
   onUpdate: (route: ModelRouteConfig) => void;
 }) {
@@ -77,8 +66,9 @@ export function RouteCapabilities({
   const actions = route.tool_policy_actions;
   const broker = route.search_broker?.route ?? defaultBroker;
   const brokerIssue =
-    route.api === "anthropic-messages" && effective?.web_search === "broker"
-      ? brokerRouteIssue(broker, routes, envStatus)
+    route.api === "anthropic-messages" &&
+    (route.search_broker !== undefined || effective?.web_search === "broker")
+      ? brokerRouteIssue(broker, routes)
       : undefined;
   const delegation = route.model.overrides?.multi_agent_version;
 

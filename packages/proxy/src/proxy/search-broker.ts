@@ -1,7 +1,6 @@
 import { fetchWithFailover, type TargetBreakers } from "../routing/failover.ts";
 import {
   authorizationFor,
-  modelRouteFor,
   responseTargetUrl,
   routedHeaders,
   type ModelRoute,
@@ -20,6 +19,50 @@ export interface BrokerResult {
 
 export class SearchBrokerRouteError extends Error {}
 
+export type BrokerRouteEligibility =
+  | { eligible: true }
+  | {
+      eligible: false;
+      code: "disabled" | "api" | "web_search" | "authorization";
+      reason: string;
+    };
+
+/** Shared by broker execution and the route editor's read-only eligibility metadata. */
+export function brokerRouteEligibility(
+  route: ModelRoute,
+  environment: Readonly<Record<string, string | undefined>>,
+): BrokerRouteEligibility {
+  const slug = route.model.slug;
+  if (!route.enabled)
+    return {
+      eligible: false,
+      code: "disabled",
+      reason: `Search broker route "${slug}" is disabled.`,
+    };
+  if (route.api === "anthropic-messages")
+    return {
+      eligible: false,
+      code: "api",
+      reason: `Search broker route "${slug}" must use OpenAI Responses.`,
+    };
+  if (route.toolPolicy.web_search !== "pass")
+    return {
+      eligible: false,
+      code: "web_search",
+      reason: `Search broker route "${slug}" needs web_search: pass (effective: ${route.toolPolicy.web_search}).`,
+    };
+  try {
+    authorizationFor(route, environment);
+  } catch {
+    return {
+      eligible: false,
+      code: "authorization",
+      reason: `Search broker route "${slug}" has no usable authorization.`,
+    };
+  }
+  return { eligible: true };
+}
+
 /** The policy alone does not make ordinary Claude turns depend on the broker. */
 export function needsSearchBroker(route: ModelRoute, tools: unknown): boolean {
   return (
@@ -34,22 +77,21 @@ export function brokerRouteFor(
   slug: string,
   anthropicSlug: string,
 ): ModelRoute {
-  const route = modelRouteFor(routes, slug);
-  if (
-    route === undefined ||
-    route.api === "anthropic-messages" ||
-    route.toolPolicy.web_search !== "pass"
-  )
+  const route = routes.find((candidate) => candidate.model.slug === slug);
+  if (route === undefined)
     throw new SearchBrokerRouteError(
       `model route "${anthropicSlug}" web_search broker requires usable OpenAI Responses route "${slug}" with web_search: "pass"`,
     );
-  try {
-    authorizationFor(route, process.env);
-  } catch {
+  const eligibility = brokerRouteEligibility(route, process.env);
+  if (!eligibility.eligible && eligibility.code === "authorization") {
     throw new SearchBrokerRouteError(
       `model route "${anthropicSlug}" web_search broker route "${slug}" has no usable authorization`,
     );
   }
+  if (!eligibility.eligible)
+    throw new SearchBrokerRouteError(
+      `model route "${anthropicSlug}" web_search broker requires usable OpenAI Responses route "${slug}" with web_search: "pass"`,
+    );
   return route;
 }
 

@@ -134,7 +134,7 @@ export function ModelRoutesPage() {
             {mutation.error.message}
           </p>
         ) : null}
-        <RouteProxySettings routes={set.routes} envStatus={envQuery.data} />
+        <RouteProxySettings routes={set.routes} />
         <div className="space-y-2">
           {set.routes.length === 0 ? (
             <div className="rounded-xl border border-dashed border-line p-10 text-center text-sm text-muted">
@@ -151,7 +151,6 @@ export function ModelRoutesPage() {
                 onMoveUp={() => move(index, -1)}
                 onMoveDown={() => move(index, 1)}
                 envSet={envQuery.data?.[route.authorization_env]}
-                envStatus={envQuery.data}
                 routes={set.routes}
                 defaultBroker={proxyQuery.data?.search_broker.route ?? "gpt-6-luna"}
                 breakerUntil={breakerUntilFor(route, openBreakers)}
@@ -285,7 +284,6 @@ function breakerUntilFor(
 function RouteCard({
   route,
   envSet,
-  envStatus,
   routes,
   defaultBroker,
   breakerUntil,
@@ -301,7 +299,6 @@ function RouteCard({
 }: {
   route: ModelRouteConfig;
   envSet?: boolean;
-  envStatus?: Record<string, boolean>;
   routes: ModelRouteConfig[];
   defaultBroker: string;
   breakerUntil?: string;
@@ -406,7 +403,6 @@ function RouteCard({
             route={route}
             routes={routes}
             defaultBroker={defaultBroker}
-            envStatus={envStatus}
             pending={pending}
             onUpdate={onUpdate}
           />

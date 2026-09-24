@@ -36,6 +36,7 @@ function route(slug = "glm-5.3-flash"): ModelRouteConfig {
     },
     effective_tool_policy: responsePolicy,
     tool_policy_actions: actions,
+    search_broker_eligibility: { eligible: true },
   };
 }
 
@@ -107,6 +108,11 @@ describe("route capability controls", () => {
     const onUpdate = vi.fn();
     const claude = route("anthropic.claude-haiku-4-5");
     claude.api = "anthropic-messages";
+    claude.search_broker_eligibility = {
+      eligible: false,
+      code: "api",
+      reason: 'Search broker route "anthropic.claude-haiku-4-5" must use OpenAI Responses.',
+    };
     claude.effective_tool_policy = { ...responsePolicy, web_search: "broker" };
     claude.tool_policy_actions = { ...actions, web_search: ["broker", "omit", "reject"] };
     claude.model.overrides = { context_window: 200000 };
@@ -136,5 +142,42 @@ describe("route capability controls", () => {
         overrides: { context_window: 200000, multi_agent_version: "disabled" },
       },
     });
+  });
+
+  it("keeps a saved ineligible Anthropic override visible with its reason", () => {
+    const claude = route("anthropic.claude-haiku-4-5");
+    claude.api = "anthropic-messages";
+    claude.effective_tool_policy = { ...responsePolicy, web_search: "broker" };
+    claude.search_broker_eligibility = {
+      eligible: false,
+      code: "api",
+      reason: 'Search broker route "anthropic.claude-haiku-4-5" must use OpenAI Responses.',
+    };
+    claude.search_broker = { route: "legacy-fireworks" };
+    const legacy = route("legacy-fireworks");
+    legacy.search_broker_eligibility = {
+      eligible: false,
+      code: "web_search",
+      reason: 'Search broker route "legacy-fireworks" needs web_search: pass (effective: omit).',
+    };
+    const eligible = route("gpt-6-luna");
+    render(
+      <RouteCapabilities
+        route={claude}
+        routes={[claude, legacy, eligible]}
+        defaultBroker="gpt-6-luna"
+        pending={false}
+        onUpdate={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText("Tools, search, and agents"));
+    const select = screen.getByLabelText("Search broker override");
+    expect((select as HTMLSelectElement).value).toBe("legacy-fireworks");
+    expect([...select.querySelectorAll("option")].map((option) => option.value)).toEqual([
+      "inherit",
+      "legacy-fireworks",
+      "gpt-6-luna",
+    ]);
+    expect(screen.getByRole("alert").textContent).toContain("effective: omit");
   });
 });

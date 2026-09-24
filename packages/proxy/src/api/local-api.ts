@@ -11,8 +11,13 @@ import {
 } from "../config/config-bundle-store.ts";
 import type { ModelRouteStore } from "../config/model-route-store.ts";
 import type { UpstreamCacheStore } from "../config/upstream-cache.ts";
-import { parseModelRouteSet, type ModelRouteSetData } from "../routing/model-routes.ts";
-import { allowedToolActions, effectiveToolPolicy } from "../routing/tool-policy.ts";
+import {
+  modelRouteFromConfig,
+  parseModelRouteSet,
+  type ModelRouteSetData,
+} from "../routing/model-routes.ts";
+import { allowedToolActions } from "../routing/tool-policy.ts";
+import { brokerRouteEligibility } from "../proxy/search-broker.ts";
 import { modelsFixture } from "../routing/models-fixture.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
@@ -196,14 +201,15 @@ function modelRoutesResponse(set: ModelRouteSetData): Record<string, unknown> {
   return {
     version: 1,
     ...set,
-    routes: set.routes.map((route) => ({
-      ...route,
-      effective_tool_policy: effectiveToolPolicy(route),
-      tool_policy_actions: allowedToolActions(
-        route.api ?? "responses",
-        route.transport ?? (route.api === "anthropic-messages" ? "http" : "ws"),
-      ),
-    })),
+    routes: set.routes.map((route) => {
+      const compiled = modelRouteFromConfig(route);
+      return {
+        ...route,
+        effective_tool_policy: compiled.toolPolicy,
+        tool_policy_actions: allowedToolActions(route.api ?? "responses", compiled.transport),
+        search_broker_eligibility: brokerRouteEligibility(compiled, process.env),
+      };
+    }),
   };
 }
 

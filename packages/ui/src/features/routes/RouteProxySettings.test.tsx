@@ -16,6 +16,27 @@ const state: ProxyConfigState = {
   routed_agents: { enabled: false },
 };
 
+const broker: ModelRouteConfig = {
+  authorization_env: "BROKER_KEY",
+  upstream: "https://gateway.example/v1",
+  model: {
+    slug: "gpt-6-luna",
+    display_name: "Luna",
+    description: "Search",
+    template_slug: "gpt-6-luna",
+    priority: 1,
+  },
+  effective_tool_policy: {
+    function: "pass",
+    namespace: "pass",
+    custom: "pass",
+    web_search: "pass",
+    tool_search: "pass",
+    other: "pass",
+  },
+  search_broker_eligibility: { eligible: true },
+};
+
 vi.mock("../../lib/api.ts", () => ({
   getProxyConfig: async () => state,
   patchProxyConfig: vi.fn(),
@@ -24,32 +45,19 @@ vi.mock("../../lib/api.ts", () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  state.search_broker.route = "missing-search";
 });
 
 it("shows missing default broker and saves a Responses route selection and native-agent opt-in", async () => {
-  const broker: ModelRouteConfig = {
-    authorization_env: "BROKER_KEY",
-    upstream: "https://gateway.example/v1",
-    model: {
-      slug: "gpt-6-luna",
-      display_name: "Luna",
-      description: "Search",
-      template_slug: "gpt-6-luna",
-      priority: 1,
-    },
-    effective_tool_policy: {
-      function: "pass",
-      namespace: "pass",
-      custom: "pass",
-      web_search: "pass",
-      tool_search: "pass",
-      other: "pass",
-    },
-  };
   const claude: ModelRouteConfig = {
     ...broker,
     api: "anthropic-messages",
     model: { ...broker.model, slug: "claude" },
+    search_broker_eligibility: {
+      eligible: false,
+      code: "api",
+      reason: 'Search broker route "claude" must use OpenAI Responses.',
+    },
   };
   vi.mocked(patchProxyConfig).mockImplementation(async (update) => ({ ...state, ...update }));
   const client = new QueryClient({
@@ -57,7 +65,7 @@ it("shows missing default broker and saves a Responses route selection and nativ
   });
   render(
     <QueryClientProvider client={client}>
-      <RouteProxySettings routes={[broker, claude]} envStatus={{ BROKER_KEY: true }} />
+      <RouteProxySettings routes={[broker, claude]} />
     </QueryClientProvider>,
   );
   expect((await screen.findByRole("alert")).textContent).toContain('"missing-search" is missing');
@@ -79,4 +87,50 @@ it("shows missing default broker and saves a Responses route selection and nativ
       routed_agents: { enabled: true },
     }),
   );
+});
+
+it("keeps a saved ineligible default visible and offers only eligible routes", async () => {
+  state.search_broker.route = "legacy-fireworks";
+  const legacy: ModelRouteConfig = {
+    ...broker,
+    model: { ...broker.model, slug: "legacy-fireworks" },
+    effective_tool_policy: { ...broker.effective_tool_policy!, web_search: "omit" },
+    search_broker_eligibility: {
+      eligible: false,
+      code: "web_search",
+      reason: 'Search broker route "legacy-fireworks" needs web_search: pass (effective: omit).',
+    },
+  };
+  const disabled: ModelRouteConfig = {
+    ...broker,
+    model: { ...broker.model, slug: "disabled" },
+    enabled: false,
+    search_broker_eligibility: {
+      eligible: false,
+      code: "disabled",
+      reason: 'Search broker route "disabled" is disabled.',
+    },
+  };
+  const unauthorized: ModelRouteConfig = {
+    ...broker,
+    model: { ...broker.model, slug: "unauthorized" },
+    search_broker_eligibility: {
+      eligible: false,
+      code: "authorization",
+      reason: 'Search broker route "unauthorized" has no usable authorization.',
+    },
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <RouteProxySettings routes={[legacy, disabled, unauthorized, broker]} />
+    </QueryClientProvider>,
+  );
+  const select = await screen.findByLabelText("Default web search broker");
+  expect((select as HTMLSelectElement).value).toBe("legacy-fireworks");
+  expect([...select.querySelectorAll("option")].map((option) => option.value)).toEqual([
+    "legacy-fireworks",
+    "gpt-6-luna",
+  ]);
+  expect(screen.getByRole("alert").textContent).toContain("effective: omit");
 });

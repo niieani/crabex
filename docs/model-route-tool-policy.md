@@ -52,6 +52,10 @@ can override it with its own `search_broker: {"route": "search-model"}`.
 The proxy checks that the named route is enabled, uses the Responses API,
 accepts native web search, and has an available authorization environment
 variable. A missing or unusable route returns an error naming both routes.
+The Model routes API reports each route's `search_broker_eligibility` using
+these same checks, including authorization availability. The broker selectors
+offer only eligible routes. A saved route that becomes ineligible stays visible
+in the selector with the reason shown beside it.
 The check applies when a request declares `web_search`; ordinary Anthropic
 turns use the plain adapter even when the route enables brokerage.
 The broker calls the configured gateway directly with low reasoning effort,
