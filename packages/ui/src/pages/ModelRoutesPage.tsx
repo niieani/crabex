@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
@@ -67,6 +68,19 @@ export function ModelRoutesPage() {
 
   const replace = (next: ModelRouteSet) => mutation.mutate(next);
   const add = (route: ModelRouteConfig) => replace({ ...set, routes: [...set.routes, route] });
+  const move = (index: number, direction: -1 | 1) => {
+    const destination = index + direction;
+    if (mutation.isPending || destination < 0 || destination >= set.routes.length) return;
+    const routes = [...set.routes];
+    [routes[index], routes[destination]] = [routes[destination]!, routes[index]!];
+    replace({
+      ...set,
+      routes: routes.map((route, position) => ({
+        ...route,
+        model: { ...route.model, priority: position + 1 },
+      })),
+    });
+  };
   const saveAdjustment = (adjustment: ModelAdjustment) =>
     replace({
       ...set,
@@ -124,8 +138,13 @@ export function ModelRoutesPage() {
           ) : (
             set.routes.map((route, index) => (
               <RouteCard
-                key={`${route.model.slug}-${index}`}
+                key={route.model.slug}
                 route={route}
+                pending={mutation.isPending}
+                canMoveUp={index > 0}
+                canMoveDown={index < set.routes.length - 1}
+                onMoveUp={() => move(index, -1)}
+                onMoveDown={() => move(index, 1)}
                 envSet={envQuery.data?.[route.authorization_env]}
                 breakerUntil={breakerUntilFor(route, openBreakers)}
                 telemetry={telemetry.find(
@@ -261,6 +280,11 @@ function RouteCard({
   telemetry,
   onToggle,
   onDelete,
+  pending,
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
 }: {
   route: ModelRouteConfig;
   envSet?: boolean;
@@ -268,6 +292,11 @@ function RouteCard({
   telemetry?: RoutingTelemetry;
   onToggle: () => void;
   onDelete: () => void;
+  pending: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
 }) {
   const enabled = route.enabled ?? true;
   return (
@@ -281,6 +310,27 @@ function RouteCard({
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                aria-label={`Move ${route.model.display_name} up`}
+                title="Move up"
+                disabled={pending || !canMoveUp}
+                onClick={onMoveUp}
+                className="rounded p-1 text-muted hover:bg-canvas hover:text-ink disabled:opacity-30"
+              >
+                <ArrowUp size={14} />
+              </button>
+              <button
+                type="button"
+                aria-label={`Move ${route.model.display_name} down`}
+                title="Move down"
+                disabled={pending || !canMoveDown}
+                onClick={onMoveDown}
+                className="rounded p-1 text-muted hover:bg-canvas hover:text-ink disabled:opacity-30"
+              >
+                <ArrowDown size={14} />
+              </button>
+              <button
+                type="button"
+                disabled={pending}
                 onClick={onToggle}
                 className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${enabled ? "bg-accent-dim text-accent" : "bg-canvas text-muted"}`}
               >
@@ -288,6 +338,7 @@ function RouteCard({
               </button>
               <button
                 type="button"
+                disabled={pending}
                 onClick={onDelete}
                 className="rounded px-2 py-1 text-[10px] text-muted hover:bg-danger-dim hover:text-danger"
               >
