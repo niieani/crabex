@@ -43,6 +43,31 @@ const event = (type: string, outputItem: Record<string, unknown>) =>
   JSON.stringify({ type, output_index: 0, item: outputItem });
 
 describe("native routed-agent variant", () => {
+  it("resolves a relative target from the caller branch and refuses an unknown caller path", () => {
+    const registry = new RoutedAgentRegistry();
+    registry.rememberSpawn(scope, "call_a", "worker", "glm-5.3-flash");
+    registry.observeSpawnOutput(scope, "call_a", '{"task_name":"/root/a/worker"}');
+    registry.rememberSpawn(scope, "call_b", "worker", "gpt-5.6-luna");
+    registry.observeSpawnOutput(scope, "call_b", '{"task_name":"/root/b/worker"}');
+    const send = item("send_message", "call_send", { target: "worker", message: "Hello" });
+
+    const routedCaller = new NativeRoutedAgentsBridge(models, scope, registry, "/root/a");
+    expect(
+      JSON.parse(routedCaller.event(event("response.output_item.done", send))).item,
+    ).toMatchObject({
+      namespace: "collaboration",
+      encrypted_function_args: [],
+    });
+    const nativeCaller = new NativeRoutedAgentsBridge(models, scope, registry, "/root/b");
+    expect(() => nativeCaller.event(event("response.output_item.done", send))).toThrow(
+      'target "worker" is not a known routed custom-model agent',
+    );
+    const unknownCaller = new NativeRoutedAgentsBridge(models, scope, registry);
+    expect(() => unknownCaller.event(event("response.output_item.done", send))).toThrow(
+      'cannot resolve relative target "worker" without a caller path',
+    );
+  });
+
   it("adds plaintext copies without changing reserved tools, and rehashes Responses Lite IDs", () => {
     const bridge = new NativeRoutedAgentsBridge(models, scope, new RoutedAgentRegistry());
     const original = structuredClone(collaboration);
@@ -236,7 +261,13 @@ describe("routed-agent registry", () => {
     await first.flush();
 
     const second = await RoutedAgentRegistry.open(path);
-    const bridge = new NativeRoutedAgentsBridge(models, childScope!, second);
+    expect(second.callerPath(childHeaders, { input: [] })).toBe("/root/native_child");
+    const bridge = new NativeRoutedAgentsBridge(
+      models,
+      childScope!,
+      second,
+      second.callerPath(childHeaders, { input: [] }),
+    );
     const mapped = JSON.parse(
       bridge.event(
         event(

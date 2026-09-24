@@ -179,7 +179,9 @@ Its `spawn_agent.model` choices are the enabled routed model slugs. Use
 `routed_agents.spawn_agent`, `send_message`, and `followup_task` for routed
 agents, including a routed parent or sibling; use `collaboration` for native
 agents. The proxy checks that a routed message target belongs to a known
-routed custom-model agent in the same tree, then maps the call back to Codex's
+routed custom-model agent in the same tree. Relative targets resolve from the
+caller's canonical agent path; the proxy refuses them if that path is unknown.
+The proxy then maps the call back to Codex's
 `collaboration` name with a plaintext marker.
 On later native turns it restores the `routed_agents` name in replay history.
 The agent tree is linked through Codex's parent-thread metadata, including

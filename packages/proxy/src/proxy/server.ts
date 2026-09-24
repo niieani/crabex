@@ -505,6 +505,10 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                         routedAgentModels(data.bridge?.routes ?? []),
                         scope,
                         data.routedAgentRegistry,
+                        data.routedAgentRegistry.callerPath(
+                          data.agentHeaders,
+                          agentInspected?.payload ?? {},
+                        ),
                       )
                     : undefined;
                 const translated = nativeBridge?.request(sanitized) ?? sanitized;
@@ -772,6 +776,7 @@ async function proxyHttpRequest(
           routedAgentModels(routes),
           scope,
           routedAgentRegistry,
+          routedAgentRegistry.callerPath(request.headers, inspectedAgent.payload),
         );
       }
       const converted = nativeRoutedAgents?.request(sanitized) ?? sanitized;

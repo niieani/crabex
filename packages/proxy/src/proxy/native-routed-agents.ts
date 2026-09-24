@@ -88,6 +88,12 @@ export class RoutedAgentRegistry {
     return root;
   }
 
+  callerPath(headers: Headers, payload: JsonObject): string | undefined {
+    const thread = agentId(headers, payload, "thread-id", "thread_id");
+    const threadKey = agentThreadKey(headers, thread);
+    return threadKey === undefined ? undefined : this.entries.get(threadKey)?.path;
+  }
+
   rememberSpawn(scope: string, callId: string, taskName: string, model: string): void {
     const value = this.entries.get(scope) ?? { pending: {}, targets: {} };
     value.pending[callId] = { taskName, model };
@@ -107,11 +113,10 @@ export class RoutedAgentRegistry {
     this.entries.set(scope, value);
   }
 
-  targetModel(scope: string, target: string): string | undefined {
+  targetModel(scope: string, target: string, callerPath?: string): string | undefined {
+    const resolved = target.startsWith("/") ? target : resolveRelativeTarget(callerPath, target);
     const value = this.entries.get(scope);
-    if (value === undefined) return undefined;
-    if (value.targets[target]) return value.targets[target];
-    return Object.entries(value.targets).find(([path]) => path.endsWith(`/${target}`))?.[1];
+    return value?.targets[resolved];
   }
 
   routedTargets(scope: string, models: readonly string[]): string[] {
@@ -128,6 +133,16 @@ export class RoutedAgentRegistry {
   flush(): Promise<void> {
     return this.entries.flush();
   }
+}
+
+function resolveRelativeTarget(callerPath: string | undefined, target: string): string {
+  if (callerPath === undefined)
+    throw new RoutedAgentsError(
+      `routed_agents cannot resolve relative target "${target}" without a caller path`,
+    );
+  if (target.split("/").some((segment) => !/^[a-z0-9_]+$/.test(segment) || segment === "root"))
+    throw new RoutedAgentsError(`routed_agents target "${target}" is not a valid agent path`);
+  return `${callerPath}/${target}`;
 }
 
 function agentId(
@@ -286,11 +301,13 @@ export class NativeRoutedAgentsBridge {
   private readonly models: string[];
   private readonly scope: string;
   private readonly registry: RoutedAgentRegistry;
+  private readonly callerPath: string | undefined;
 
-  constructor(models: string[], scope: string, registry: RoutedAgentRegistry) {
+  constructor(models: string[], scope: string, registry: RoutedAgentRegistry, callerPath?: string) {
     this.models = [...new Set(models)].sort();
     this.scope = scope;
     this.registry = registry;
+    this.callerPath = callerPath;
   }
 
   request(payload: JsonObject): JsonObject {
@@ -405,7 +422,9 @@ export class NativeRoutedAgentsBridge {
     } else {
       if (
         typeof args.target !== "string" ||
-        !this.models.includes(this.registry.targetModel(this.scope, args.target) ?? "")
+        !this.models.includes(
+          this.registry.targetModel(this.scope, args.target, this.callerPath) ?? "",
+        )
       )
         throw new RoutedAgentsError(
           `routed_agents.${String(item.name)} target "${String(args.target)}" is not a known routed custom-model agent`,
