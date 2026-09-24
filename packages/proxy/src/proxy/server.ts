@@ -423,6 +423,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                   processed,
                   historySourceFamily,
                   targetFamily,
+                  agentScope,
                 );
               } catch (error) {
                 if (!data.bridgeAbort?.signal.aborted) throw error;
@@ -694,6 +695,8 @@ async function proxyHttpRequest(
     }
     if (routedRequest !== undefined) {
       const { inspected, route } = routedRequest;
+      const proxyConfig = proxyConfigSource?.get();
+      const scope = agentScope ?? continuationSessionKey(request.headers);
       const prepared = prepareRoutedRequest({
         route,
         routes,
@@ -702,8 +705,18 @@ async function proxyHttpRequest(
         sessionKey: continuationSessionKey(request.headers),
         sourceFamily: historySourceFamily,
         targetFamily,
-        plaintextHandoffEnabled: proxyConfigSource?.get().routed_agents.enabled,
-        defaultBrokerRoute: proxyConfigSource?.get().search_broker.route,
+        plaintextHandoffEnabled: proxyConfig?.routed_agents.enabled,
+        ...(proxyConfig?.routed_agents.enabled && scope !== undefined
+          ? {
+              routedAgents: {
+                registry: routedAgentRegistry,
+                scope,
+                callerPath: routedAgentRegistry.callerPath(request.headers, inspected.payload),
+                instructions: proxyConfig.routed_agents.instructions,
+              },
+            }
+          : {}),
+        defaultBrokerRoute: proxyConfig?.search_broker.route,
         storedResponses,
         loadedTools,
       });
@@ -722,6 +735,8 @@ async function proxyHttpRequest(
       preparedStoredRequest = prepared.storedRequest;
       responseStateKey = prepared.responseStateKey;
       toolBridge = prepared.toolBridge;
+      nativeRoutedAgents = prepared.routedAgents;
+      nativeStreamRequested = inspected.payload.stream === true;
       translatedPayload = prepared.translatedPayload;
       if (prepared.translated) captureEffectivePayload = JSON.stringify(translatedPayload);
       routing = {
@@ -888,8 +903,6 @@ async function proxyHttpRequest(
       routedBody !== null &&
       (nativeStreamRequested ||
         response.headers.get("content-type")?.includes("text/event-stream"));
-    if (translatedNativeStream)
-      routedBody = translateNativeRoutedAgentsStream(routedBody!, nativeRoutedAgents!);
     const translatedStream =
       toolBridge !== undefined &&
       routedRequest?.route.api !== "anthropic-messages" &&
@@ -897,24 +910,26 @@ async function proxyHttpRequest(
       routedBody !== null &&
       response.headers.get("content-type")?.includes("text/event-stream");
     if (translatedStream) routedBody = translateResponsesStream(routedBody!, toolBridge!);
+    if (translatedNativeStream)
+      routedBody = translateNativeRoutedAgentsStream(routedBody!, nativeRoutedAgents!);
     const translatedNativeJson =
       nativeRoutedAgents !== undefined &&
       response.ok &&
       !translatedNativeStream &&
       (!nativeStreamRequested ||
         response.headers.get("content-type")?.includes("application/json"));
-    if (translatedNativeJson) {
-      const rewritten = nativeRoutedAgents!.response(await response.json());
-      routedBody = new Response(JSON.stringify(rewritten)).body;
-    }
     const translatedJson =
       toolBridge !== undefined &&
       routedRequest?.route.api !== "anthropic-messages" &&
       response.ok &&
       !translatedStream &&
       response.headers.get("content-type")?.includes("application/json");
-    if (translatedJson) {
-      const rewritten = toolBridge!.response(await response.json());
+    if (translatedNativeJson || translatedJson) {
+      const upstreamJson = await response.json();
+      const toolMapped = translatedJson ? toolBridge!.response(upstreamJson) : upstreamJson;
+      const rewritten = translatedNativeJson
+        ? nativeRoutedAgents!.response(toolMapped)
+        : toolMapped;
       routedBody = new Response(JSON.stringify(rewritten)).body;
       const completedEvent = JSON.stringify({ type: "response.completed", response: rewritten });
       const usage = observePayload(completedEvent, "upstream_to_client").responseSummary?.usage;
@@ -1346,6 +1361,7 @@ async function runBridgedCreate(
   processed: ReturnType<typeof processClientPayload>,
   sourceFamily?: string,
   targetFamily?: string,
+  agentScope?: string,
 ): Promise<void> {
   const bridge = data.bridge;
   if (bridge === undefined) return;
@@ -1381,6 +1397,8 @@ async function runBridgedCreate(
       origin,
     });
 
+  const proxyConfig = data.proxyConfigSource?.get();
+  const scope = agentScope ?? data.continuationSession;
   const prepared = prepareRoutedRequest({
     route,
     routes: bridge.routes,
@@ -1389,8 +1407,18 @@ async function runBridgedCreate(
     sessionKey: data.continuationSession,
     sourceFamily,
     targetFamily,
-    plaintextHandoffEnabled: data.proxyConfigSource?.get().routed_agents.enabled,
-    defaultBrokerRoute: data.proxyConfigSource?.get().search_broker.route,
+    plaintextHandoffEnabled: proxyConfig?.routed_agents.enabled,
+    ...(proxyConfig?.routed_agents.enabled && scope !== undefined
+      ? {
+          routedAgents: {
+            registry: data.routedAgentRegistry,
+            scope,
+            callerPath: data.routedAgentRegistry.callerPath(data.agentHeaders, inspected.payload),
+            instructions: proxyConfig.routed_agents.instructions,
+          },
+        }
+      : {}),
+    defaultBrokerRoute: proxyConfig?.search_broker.route,
     localWarmup: true,
     storedResponses: data.storedResponses,
     fallbackStoredResponse: data.storedResponse,
@@ -1459,6 +1487,7 @@ async function runBridgedCreate(
     responseStateKey,
     storedRequest,
     toolBridge,
+    routedAgents,
     translatedPayload,
   } = prepared;
   if (prepared.translated) captureEffectivePayload = JSON.stringify(translatedPayload);
@@ -1533,7 +1562,21 @@ async function runBridgedCreate(
   });
   let failed = false;
   for await (const eventData of parseSseEvents(result.response.body)) {
-    for (const translatedEvent of toolBridge?.event(eventData) ?? [eventData]) {
+    for (const toolEvent of toolBridge?.event(eventData) ?? [eventData]) {
+      let translatedEvent: string;
+      try {
+        translatedEvent = routedAgents?.event(toolEvent) ?? toolEvent;
+      } catch (error) {
+        if (!(error instanceof RoutedAgentsError)) throw error;
+        await queueBridgedMessage(data, wrappedErrorEvent(422, error.message), origin);
+        data.liveRequests.finish(liveRequestId, {
+          state: "failed",
+          status: 422,
+          detail: error.message,
+        });
+        data.bridgeAbort = undefined;
+        return;
+      }
       try {
         const type = JSON.parse(translatedEvent).type;
         failed ||= ["response.failed", "response.incomplete", "error"].includes(type);

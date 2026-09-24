@@ -3,6 +3,7 @@ import { authorizationFor, responseTargetUrl } from "../routing/model-routes.ts"
 import { applyRouteToolPolicy } from "../routing/tool-policy.ts";
 import { preparePlaintextAgentMessages } from "./multi-agent-handoff.ts";
 import { sanitizeMixedProviderHistory } from "./mixed-provider-history.ts";
+import { NativeRoutedAgentsBridge, type RoutedAgentRegistry } from "./native-routed-agents.ts";
 import { httpPayloadFor } from "./responses-bridge.ts";
 import { createResponsesToolBridge, type ResponsesToolBridge } from "./responses-tool-bridge.ts";
 import { brokerRouteFor, needsSearchBroker } from "./search-broker.ts";
@@ -26,6 +27,12 @@ export interface RoutedRequestContext {
   sourceFamily?: string;
   targetFamily?: string;
   plaintextHandoffEnabled?: boolean;
+  routedAgents?: {
+    registry: RoutedAgentRegistry;
+    scope: string;
+    callerPath?: string;
+    instructions?: string;
+  };
   defaultBrokerRoute?: string;
   localWarmup?: boolean;
   storedResponses: StoredResponseRegistry;
@@ -48,6 +55,7 @@ export type RoutedRequestPreparation =
       translatedPayload: Payload;
       translated: boolean;
       toolBridge?: ResponsesToolBridge;
+      routedAgents?: NativeRoutedAgentsBridge;
       storedRequest?: PreparedStoredRequest;
       responseStateKey?: string;
     } & Preflight)
@@ -120,6 +128,28 @@ export function prepareRoutedRequest(context: RoutedRequestContext): RoutedReque
       forwardAccessPrograms: route.forwardAccessPrograms,
       storeResponses: route.bridgeResponseState === "stored",
     });
+    const routedAgents =
+      context.routedAgents &&
+      route.api !== "anthropic-messages" &&
+      route.handoffClass === "native-encrypted"
+        ? new NativeRoutedAgentsBridge(
+            context.routes
+              .filter(
+                (candidate) =>
+                  candidate.enabled &&
+                  candidate.transport === "http" &&
+                  candidate.handoffClass === "plaintext",
+              )
+              .map((candidate) => ({
+                slug: candidate.model.slug,
+                ...(candidate.agentGuidance ? { guidance: candidate.agentGuidance } : {}),
+              })),
+            context.routedAgents.scope,
+            context.routedAgents.registry,
+            context.routedAgents.callerPath,
+            context.routedAgents.instructions,
+          )
+        : undefined;
     const scopedKey = storedResponseKey(
       context.sessionKey,
       route.model.slug,
@@ -138,21 +168,31 @@ export function prepareRoutedRequest(context: RoutedRequestContext): RoutedReque
               : context.storedResponses.get(responseStateKey),
           )
         : undefined;
+    // Observe full Codex-visible history before a stored continuation trims it.
+    const observedPayload = routedAgents?.request(forwardedPayload) ?? forwardedPayload;
     const requestPayload = storedRequest?.payload ?? forwardedPayload;
     const searchPayload =
       route.toolPolicy.tool_search === "translate"
         ? context.loadedTools.prepare(route.model.slug, scopedKey, forwardedPayload, requestPayload)
         : requestPayload;
-    const toolBridge = createResponsesToolBridge(route, searchPayload.tools);
-    const translatedPayload = toolBridge?.request(searchPayload) ?? searchPayload;
+    const routedPayload =
+      searchPayload === forwardedPayload
+        ? observedPayload
+        : (routedAgents?.request(searchPayload) ?? searchPayload);
+    const toolBridge = createResponsesToolBridge(route, routedPayload.tools);
+    const translatedPayload = toolBridge?.request(routedPayload) ?? routedPayload;
     return {
       kind: "ready",
       ...preflight,
       authorization,
       ...(brokerRoute === undefined ? {} : { brokerRoute }),
       translatedPayload,
-      translated: toolBridge !== undefined || searchPayload !== requestPayload,
+      translated:
+        toolBridge !== undefined ||
+        searchPayload !== requestPayload ||
+        routedPayload !== searchPayload,
       ...(toolBridge === undefined ? {} : { toolBridge }),
+      ...(routedAgents === undefined ? {} : { routedAgents }),
       ...(storedRequest === undefined ? {} : { storedRequest }),
       ...(responseStateKey === undefined ? {} : { responseStateKey }),
     };

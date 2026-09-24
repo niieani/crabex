@@ -113,18 +113,25 @@ describe("subscription reverse proxy", () => {
         handoff_class: "native-encrypted",
       });
       const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
-        routes: [route],
+        routes: [route, routedChildRoute(upstream.origin)],
+        proxyConfigSource: routedAgentsConfig(),
       });
       const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
         method: "POST",
-        headers: { authorization: "Bearer oauth-secret", "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer oauth-secret",
+          "chatgpt-account-id": "account-1",
+          "thread-id": "thread-1",
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ model: "kimi-k3", input: [], tools: [declaration], stream: true }),
       });
       const events = (await Array.fromAsync(parseSseEvents(response.body!))).map((entry) =>
         JSON.parse(entry),
       );
       expect(response.status).toBe(200);
-      expect(outbound?.tools).toEqual([declaration]);
+      expect((outbound!.tools as unknown[])[0]).toEqual(declaration);
+      expect((outbound!.tools as { name: string }[])[1].name).toBe("routed_agents");
       expect(events.find((event) => event.type === "response.output_item.added")?.item).toEqual(
         call,
       );
@@ -273,6 +280,249 @@ describe("subscription reverse proxy", () => {
         ),
       },
     });
+  });
+
+  it("lets a routed encrypted Responses parent spawn and follow up with a plaintext-class child over HTTP", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "test-provider-key";
+    try {
+      const seen: Record<string, unknown>[] = [];
+      const spawn = {
+        type: "function_call",
+        id: "fc_routed_spawn",
+        call_id: "call_routed_spawn",
+        namespace: "routed_agents",
+        name: "spawn_agent",
+        arguments: JSON.stringify({
+          task_name: "worker",
+          model: "glm-5.3-flash",
+          message: "Reply OK",
+        }),
+      };
+      const followup = {
+        ...spawn,
+        id: "fc_routed_followup",
+        call_id: "call_routed_followup",
+        name: "followup_task",
+        arguments: JSON.stringify({ target: "/root/worker", message: "Continue" }),
+      };
+      const gateway = await startHttpServer(async (request, response) => {
+        seen.push(JSON.parse((await readBody(request)).toString()) as Record<string, unknown>);
+        const call = seen.length === 1 ? spawn : followup;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        for (const event of [
+          { type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } },
+          { type: "response.output_item.done", output_index: 0, item: call },
+          { type: "response.completed", response: { output: [call] } },
+        ])
+          response.write(`data: ${JSON.stringify(event)}\n\n`);
+        response.end();
+      });
+      const gatewayConfig = routeConfigForTest(gateway.origin);
+      const parent = modelRouteFromConfig({
+        ...gatewayConfig,
+        transport: "http",
+        handoff_class: "native-encrypted",
+        model: { ...gatewayConfig.model, slug: "gateway-parent" },
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [parent, routedChildRoute(gateway.origin)],
+        proxyConfigSource: routedAgentsConfig(),
+      });
+      const headers = {
+        authorization: "Bearer client-token",
+        "chatgpt-account-id": "account-1",
+        "session-id": "session-1",
+        "thread-id": "thread-1",
+        "content-type": "application/json",
+      };
+      const tools = [collaborationDeclaration()];
+      const first = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: "gateway-parent", input: [], tools, stream: true }),
+      });
+      const firstEvents = (await Array.fromAsync(parseSseEvents(first.body!))).map((entry) =>
+        JSON.parse(entry),
+      );
+      const call = firstEvents.find((event) => event.type === "response.output_item.done")?.item;
+      expect(first.status).toBe(200);
+      expect((seen[0]!.tools as { name: string }[]).map((tool) => tool.name)).toEqual([
+        "collaboration",
+        "routed_agents",
+      ]);
+      expect((seen[0]!.tools as unknown[])[0]).toEqual(tools[0]);
+      expect(seen[0]?.instructions).toContain("use routed_agents instead of collaboration");
+      expect(call).toMatchObject({ namespace: "collaboration", encrypted_function_args: [] });
+      expect(firstEvents.at(-1)?.response.output[0]).toMatchObject({
+        namespace: "collaboration",
+        encrypted_function_args: [],
+      });
+
+      const second = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: "gateway-parent",
+          input: [
+            call,
+            {
+              type: "function_call_output",
+              call_id: "call_routed_spawn",
+              output: '{"task_name":"/root/worker"}',
+            },
+          ],
+          tools,
+          stream: true,
+        }),
+      });
+      const secondEvents = (await Array.fromAsync(parseSseEvents(second.body!))).map((entry) =>
+        JSON.parse(entry),
+      );
+      expect(second.status).toBe(200);
+      expect((seen[1]!.input as Record<string, unknown>[])[0]).toMatchObject({
+        namespace: "routed_agents",
+        name: "spawn_agent",
+      });
+      expect(
+        secondEvents.find((event) => event.type === "response.output_item.done")?.item,
+      ).toMatchObject({
+        namespace: "collaboration",
+        name: "followup_task",
+        encrypted_function_args: [],
+      });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("translates routed agent calls on bridged WebSocket and continues the visible call over HTTP", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "test-provider-key";
+    try {
+      const seen: Record<string, unknown>[] = [];
+      const spawn = {
+        type: "function_call",
+        id: "fc_gateway_spawn",
+        call_id: "call_gateway_spawn",
+        namespace: "routed_agents",
+        name: "spawn_agent",
+        arguments: JSON.stringify({
+          task_name: "worker",
+          model: "glm-5.3-flash",
+          message: "Reply OK",
+        }),
+      };
+      const followup = {
+        ...spawn,
+        id: "fc_gateway_followup",
+        call_id: "call_gateway_followup",
+        name: "followup_task",
+        arguments: JSON.stringify({ target: "/root/worker", message: "Continue" }),
+      };
+      const gateway = await startHttpServer(async (request, response) => {
+        seen.push(JSON.parse((await readBody(request)).toString()) as Record<string, unknown>);
+        const call = seen.length === 1 ? spawn : followup;
+        const id = `resp_${seen.length}`;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        for (const event of [
+          { type: "response.created", response: { id } },
+          { type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } },
+          { type: "response.output_item.done", output_index: 0, item: call },
+          { type: "response.completed", response: { id, output: [call] } },
+        ])
+          response.write(`data: ${JSON.stringify(event)}\n\n`);
+        response.end();
+      });
+      const config = routeConfigForTest(gateway.origin);
+      const parent = modelRouteFromConfig({
+        ...config,
+        transport: "http",
+        handoff_class: "native-encrypted",
+        bridge_response_state: "stored",
+        model: { ...config.model, slug: "gateway-parent" },
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [parent, routedChildRoute(gateway.origin)],
+        proxyConfigSource: routedAgentsConfig(),
+      });
+      const identity = {
+        authorization: "Bearer client-token",
+        "chatgpt-account-id": "account-1",
+        "session-id": "session-1",
+        "thread-id": "thread-1",
+      };
+      const tools = [collaborationDeclaration()];
+      const client = new WebSocket(
+        proxy.origin.replace("http://", "ws://") + "/backend-api/codex/responses",
+        { headers: identity },
+      );
+      closeables.push(async () => client.close());
+      await opened(client);
+      const events: Record<string, unknown>[] = [];
+      client.on("message", (raw) => events.push(JSON.parse(rawDataText(raw))));
+      client.send(
+        JSON.stringify({ type: "response.create", model: "gateway-parent", input: [], tools }),
+      );
+      await eventually(() =>
+        expect(events.some((event) => event.type === "response.completed")).toBe(true),
+      );
+      expect((seen[0]!.tools as { name: string }[]).map((tool) => tool.name)).toEqual([
+        "collaboration",
+        "routed_agents",
+      ]);
+      expect(seen[0]?.instructions).toContain("use routed_agents instead of collaboration");
+      const visibleCall = (
+        events.find((event) => event.type === "response.output_item.done") as {
+          item: Record<string, unknown>;
+        }
+      ).item;
+      expect(visibleCall).toMatchObject({
+        namespace: "collaboration",
+        name: "spawn_agent",
+        encrypted_function_args: [],
+      });
+      expect(
+        (
+          events.find((event) => event.type === "response.completed") as {
+            response: { output: Record<string, unknown>[] };
+          }
+        ).response.output[0],
+      ).toEqual(visibleCall);
+
+      const second = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { ...identity, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gateway-parent",
+          input: [
+            visibleCall,
+            {
+              type: "function_call_output",
+              call_id: "call_gateway_spawn",
+              output: '{"task_name":"/root/worker"}',
+            },
+          ],
+          tools,
+          stream: true,
+        }),
+      });
+      const secondEvents = (await Array.fromAsync(parseSseEvents(second.body!))).map((entry) =>
+        JSON.parse(entry),
+      );
+      expect(second.status).toBe(200);
+      expect(seen[1]).toMatchObject({
+        previous_response_id: "resp_1",
+        input: [{ type: "function_call_output", call_id: "call_gateway_spawn" }],
+      });
+      expect(
+        secondEvents.find((event) => event.type === "response.output_item.done")?.item,
+      ).toMatchObject({
+        namespace: "collaboration",
+        name: "followup_task",
+        encrypted_function_args: [],
+      });
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
   });
 
   it("lets a native child message its routed parent through the plaintext variant", async () => {
