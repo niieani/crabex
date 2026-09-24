@@ -182,6 +182,7 @@ vp run build
 ```
 
 To refresh the bundled Codex model catalog, follow the [model catalog playbook](docs/refresh-model-catalog.md).
+For route tool policies, search, and V2 agent handoff, see [Codex tool compatibility](docs/codex-tool-compatibility.md).
 
 ## Flex routes
 

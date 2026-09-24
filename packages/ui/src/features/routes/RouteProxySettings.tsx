@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 
 import { getProxyConfig, patchProxyConfig } from "../../lib/api.ts";
 import type { ModelRouteConfig } from "../../lib/types.ts";
 import { brokerRouteIssue, BrokerRouteOptions } from "./RouteCapabilities.tsx";
 
 export function RouteProxySettings({ routes }: { routes: ModelRouteConfig[] }) {
+  const [instructions, setInstructions] = useState("");
   const client = useQueryClient();
   const query = useQuery({ queryKey: ["proxy-config"], queryFn: getProxyConfig });
   const mutation = useMutation({
@@ -12,6 +14,9 @@ export function RouteProxySettings({ routes }: { routes: ModelRouteConfig[] }) {
     onSuccess: (state) => client.setQueryData(["proxy-config"], state),
   });
   const state = query.data;
+  useEffect(() => {
+    setInstructions(state?.routed_agents.instructions ?? "");
+  }, [state?.routed_agents.instructions]);
   if (query.isError)
     return <p className="mb-4 text-xs text-danger">Proxy settings: {query.error.message}</p>;
   if (!state) return null;
@@ -67,10 +72,39 @@ export function RouteProxySettings({ routes }: { routes: ModelRouteConfig[] }) {
             </button>
           </div>
           <p className="mt-2 text-[11px] leading-5 text-muted">
-            Adds plaintext routed_agents tools for native parents to reach custom-model children.
-            This opt-in relies on undocumented Codex backend behavior. Native-to-native agent tools
-            stay encrypted.
+            Adds routed_agents tools for native parents to reach routes in the plaintext handoff
+            class. This opt-in relies on undocumented Codex backend behavior. Native-to-native agent
+            tools stay encrypted.
           </p>
+          <label htmlFor="routed-agent-instructions" className="mt-3 block text-xs font-semibold">
+            Routed agent instructions
+          </label>
+          <textarea
+            id="routed-agent-instructions"
+            className="input mt-2 min-h-20 text-xs"
+            maxLength={1200}
+            value={instructions}
+            disabled={mutation.isPending}
+            onChange={(event) => setInstructions(event.target.value)}
+            placeholder="When should native agents use these routes?"
+          />
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <span className="text-[10px] text-muted">{instructions.length}/1200 characters</span>
+            <button
+              type="button"
+              className="rounded-lg border border-accent/40 px-2.5 py-1.5 text-[11px] text-accent disabled:opacity-50"
+              disabled={
+                mutation.isPending || instructions === (state.routed_agents.instructions ?? "")
+              }
+              onClick={() =>
+                mutation.mutate({
+                  routed_agents: { ...state.routed_agents, instructions },
+                })
+              }
+            >
+              Save instructions
+            </button>
+          </div>
         </div>
       </div>
       {mutation.isError ? (

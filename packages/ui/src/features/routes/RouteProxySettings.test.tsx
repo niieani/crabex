@@ -87,6 +87,15 @@ it("shows missing default broker and saves a Responses route selection and nativ
       routed_agents: { enabled: true },
     }),
   );
+  fireEvent.change(screen.getByLabelText("Routed agent instructions"), {
+    target: { value: "Use these routes for narrow reviews" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save instructions" }));
+  await waitFor(() =>
+    expect(vi.mocked(patchProxyConfig).mock.calls[2]?.[0]).toEqual({
+      routed_agents: { enabled: true, instructions: "Use these routes for narrow reviews" },
+    }),
+  );
 });
 
 it("keeps a saved ineligible default visible and offers only eligible routes", async () => {

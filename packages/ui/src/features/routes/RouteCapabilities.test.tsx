@@ -43,6 +43,39 @@ function route(slug = "glm-5.3-flash"): ModelRouteConfig {
 afterEach(cleanup);
 
 describe("route capability controls", () => {
+  it("edits the handoff class and bounded guidance using API-provided options", () => {
+    const onUpdate = vi.fn();
+    const configured = route();
+    configured.transport = "http";
+    configured.effective_handoff_class = "plaintext";
+    configured.handoff_class_options = ["plaintext", "native-encrypted"];
+    render(
+      <RouteCapabilities
+        route={configured}
+        routes={[configured]}
+        defaultBroker="gpt-6-luna"
+        pending={false}
+        onUpdate={onUpdate}
+      />,
+    );
+    fireEvent.click(screen.getByText("Tools, search, and agents"));
+    const handoff = screen.getByLabelText("Agent handoff class") as HTMLSelectElement;
+    expect([...handoff.options].map((option) => option.value)).toEqual([
+      "inherit",
+      "plaintext",
+      "native-encrypted",
+    ]);
+    fireEvent.change(handoff, { target: { value: "native-encrypted" } });
+    expect(onUpdate).toHaveBeenCalledWith({ ...configured, handoff_class: "native-encrypted" });
+    const guidance = screen.getByLabelText("Agent guidance") as HTMLTextAreaElement;
+    expect(guidance.maxLength).toBe(240);
+    fireEvent.change(guidance, { target: { value: "Use for short checks" } });
+    fireEvent.blur(guidance);
+    expect(onUpdate).toHaveBeenCalledWith({
+      ...configured,
+      agent_guidance: "Use for short checks",
+    });
+  });
   it("migrates a legacy allowlist to equivalent explicit policy", () => {
     const onUpdate = vi.fn();
     const legacy = route();

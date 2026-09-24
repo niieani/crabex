@@ -255,6 +255,10 @@ export type ToolPolicy = Record<ToolPolicyKey, ToolAction>;
 
 export interface ModelRouteConfig {
   api?: "responses" | "anthropic-messages";
+  handoff_class?: "native-encrypted" | "plaintext";
+  agent_guidance?: string;
+  effective_handoff_class?: "native-encrypted" | "plaintext";
+  handoff_class_options?: ("native-encrypted" | "plaintext")[];
   anthropic?: {
     max_tokens?: number;
     thinking?: "adaptive" | "budget" | "disabled";
@@ -348,5 +352,5 @@ export interface ProxyConfigState {
   appsAuthRelayOverride?: boolean;
   allowAppsAuthRelay: boolean;
   search_broker: { route: string };
-  routed_agents: { enabled: boolean };
+  routed_agents: { enabled: boolean; instructions?: string };
 }

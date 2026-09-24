@@ -212,6 +212,65 @@ export function RouteCapabilities({
         ) : null}
 
         <section className="border-t border-line/60 pt-4">
+          <label className="text-xs font-semibold" htmlFor={`handoff-${route.model.slug}`}>
+            Agent handoff class
+          </label>
+          <select
+            id={`handoff-${route.model.slug}`}
+            className="input mt-2 text-xs"
+            value={route.handoff_class ?? "inherit"}
+            disabled={pending}
+            onChange={(event) =>
+              onUpdate({
+                ...route,
+                handoff_class:
+                  event.target.value === "inherit"
+                    ? undefined
+                    : (event.target.value as "native-encrypted" | "plaintext"),
+              })
+            }
+          >
+            <option value="inherit">
+              Default ({route.effective_handoff_class ?? "plaintext"})
+            </option>
+            {(route.handoff_class_options ?? ["plaintext", "native-encrypted"]).map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 text-[11px] leading-5 text-muted">
+            Plaintext accepts readable V2 agent messages and refuses ciphertext. Native-encrypted
+            forwards encrypted messages within a compatible backend domain. The default also
+            considers stored continuation and custom-tool translation.
+          </p>
+          <label
+            className="mt-3 block text-xs font-semibold"
+            htmlFor={`guidance-${route.model.slug}`}
+          >
+            Agent guidance
+          </label>
+          <textarea
+            key={`${route.model.slug}:${route.agent_guidance ?? ""}`}
+            id={`guidance-${route.model.slug}`}
+            className="input mt-2 min-h-16 text-xs"
+            maxLength={240}
+            defaultValue={route.agent_guidance ?? ""}
+            disabled={pending}
+            onBlur={(event) => {
+              const value = event.target.value.trim();
+              if (value !== (route.agent_guidance ?? ""))
+                onUpdate({ ...route, agent_guidance: value || undefined });
+            }}
+            placeholder="When should an agent use this model?"
+          />
+          <p className="mt-1 text-[11px] text-muted">
+            Shown beside this route&apos;s slug when native agents can delegate to it. Up to 240
+            characters.
+          </p>
+        </section>
+
+        <section className="border-t border-line/60 pt-4">
           <label className="text-xs font-semibold" htmlFor={`delegation-${route.model.slug}`}>
             Allow this model&apos;s children to delegate
           </label>
@@ -230,7 +289,7 @@ export function RouteCapabilities({
             Sets the model catalog&apos;s multi_agent_version. Codex&apos;s global multi_agent_v2
             feature flag (or disabled agents) takes precedence over the catalog; the catalog takes
             precedence over the default feature state. A thread keeps its chosen version. This does
-            not enable native-to-routed plaintext handoff.
+            not enable native-to-routed handoff.
           </p>
         </section>
       </div>

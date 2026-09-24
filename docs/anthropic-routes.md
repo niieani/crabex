@@ -76,7 +76,7 @@ default rejects them, while legacy allowlists omit them with a recorded warning.
 With `web_search: "broker"`, Relaydeck itself executes web search through a
 configured OpenAI Responses route and continues the Claude turn before
 returning it to Codex.
-See [model route tool policy](model-route-tool-policy.md) for per-route rejection
+See [Codex tool compatibility](codex-tool-compatibility.md) for per-route rejection
 and the defaults for all five Codex tool types.
 
 Base64 PNG/JPEG/GIF/WebP images work in user messages and tool results, including
@@ -126,7 +126,7 @@ apply; upstream overload HTTP 529 can be added to `retry.on_status` if needed.
 
 OpenAI-encrypted reasoning/compaction cannot be translated. Hosted web search
 is available through the broker described in
-[model route tool policy](model-route-tool-policy.md); the default Anthropic
+[Codex tool compatibility](codex-tool-compatibility.md); the default Anthropic
 policy still rejects it. Native Claude server-side search is not used. Claude
 routes advertise no OpenAI speed/access programs. Structured source URLs are
 sent to Claude in its tool result, and Codex sees a web search event. Codex's
