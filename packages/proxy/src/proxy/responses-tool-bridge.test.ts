@@ -17,6 +17,52 @@ const route = modelRouteFromConfig({
 });
 
 describe("Responses tool discovery bridge", () => {
+  it("rewrites collaboration for an HTTP plaintext route without custom translation", () => {
+    const passRoute = modelRouteFromConfig({
+      authorization_env: "TEST_KEY",
+      transport: "http",
+      handoff_class: "plaintext",
+      model: {
+        slug: "gateway-test",
+        display_name: "Gateway test",
+        description: "Test Responses route",
+        priority: 1,
+        template_slug: "gpt-6-luna",
+      },
+      upstream: "https://gateway.example/v1",
+    });
+    const declaration = {
+      type: "namespace",
+      name: "collaboration",
+      tools: [
+        {
+          type: "function",
+          name: "spawn_agent",
+          parameters: {
+            type: "object",
+            properties: { message: { type: "string", encrypted: true } },
+          },
+        },
+      ],
+    };
+    const bridge = createResponsesToolBridge(passRoute, [declaration])!;
+    const outbound = bridge.request({ tools: [declaration] });
+    expect(
+      (outbound.tools as (typeof declaration)[])[0]?.tools[0]?.parameters.properties.message,
+    ).toEqual({ type: "string" });
+    const call = {
+      type: "function_call",
+      namespace: "collaboration",
+      name: "spawn_agent",
+      call_id: "call_spawn",
+      arguments: '{"model":"gateway-test","message":"Go"}',
+    };
+    expect(
+      JSON.parse(
+        bridge.event(JSON.stringify({ type: "response.output_item.done", item: call }))[0]!,
+      ).item.encrypted_function_args,
+    ).toEqual([]);
+  });
   it("marks only deliberately plaintext collaboration calls and strips their outbound annotation", () => {
     const declaration = {
       type: "namespace",
@@ -89,6 +135,7 @@ describe("Responses tool discovery bridge", () => {
     const passRoute = modelRouteFromConfig({
       authorization_env: "TEST_KEY",
       transport: "http",
+      handoff_class: "native-encrypted",
       tool_policy: { tool_search: "translate" },
       model: {
         slug: "pass-test",

@@ -31,6 +31,26 @@ const routeConfig = [
 ];
 
 describe("parseModelRouteSet", () => {
+  it("validates handoff class and bounded agent guidance", () => {
+    const http = { ...routeConfig[0], transport: "http", handoff_class: "plaintext" };
+    expect(modelRouteFromConfig(parseModelRouteSet([http]).routes[0]!).handoffClass).toBe(
+      "plaintext",
+    );
+    expect(() => parseModelRouteSet([{ ...http, handoff_class: "unknown" }])).toThrow(
+      "handoff_class",
+    );
+    expect(() => parseModelRouteSet([{ ...http, agent_guidance: "a".repeat(241) }])).toThrow(
+      "agent_guidance",
+    );
+    expect(() => parseModelRouteSet([{ ...http, transport: "ws" }])).toThrow(
+      "plaintext requires HTTP",
+    );
+    expect(() =>
+      parseModelRouteSet([
+        { ...http, api: "anthropic-messages", handoff_class: "native-encrypted" },
+      ]),
+    ).toThrow("unavailable for Anthropic");
+  });
   it("parses a versioned route set", () => {
     expect(parseModelRouteSet({ version: 1, routes: routeConfig })).toEqual({
       routes: routeConfig,
@@ -120,10 +140,24 @@ describe("parseModelRouteSet", () => {
 });
 
 describe("modelRouteFromConfig", () => {
+  it("defaults gateway Responses to encrypted and adapted routes to plaintext", () => {
+    const base = parseModelRouteSet([{ ...routeConfig[0], transport: "http" }]).routes[0]!;
+    expect(modelRouteFromConfig(base).handoffClass).toBe("native-encrypted");
+    expect(modelRouteFromConfig({ ...base, bridge_response_state: "stored" }).handoffClass).toBe(
+      "plaintext",
+    );
+    expect(
+      modelRouteFromConfig({ ...base, tool_policy: { custom: "translate" } }).handoffClass,
+    ).toBe("plaintext");
+    expect(modelRouteFromConfig({ ...base, handoff_class: "plaintext" }).handoffClass).toBe(
+      "plaintext",
+    );
+  });
   it("maps config to a runtime route, enabled by default", () => {
     const route = modelRouteFromConfig(parseModelRouteSet(routeConfig).routes[0]!);
     expect(route).toEqual({
       authorizationEnv: "CLIPROXYAPI_KEY",
+      handoffClass: "native-encrypted",
       enabled: true,
       model: {
         description: "Kimi K3 via CLIProxyAPI",

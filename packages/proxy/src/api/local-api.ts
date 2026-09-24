@@ -65,7 +65,19 @@ export function createLocalApi(options: {
               throw new Error(
                 "Apps authentication relay is overridden by the command line; restart without the override to edit it",
               );
-            const config = parseProxyConfig({ ...options.proxyConfig.get(), ...update });
+            const current = options.proxyConfig.get();
+            const routedAgentUpdate = (update as Record<string, unknown>).routed_agents;
+            const config = parseProxyConfig({
+              ...current,
+              ...update,
+              routed_agents:
+                routedAgentUpdate === undefined ||
+                (typeof routedAgentUpdate === "object" &&
+                  routedAgentUpdate !== null &&
+                  !Array.isArray(routedAgentUpdate))
+                  ? { ...current.routed_agents, ...routedAgentUpdate }
+                  : routedAgentUpdate,
+            });
             if (
               Object.hasOwn(update, "appsAuthRelay") &&
               config.appsAuthRelay &&
@@ -205,6 +217,13 @@ function modelRoutesResponse(set: ModelRouteSetData): Record<string, unknown> {
       const compiled = modelRouteFromConfig(route);
       return {
         ...route,
+        effective_handoff_class: compiled.handoffClass,
+        handoff_class_options:
+          compiled.api === "anthropic-messages"
+            ? ["plaintext"]
+            : compiled.transport === "ws"
+              ? ["native-encrypted"]
+              : ["plaintext", "native-encrypted"],
         effective_tool_policy: compiled.toolPolicy,
         tool_policy_actions: allowedToolActions(route.api ?? "responses", compiled.transport),
         search_broker_eligibility: brokerRouteEligibility(compiled, process.env),

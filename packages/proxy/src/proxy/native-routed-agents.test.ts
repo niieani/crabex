@@ -60,7 +60,7 @@ describe("native routed-agent variant", () => {
     });
     const nativeCaller = new NativeRoutedAgentsBridge(models, scope, registry, "/root/b");
     expect(() => nativeCaller.event(event("response.output_item.done", send))).toThrow(
-      'target "worker" is not a known routed custom-model agent',
+      'target "worker" is not a known plaintext-class agent',
     );
     const unknownCaller = new NativeRoutedAgentsBridge(models, scope, registry);
     expect(() => unknownCaller.event(event("response.output_item.done", send))).toThrow(
@@ -69,7 +69,16 @@ describe("native routed-agent variant", () => {
   });
 
   it("adds plaintext copies without changing reserved tools, and rehashes Responses Lite IDs", () => {
-    const bridge = new NativeRoutedAgentsBridge(models, scope, new RoutedAgentRegistry());
+    const bridge = new NativeRoutedAgentsBridge(
+      [
+        { slug: "glm-5.3-flash", guidance: "fast local checks" },
+        { slug: "anthropic.claude-haiku-4-5" },
+      ],
+      scope,
+      new RoutedAgentRegistry(),
+      undefined,
+      "Prefer short tasks.",
+    );
     const original = structuredClone(collaboration);
     const top = bridge.request({ tools: [collaboration], input: [] });
     expect(collaboration).toEqual(original);
@@ -82,6 +91,18 @@ describe("native routed-agent variant", () => {
       }[];
     };
     expect(variant.name).toBe("routed_agents");
+    expect(variant).toHaveProperty(
+      "description",
+      expect.stringContaining("glm-5.3-flash (fast local checks)"),
+    );
+    expect(variant).toHaveProperty("description", expect.stringContaining("Prefer short tasks."));
+    expect(String((top as { instructions?: string }).instructions)).toContain(
+      "identical parameters and delegation rules",
+    );
+    expect(String((top as { instructions?: string }).instructions)).toContain(
+      "Prefer short tasks.",
+    );
+    expect(String((top as { instructions?: string }).instructions)).not.toContain("plaintext");
     expect(variant.tools.map((tool) => tool.name)).toEqual([
       "spawn_agent",
       "send_message",
@@ -93,6 +114,7 @@ describe("native routed-agent variant", () => {
     });
     expect(variant.tools[0]?.parameters.required).toContain("model");
     expect((top.tools as unknown[])[0]).toEqual(original);
+    expect((top.tools as unknown[])[0]).toEqual(collaboration);
 
     const lite = {
       type: "additional_tools",
@@ -171,7 +193,7 @@ describe("native routed-agent variant", () => {
         ),
       ),
     ).toThrow(
-      'routed_agents.followup_task target "/root/native" is not a known routed custom-model agent',
+      'routed_agents.followup_task target "/root/native" is not a known plaintext-class agent',
     );
     const native = {
       ...spawn,
@@ -291,7 +313,7 @@ describe("routed-agent registry", () => {
           }),
         ),
       ),
-    ).toThrow("is not a known routed custom-model agent");
+    ).toThrow("is not a known plaintext-class agent");
     expect(await Bun.file(path).text()).not.toContain("account-a");
   });
 

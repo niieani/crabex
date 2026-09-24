@@ -144,6 +144,17 @@ describe("local context API", () => {
       (await api.handle(update({ version: 1, routed_agents: { enabled: true } })))?.status,
     ).toBe(200);
     expect(proxyConfig.get().routed_agents.enabled).toBe(true);
+    expect(
+      (
+        await api.handle(
+          update({ version: 1, routed_agents: { instructions: "Prefer narrow tasks" } }),
+        )
+      )?.status,
+    ).toBe(200);
+    expect(proxyConfig.get().routed_agents).toEqual({
+      enabled: true,
+      instructions: "Prefer narrow tasks",
+    });
     expect((await api.handle(update({ version: 1, appsAuthRelay: false })))?.status).toBe(200);
     expect(proxyConfig.get().search_broker.route).toBe("search-route");
     expect((await api.handle(update({ version: 1, search_broker: { route: "" } })))?.status).toBe(
@@ -404,6 +415,8 @@ describe("local context API", () => {
       routes: [
         {
           ...routeConfigs[0],
+          effective_handoff_class: "native-encrypted",
+          handoff_class_options: ["native-encrypted"],
           effective_tool_policy: {
             function: "pass",
             namespace: "pass",

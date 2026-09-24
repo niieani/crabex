@@ -1,7 +1,7 @@
 import type { ModelRoute } from "../routing/model-routes.ts";
 import { authorizationFor, responseTargetUrl } from "../routing/model-routes.ts";
 import { applyRouteToolPolicy } from "../routing/tool-policy.ts";
-import { prepareCustomAgentMessages } from "./multi-agent-handoff.ts";
+import { preparePlaintextAgentMessages } from "./multi-agent-handoff.ts";
 import { sanitizeMixedProviderHistory } from "./mixed-provider-history.ts";
 import { httpPayloadFor } from "./responses-bridge.ts";
 import { createResponsesToolBridge, type ResponsesToolBridge } from "./responses-tool-bridge.ts";
@@ -76,11 +76,14 @@ export function prepareRoutedRequest(context: RoutedRequestContext): RoutedReque
       sourceFamily: context.sourceFamily,
       targetFamily: context.targetFamily,
     });
-    agentPayload = prepareCustomAgentMessages(
-      sanitized,
-      route.model.slug,
-      context.plaintextHandoffEnabled,
-    );
+    agentPayload =
+      route.handoffClass === "plaintext"
+        ? preparePlaintextAgentMessages(
+            sanitized,
+            route.model.slug,
+            context.plaintextHandoffEnabled,
+          )
+        : sanitized;
   } catch (error) {
     return {
       kind: "failed",

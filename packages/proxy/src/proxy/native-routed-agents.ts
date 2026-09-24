@@ -4,6 +4,7 @@ import { parseSseEvents, wrappedErrorEvent } from "./responses-bridge.ts";
 
 type JsonObject = Record<string, unknown>;
 type PendingSpawn = { taskName: string; model: string };
+export type RoutedAgentModel = { slug: string; guidance?: string };
 type AgentScope = {
   pending: Record<string, PendingSpawn>;
   targets: Record<string, string>;
@@ -228,6 +229,8 @@ function variantTools(
   tools: unknown[],
   models: string[],
   targets: string[],
+  description: string,
+  steering: string,
 ): JsonObject[] | undefined {
   if (
     tools.some((tool) => record(tool) && tool.type === "namespace" && tool.name === "routed_agents")
@@ -258,19 +261,18 @@ function variantTools(
     const properties = parameters.properties as JsonObject;
     const message = properties.message as JsonObject;
     delete message.encrypted;
-    message.description = "Plaintext message for a routed custom-model agent.";
+    message.description = "Message for the selected routed agent.";
     if (member.name === "spawn_agent") {
       const model = properties.model;
       if (!record(model)) return undefined;
       model.enum = models;
-      model.description = "Required routed custom-model slug.";
+      model.description = "Required route slug from the listed models.";
       parameters.required = [
         ...new Set([...(Array.isArray(parameters.required) ? parameters.required : []), "model"]),
       ];
-      member.description =
-        "Spawn a routed custom-model child. Use collaboration.spawn_agent for a native OpenAI child.";
+      member.description = `Identical to collaboration.spawn_agent: same parameters, same delegation rules. Use only for these models, which collaboration cannot reach: ${description}.`;
     } else {
-      member.description = `Send plaintext to a routed custom-model agent, including a parent or sibling. Use collaboration.${String(member.name)} for a native OpenAI agent.${targets.length ? ` Known routed targets: ${targets.join(", ")}.` : ""}`;
+      member.description = `Identical to collaboration.${String(member.name)}: same parameters, same delegation rules. Use only for agents on these models, which collaboration cannot reach: ${description}.${targets.length ? ` Known targets: ${targets.join(", ")}.` : ""}`;
     }
   }
   return [
@@ -278,7 +280,7 @@ function variantTools(
     {
       type: "namespace",
       name: "routed_agents",
-      description: `Plaintext agent tools for routed custom-model agents. Use collaboration for native OpenAI agents.${targets.length ? ` Known routed targets: ${targets.join(", ")}.` : ""}`,
+      description: `Identical to collaboration tools: same parameters, same delegation rules. Use only for these models, which collaboration cannot reach: ${description}.${steering ? ` ${steering}` : ""}${targets.length ? ` Known targets: ${targets.join(", ")}.` : ""}`,
       tools: copies,
     },
   ] as JsonObject[];
@@ -299,12 +301,30 @@ function revisedAdditionalToolsId(id: unknown, tools: unknown[]): string {
 /** Native ChatGPT wire adapter for an additive non-reserved plaintext namespace. */
 export class NativeRoutedAgentsBridge {
   private readonly models: string[];
+  private readonly description: string;
+  private readonly steering: string;
+  private readonly hint: string;
   private readonly scope: string;
   private readonly registry: RoutedAgentRegistry;
   private readonly callerPath: string | undefined;
 
-  constructor(models: string[], scope: string, registry: RoutedAgentRegistry, callerPath?: string) {
-    this.models = [...new Set(models)].sort();
+  constructor(
+    models: (string | RoutedAgentModel)[],
+    scope: string,
+    registry: RoutedAgentRegistry,
+    callerPath?: string,
+    instructions = "",
+  ) {
+    const entries = models.map((model) => (typeof model === "string" ? { slug: model } : model));
+    this.models = [...new Set(entries.map((model) => model.slug))].sort();
+    this.description = this.models
+      .map((slug) => {
+        const guidance = entries.find((model) => model.slug === slug)?.guidance?.trim();
+        return guidance ? `${slug} (${guidance})` : slug;
+      })
+      .join(", ");
+    this.steering = instructions.trim();
+    this.hint = `When delegating to these models, use routed_agents instead of collaboration: ${this.description}. The two namespaces have identical parameters and delegation rules.${this.steering ? ` ${this.steering}` : ""}`;
     this.scope = scope;
     this.registry = registry;
     this.callerPath = callerPath;
@@ -316,7 +336,7 @@ export class NativeRoutedAgentsBridge {
     let changed = false;
     let tools = payload.tools;
     if (Array.isArray(tools)) {
-      const variant = variantTools(tools, this.models, targets);
+      const variant = variantTools(tools, this.models, targets, this.description, this.steering);
       if (variant !== undefined) {
         tools = variant;
         changed = true;
@@ -327,7 +347,13 @@ export class NativeRoutedAgentsBridge {
       input = input.map((raw) => {
         if (!record(raw)) return raw;
         if (raw.type === "additional_tools" && Array.isArray(raw.tools)) {
-          const variant = variantTools(raw.tools, this.models, targets);
+          const variant = variantTools(
+            raw.tools,
+            this.models,
+            targets,
+            this.description,
+            this.steering,
+          );
           if (variant !== undefined) {
             changed = true;
             return {
@@ -355,7 +381,13 @@ export class NativeRoutedAgentsBridge {
         return raw;
       });
     }
-    return changed ? { ...payload, tools, input } : payload;
+    if (!changed) return payload;
+    const existingInstructions =
+      typeof payload.instructions === "string" ? payload.instructions : "";
+    const instructions = existingInstructions.includes(this.hint)
+      ? existingInstructions
+      : `${existingInstructions}${existingInstructions ? "\n\n" : ""}${this.hint}`;
+    return { ...payload, tools, input, instructions };
   }
 
   event(data: string): string {
@@ -427,7 +459,7 @@ export class NativeRoutedAgentsBridge {
         )
       )
         throw new RoutedAgentsError(
-          `routed_agents.${String(item.name)} target "${String(args.target)}" is not a known routed custom-model agent`,
+          `routed_agents.${String(item.name)} target "${String(args.target)}" is not a known plaintext-class agent`,
         );
     }
   }

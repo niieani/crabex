@@ -213,7 +213,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     syncAppsAuthRelay();
     if (options.proxyConfigSource?.get().routed_agents.enabled && !routedAgentsWarningLogged) {
       console.warn(
-        "Experimental routed_agents plaintext handoff is enabled; native backend behavior is undocumented",
+        "Experimental routed_agents handoff is enabled; native backend behavior is undocumented",
       );
       routedAgentsWarningLogged = true;
     }
@@ -502,6 +502,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                           data.agentHeaders,
                           agentInspected?.payload ?? {},
                         ),
+                        data.proxyConfigSource?.get().routed_agents.instructions,
                       )
                     : undefined;
                 const translated = nativeBridge?.request(sanitized) ?? sanitized;
@@ -745,6 +746,7 @@ async function proxyHttpRequest(
           scope,
           routedAgentRegistry,
           routedAgentRegistry.callerPath(request.headers, inspectedAgent.payload),
+          proxyConfigSource?.get().routed_agents.instructions,
         );
       }
       const converted = nativeRoutedAgents?.request(sanitized) ?? sanitized;
@@ -1318,10 +1320,15 @@ function matchBridgeRoute(
   return { route, inspected };
 }
 
-function routedAgentModels(routes: readonly ModelRoute[]): string[] {
+function routedAgentModels(routes: readonly ModelRoute[]): { slug: string; guidance?: string }[] {
   return routes
-    .filter((route) => route.enabled && route.transport === "http")
-    .map((route) => route.model.slug);
+    .filter(
+      (route) => route.enabled && route.transport === "http" && route.handoffClass === "plaintext",
+    )
+    .map((route) => ({
+      slug: route.model.slug,
+      ...(route.agentGuidance ? { guidance: route.agentGuidance } : {}),
+    }));
 }
 
 /**

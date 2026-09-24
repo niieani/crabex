@@ -22,12 +22,12 @@ export class ResponsesToolBridge {
   private readonly callsById = new Map<string, CallState>();
   private readonly callsByIndex = new Map<number, CallState>();
   private sequence = 0;
-  private readonly modes: { custom: boolean; search: boolean };
+  private readonly modes: { custom: boolean; search: boolean; plaintext: boolean };
 
   constructor(
     routeSlug: string,
     declarations: unknown,
-    modes: { custom: boolean; search: boolean },
+    modes: { custom: boolean; search: boolean; plaintext: boolean },
   ) {
     this.routeSlug = routeSlug;
     this.modes = modes;
@@ -40,7 +40,7 @@ export class ResponsesToolBridge {
         functionSchema: "preserve",
         callId: "preserve",
         other: "pass",
-        plaintextCollaboration: modes.custom,
+        plaintextCollaboration: modes.plaintext,
       });
     } catch (error) {
       this.fail(error);
@@ -286,17 +286,41 @@ export class ResponsesToolBridge {
 }
 
 export function createResponsesToolBridge(
-  route: Pick<ModelRoute, "api" | "model" | "toolPolicy">,
+  route: Pick<ModelRoute, "api" | "model" | "toolPolicy" | "handoffClass">,
   declarations: unknown,
 ): ResponsesToolBridge | undefined {
   if (route.api === "anthropic-messages") return undefined;
   const modes = {
     custom: route.toolPolicy.custom === "translate",
     search: route.toolPolicy.tool_search === "translate",
+    plaintext: route.handoffClass === "plaintext",
   };
-  return modes.custom || modes.search
+  return modes.custom ||
+    modes.search ||
+    (modes.plaintext && hasEncryptedCollaboration(declarations))
     ? new ResponsesToolBridge(route.model.slug, declarations, modes)
     : undefined;
+}
+
+function hasEncryptedCollaboration(declarations: unknown): boolean {
+  return (
+    Array.isArray(declarations) &&
+    declarations.some(
+      (tool) =>
+        record(tool) &&
+        tool.type === "namespace" &&
+        tool.name === "collaboration" &&
+        Array.isArray(tool.tools) &&
+        tool.tools.some(
+          (member: unknown) =>
+            record(member) &&
+            record(member.parameters) &&
+            record(member.parameters.properties) &&
+            record(member.parameters.properties.message) &&
+            member.parameters.properties.message.encrypted === true,
+        ),
+    )
+  );
 }
 
 export function translateResponsesStream(

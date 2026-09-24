@@ -63,6 +63,10 @@ export interface AnthropicOptions {
 
 export interface ModelRouteConfig {
   api?: "responses" | "anthropic-messages";
+  /** Agent-message wire contract. Anthropic and adapted Responses routes default to plaintext. */
+  handoff_class?: "native-encrypted" | "plaintext";
+  /** Optional guidance shown beside this slug in routed_agents. */
+  agent_guidance?: string;
   anthropic?: AnthropicOptions;
   /** OpenAI Responses route used when this Anthropic route brokers hosted web search. */
   search_broker?: { route: string };
@@ -128,6 +132,8 @@ export const DEFAULT_BREAKER = { failures: 3, cooldownMs: 60_000 };
 
 export interface ModelRoute {
   api?: "responses" | "anthropic-messages";
+  handoffClass: "native-encrypted" | "plaintext";
+  agentGuidance?: string;
   anthropic?: AnthropicOptions;
   searchBrokerRoute?: string;
   authorizationEnv: string;
@@ -176,6 +182,14 @@ export function modelRouteFromConfig(config: ModelRouteConfig): ModelRoute {
   );
   return {
     authorizationEnv: config.authorization_env,
+    handoffClass:
+      config.handoff_class ??
+      (config.api === "anthropic-messages" ||
+      config.bridge_response_state === "stored" ||
+      toolPolicy.custom === "translate"
+        ? "plaintext"
+        : "native-encrypted"),
+    ...(config.agent_guidance === undefined ? {} : { agentGuidance: config.agent_guidance }),
     ...(config.api === undefined ? {} : { api: config.api }),
     ...(config.anthropic === undefined ? {} : { anthropic: config.anthropic }),
     ...(config.search_broker === undefined
@@ -321,6 +335,17 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   if (api !== undefined && api !== "responses" && api !== "anthropic-messages") {
     throw new Error(`${source}.api must be responses or anthropic-messages`);
   }
+  if (
+    value.handoff_class !== undefined &&
+    value.handoff_class !== "native-encrypted" &&
+    value.handoff_class !== "plaintext"
+  )
+    throw new Error(`${source}.handoff_class must be native-encrypted or plaintext`);
+  if (
+    value.agent_guidance !== undefined &&
+    (typeof value.agent_guidance !== "string" || value.agent_guidance.length > 240)
+  )
+    throw new Error(`${source}.agent_guidance must be a string of at most 240 characters`);
   const anthropic =
     value.anthropic === undefined ? undefined : anthropicOptions(value.anthropic, source);
   const searchBroker = value.search_broker;
@@ -348,6 +373,13 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   if (transport !== undefined && transport !== "http" && transport !== "ws") {
     throw new Error(`${source}.transport must be "http" or "ws"`);
   }
+  if (value.handoff_class === "native-encrypted" && api === "anthropic-messages")
+    throw new Error(`${source}.handoff_class native-encrypted is unavailable for Anthropic`);
+  if (
+    value.handoff_class === "plaintext" &&
+    (transport ?? (api === "anthropic-messages" ? "http" : "ws")) === "ws"
+  )
+    throw new Error(`${source}.handoff_class plaintext requires HTTP upstream transport`);
   const bridgeResponseState = value.bridge_response_state;
   if (
     bridgeResponseState !== undefined &&
@@ -390,6 +422,8 @@ function routeConfig(value: unknown, source: string): ModelRouteConfig {
   }
   return {
     ...(api === undefined ? {} : { api }),
+    ...(value.handoff_class === undefined ? {} : { handoff_class: value.handoff_class }),
+    ...(value.agent_guidance === undefined ? {} : { agent_guidance: value.agent_guidance }),
     ...(anthropic === undefined ? {} : { anthropic }),
     ...(searchBroker === undefined
       ? {}

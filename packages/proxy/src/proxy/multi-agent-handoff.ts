@@ -5,8 +5,8 @@ const record = (value: unknown): value is JsonObject =>
 
 export class UnreadableAgentMessage extends Error {}
 
-/** Give custom providers a readable user turn while retaining the agent envelope. */
-export function prepareCustomAgentMessages(
+/** Give plaintext-class routes a readable user turn while retaining the agent envelope. */
+export function preparePlaintextAgentMessages(
   payload: JsonObject,
   routeSlug: string,
   plaintextHandoffEnabled = false,
@@ -20,10 +20,18 @@ export function prepareCustomAgentMessages(
     };
     const content = raw.content;
     if (!Array.isArray(content)) return fail("has an invalid V2 agent_message");
-    if (content.some((part: unknown) => record(part) && part.type === "encrypted_content"))
+    if (content.some((part: unknown) => record(part) && part.type === "encrypted_content")) {
+      const preface = content.find(
+        (part: unknown) => record(part) && part.type === "input_text",
+      ) as JsonObject | undefined;
+      const tool =
+        typeof preface?.text === "string" && preface.text.startsWith("Message Type: NEW_TASK")
+          ? "routed_agents.spawn_agent"
+          : "routed_agents.send_message or routed_agents.followup_task";
       return fail(
-        `cannot read encrypted V2 agent_message; refusing to forward. ${plaintextHandoffEnabled ? "Use routed_agents plaintext tools when messaging a routed custom-model agent." : "Enable proxy routed_agents.enabled to offer native agents plaintext tools for routed custom-model targets."}`,
+        `cannot read encrypted V2 agent_message; refusing to forward. ${plaintextHandoffEnabled ? `Use ${tool} for ${routeSlug}.` : `Enable proxy routed_agents.enabled, then use ${tool} for ${routeSlug}.`}`,
       );
+    }
     const author = raw.author;
     const recipient = raw.recipient;
     if (typeof author !== "string" || typeof recipient !== "string")

@@ -81,7 +81,7 @@ describe("subscription reverse proxy", () => {
     expect(JSON.stringify(captures.events)).not.toContain("oauth-secret");
   });
 
-  it("preserves encrypted collaboration calls on a default pass Responses route", async () => {
+  it("preserves encrypted collaboration calls on a native-encrypted Responses route", async () => {
     const declaration = collaborationDeclaration();
     const call = {
       type: "function_call",
@@ -110,6 +110,7 @@ describe("subscription reverse proxy", () => {
       const route = modelRouteFromConfig({
         ...routeConfigForTest(upstream.origin),
         transport: "http",
+        handoff_class: "native-encrypted",
       });
       const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
         routes: [route],
@@ -179,8 +180,15 @@ describe("subscription reverse proxy", () => {
       response.end();
     });
     const route = routedChildRoute(upstream.origin);
+    const encryptedConfig = routeConfigForTest(upstream.origin);
+    const encryptedRoute = modelRouteFromConfig({
+      ...encryptedConfig,
+      transport: "http",
+      handoff_class: "native-encrypted",
+      model: { ...encryptedConfig.model, slug: "gateway-child" },
+    });
     const proxy = await startRoutingProxy(upstream.origin, new MemoryCaptureSink(), {
-      routes: [route],
+      routes: [route, encryptedRoute],
       proxyConfigSource: routedAgentsConfig(),
     });
     const identity = {
@@ -205,6 +213,13 @@ describe("subscription reverse proxy", () => {
       "collaboration",
       "routed_agents",
     ]);
+    const variant = (
+      seen[0]!.tools as { tools?: { name: string; parameters: Record<string, unknown> }[] }[]
+    )[1]!;
+    const spawnDeclaration = variant.tools?.find((tool) => tool.name === "spawn_agent");
+    expect(spawnDeclaration?.parameters.properties).toMatchObject({
+      model: { enum: ["glm-5.3-flash"] },
+    });
     expect(done).toMatchObject({ namespace: "collaboration", encrypted_function_args: [] });
     expect(firstEvents.at(-1)?.response.output[0]).toMatchObject({
       namespace: "collaboration",
@@ -254,7 +269,7 @@ describe("subscription reverse proxy", () => {
       status: 422,
       error: {
         message: expect.stringContaining(
-          'target "/root/native" is not a known routed custom-model agent',
+          'target "/root/native" is not a known plaintext-class agent',
         ),
       },
     });
@@ -2227,6 +2242,7 @@ describe("model routing and config bundle override", () => {
       const route = modelRouteFromConfig({
         ...routeConfigForTest(gateway.origin),
         transport: "http",
+        handoff_class: "plaintext",
       });
       const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
         routes: [route],
@@ -2251,6 +2267,7 @@ describe("model routing and config bundle override", () => {
         'model route "kimi-k3" cannot read encrypted V2 agent_message',
       );
       expect(encryptedError).toContain("routed_agents.enabled");
+      expect(encryptedError).toContain("use routed_agents.spawn_agent for kimi-k3");
       expect(forwarded).toHaveLength(0);
 
       const readable = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
@@ -2291,6 +2308,7 @@ describe("model routing and config bundle override", () => {
       const route = modelRouteFromConfig({
         ...routeConfigForTest(gateway.origin),
         transport: "http",
+        handoff_class: "plaintext",
       });
       const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
         routes: [route],
@@ -2320,9 +2338,49 @@ describe("model routing and config bundle override", () => {
       expect(JSON.parse(await nextMessage(client))).toMatchObject({
         type: "error",
         status: 422,
-        error: { message: expect.stringContaining("encrypted V2 agent_message") },
+        error: {
+          message: expect.stringContaining("use routed_agents.spawn_agent for kimi-k3"),
+        },
       });
       expect(deliveries).toBe(0);
+    } finally {
+      delete process.env.ACT_TEST_ROUTE_KEY;
+    }
+  });
+
+  it("forwards encrypted agent messages on an explicitly native-encrypted gateway route", async () => {
+    process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
+    try {
+      let forwarded: Record<string, unknown> | undefined;
+      const gateway = await startHttpServer(async (request, response) => {
+        forwarded = JSON.parse((await readBody(request)).toString()) as Record<string, unknown>;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end('data: {"type":"response.completed","response":{"output":[]}}\n\n');
+      });
+      const route = modelRouteFromConfig({
+        ...routeConfigForTest(gateway.origin),
+        transport: "http",
+        handoff_class: "native-encrypted",
+      });
+      const proxy = await startRoutingProxy(gateway.origin, new MemoryCaptureSink(), {
+        routes: [route],
+      });
+      const encrypted = {
+        type: "agent_message",
+        author: "/root",
+        recipient: "/root/worker",
+        content: [
+          { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
+          { type: "encrypted_content", encrypted_content: "opaque" },
+        ],
+      };
+      const response = await fetch(`${proxy.origin}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "kimi-k3", input: [encrypted] }),
+      });
+      expect(response.status).toBe(200);
+      expect(forwarded?.input).toEqual([encrypted]);
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
     }
@@ -3936,6 +3994,7 @@ function routedChildRoute(upstreamOrigin: string): ModelRoute {
   return modelRouteFromConfig({
     ...config,
     transport: "http",
+    handoff_class: "plaintext",
     model: { ...config.model, slug: "glm-5.3-flash" },
   });
 }

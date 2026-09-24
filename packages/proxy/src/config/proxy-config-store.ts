@@ -6,8 +6,10 @@ export interface ProxyConfig {
   version: 1;
   appsAuthRelay: boolean;
   search_broker: { route: string };
-  routed_agents: { enabled: boolean };
+  routed_agents: { enabled: boolean; instructions?: string };
 }
+
+export const MAX_ROUTED_AGENT_INSTRUCTIONS = 1200;
 
 export interface ProxyConfigStore {
   readonly path: string;
@@ -40,6 +42,15 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
       "invalid proxy config: expected version 1, boolean appsAuthRelay, search_broker.route, and boolean routed_agents.enabled",
     );
   }
+  const instructions = (config.routed_agents as { instructions?: unknown } | undefined)
+    ?.instructions;
+  if (
+    instructions !== undefined &&
+    (typeof instructions !== "string" || instructions.length > MAX_ROUTED_AGENT_INSTRUCTIONS)
+  )
+    throw new Error(
+      `invalid proxy config: routed_agents.instructions must be a string of at most ${MAX_ROUTED_AGENT_INSTRUCTIONS} characters`,
+    );
   return {
     version: 1,
     appsAuthRelay: config.appsAuthRelay ?? true,
@@ -48,6 +59,7 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
     },
     routed_agents: {
       enabled: (config.routed_agents as { enabled: boolean } | undefined)?.enabled ?? false,
+      instructions: (instructions as string | undefined) ?? "",
     },
   };
 }
@@ -57,7 +69,7 @@ export async function openProxyConfigStore(path: string): Promise<ProxyConfigSto
     version: 1,
     appsAuthRelay: true,
     search_broker: { route: "gpt-6-luna" },
-    routed_agents: { enabled: false },
+    routed_agents: { enabled: false, instructions: "" },
   };
   try {
     config = parseProxyConfig(JSON.parse(await readFile(path, "utf8")));
