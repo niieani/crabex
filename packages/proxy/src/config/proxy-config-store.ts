@@ -6,7 +6,11 @@ export interface ProxyConfig {
   version: 1;
   appsAuthRelay: boolean;
   search_broker: { route: string };
-  routed_agents: { enabled: boolean; instructions?: string };
+  routed_agents: {
+    enabled: boolean;
+    instructions?: string;
+    prefer_native_spawn_models: boolean;
+  };
 }
 
 export const MAX_ROUTED_AGENT_INSTRUCTIONS = 1200;
@@ -44,12 +48,19 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
   }
   const instructions = (config.routed_agents as { instructions?: unknown } | undefined)
     ?.instructions;
+  const preferNativeSpawnModels = (
+    config.routed_agents as { prefer_native_spawn_models?: unknown } | undefined
+  )?.prefer_native_spawn_models;
   if (
     instructions !== undefined &&
     (typeof instructions !== "string" || instructions.length > MAX_ROUTED_AGENT_INSTRUCTIONS)
   )
     throw new Error(
       `invalid proxy config: routed_agents.instructions must be a string of at most ${MAX_ROUTED_AGENT_INSTRUCTIONS} characters`,
+    );
+  if (preferNativeSpawnModels !== undefined && typeof preferNativeSpawnModels !== "boolean")
+    throw new Error(
+      "invalid proxy config: routed_agents.prefer_native_spawn_models must be boolean",
     );
   return {
     version: 1,
@@ -60,6 +71,7 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
     routed_agents: {
       enabled: (config.routed_agents as { enabled: boolean } | undefined)?.enabled ?? false,
       instructions: (instructions as string | undefined) ?? "",
+      prefer_native_spawn_models: (preferNativeSpawnModels as boolean | undefined) ?? false,
     },
   };
 }
@@ -69,7 +81,7 @@ export async function openProxyConfigStore(path: string): Promise<ProxyConfigSto
     version: 1,
     appsAuthRelay: true,
     search_broker: { route: "gpt-6-luna" },
-    routed_agents: { enabled: false, instructions: "" },
+    routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
   };
   try {
     config = parseProxyConfig(JSON.parse(await readFile(path, "utf8")));

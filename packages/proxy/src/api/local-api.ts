@@ -19,6 +19,12 @@ import {
 import { allowedToolActions } from "../routing/tool-policy.ts";
 import { brokerRouteEligibility } from "../proxy/search-broker.ts";
 import { modelsFixture } from "../routing/models-fixture.ts";
+import {
+  NATIVE_SPAWN_MODEL_SLOT_COUNT,
+  nativeSpawnModelSlots,
+  prioritizeNativeSpawnModels,
+  transformModels,
+} from "../routing/model-list.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
 import type { LiveRequestStore } from "../requests/live-request-store.ts";
@@ -162,12 +168,12 @@ export function createLocalApi(options: {
           return json(set);
         }
         if (url.pathname === `${API_PREFIX}/model-routes` && request.method === "GET") {
-          return json(modelRoutesResponse(options.modelRoutes.get()));
+          return json(modelRoutesResponse(options.modelRoutes.get(), options));
         }
         if (url.pathname === `${API_PREFIX}/model-routes` && request.method === "PUT") {
           const set = parseModelRouteSet(await request.json());
           await options.modelRoutes.replace(set);
-          return json(modelRoutesResponse(options.modelRoutes.get()));
+          return json(modelRoutesResponse(options.modelRoutes.get(), options));
         }
         if (url.pathname === `${API_PREFIX}/model-routes/env-status` && request.method === "GET") {
           const names = [
@@ -209,10 +215,39 @@ export function createLocalApi(options: {
   };
 }
 
-function modelRoutesResponse(set: ModelRouteSetData): Record<string, unknown> {
+function modelRoutesResponse(
+  set: ModelRouteSetData,
+  options: { upstreamCache: UpstreamCacheStore; proxyConfig?: ProxyConfigStore },
+): Record<string, unknown> {
+  const routes = set.routes.map(modelRouteFromConfig);
+  const cached = options.upstreamCache.get().models;
+  let nativeSpawnSlots: string[] | null = null;
+  let unavailableReason = "No upstream /models response has been observed yet.";
+  if (cached !== undefined) {
+    try {
+      const advertised = transformModels(cached.body, routes, set.adjustments, {
+        models: modelsFixture(),
+        pins: set.fixture_pins,
+      }).models;
+      const settings = options.proxyConfig?.get().routed_agents;
+      const ordered =
+        settings?.enabled && settings.prefer_native_spawn_models
+          ? prioritizeNativeSpawnModels(advertised, routes)
+          : advertised;
+      nativeSpawnSlots = nativeSpawnModelSlots(ordered);
+    } catch {
+      unavailableReason = "The cached /models response cannot be transformed; refresh the catalog.";
+    }
+  }
   return {
     version: 1,
     ...set,
+    native_spawn_slots: {
+      limit: NATIVE_SPAWN_MODEL_SLOT_COUNT,
+      slugs: nativeSpawnSlots,
+      observed_at: cached?.fetchedAt,
+      ...(nativeSpawnSlots === null ? { unavailable_reason: unavailableReason } : {}),
+    },
     routes: set.routes.map((route) => {
       const compiled = modelRouteFromConfig(route);
       return {

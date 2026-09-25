@@ -154,7 +154,16 @@ describe("local context API", () => {
     expect(proxyConfig.get().routed_agents).toEqual({
       enabled: true,
       instructions: "Prefer narrow tasks",
+      prefer_native_spawn_models: false,
     });
+    expect(
+      (
+        await api.handle(
+          update({ version: 1, routed_agents: { prefer_native_spawn_models: true } }),
+        )
+      )?.status,
+    ).toBe(200);
+    expect(proxyConfig.get().routed_agents.prefer_native_spawn_models).toBe(true);
     expect((await api.handle(update({ version: 1, appsAuthRelay: false })))?.status).toBe(200);
     expect(proxyConfig.get().search_broker.route).toBe("search-route");
     expect((await api.handle(update({ version: 1, search_broker: { route: "" } })))?.status).toBe(
@@ -435,6 +444,11 @@ describe("local context API", () => {
       ],
       adjustments: [],
       fixture_pins: [],
+      native_spawn_slots: {
+        limit: 5,
+        slugs: null,
+        unavailable_reason: "No upstream /models response has been observed yet.",
+      },
     });
 
     delete process.env.ACT_TEST_ROUTE_KEY;
@@ -452,6 +466,71 @@ describe("local context API", () => {
     } finally {
       delete process.env.ACT_TEST_ROUTE_KEY;
     }
+  });
+
+  it("reports spawn slots from the observed effective catalog and updates them with the opt-in", async () => {
+    const path = join(await mkdtemp(join(tmpdir(), "act-spawn-slots-")), "config.json");
+    const proxyConfig = await openProxyConfigStore(path);
+    const plaintext: ModelRouteConfig = {
+      ...routeConfigs[0]!,
+      transport: "http",
+      bridge_response_state: "stored",
+    };
+    const native: ModelRouteConfig = {
+      ...routeConfigs[0]!,
+      transport: "http",
+      handoff_class: "native-encrypted",
+      model: { ...routeConfigs[0]!.model, slug: "native-route", priority: 2 },
+    };
+    const api = createLocalApi({
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...stubSources({ routes: [plaintext, native] }),
+      proxyConfig,
+      upstreamCache: {
+        get: () => ({
+          models: {
+            fetchedAt: "2026-09-25T00:00:00Z",
+            body: {
+              models: [
+                {
+                  slug: "gpt-5.6-terra",
+                  priority: 3,
+                  visibility: "list",
+                  multi_agent_version: "v2",
+                },
+              ],
+            },
+          },
+        }),
+        observe: async () => {},
+      },
+    });
+    const url = "http://localhost/__agent-context-trimmer/api/model-routes";
+    const slots = async () => {
+      const response = await api.handle(new Request(url));
+      expect(response?.status).toBe(200);
+      return (
+        (await response!.json()) as {
+          native_spawn_slots: { limit: number; slugs: string[] };
+        }
+      ).native_spawn_slots;
+    };
+    expect(await slots()).toMatchObject({
+      limit: 5,
+      slugs: ["kimi-k3", "native-route", "gpt-5.6-terra"],
+    });
+    await proxyConfig.replace({
+      version: 1,
+      routed_agents: { enabled: true, prefer_native_spawn_models: true },
+    });
+    expect(await slots()).toMatchObject({
+      limit: 5,
+      slugs: ["native-route", "gpt-5.6-terra", "kimi-k3"],
+    });
   });
 
   it("exposes the effective policy for legacy and explicit route settings", async () => {

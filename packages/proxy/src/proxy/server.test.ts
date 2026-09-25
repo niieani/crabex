@@ -1734,6 +1734,47 @@ describe("model routing and config bundle override", () => {
     });
   });
 
+  it("reorders /models only when routed agents and native spawn preference are both enabled", async () => {
+    const chatgpt = await startHttpServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          models: [{ slug: "gpt-5.6-terra", priority: 2, visibility: "list" }],
+        }),
+      );
+    });
+    const route = { ...testRoute("http://127.0.0.1:1"), handoffClass: "plaintext" as const };
+    const catalog = async (enabled: boolean, prefer: boolean) => {
+      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+        routes: [route],
+        proxyConfigSource: {
+          get: () => ({
+            version: 1,
+            appsAuthRelay: true,
+            search_broker: { route: "gpt-6-luna" },
+            routed_agents: { enabled, prefer_native_spawn_models: prefer },
+          }),
+          subscribe: () => () => {},
+        },
+      });
+      const response = await fetch(`${proxy.origin}/backend-api/codex/models`);
+      expect(response.status).toBe(200);
+      return (
+        (await response.json()) as { models: Array<{ slug: string; priority: number }> }
+      ).models.map((model) => [model.slug, model.priority]);
+    };
+    const original = [
+      ["kimi-k3", 1],
+      ["gpt-5.6-terra", 2],
+    ];
+    expect(await catalog(false, true)).toEqual(original);
+    expect(await catalog(true, false)).toEqual(original);
+    expect(await catalog(true, true)).toEqual([
+      ["gpt-5.6-terra", 1],
+      ["kimi-k3", 2],
+    ]);
+  });
+
   it("advertises a route templated on a fixture-only model", async () => {
     const chatgpt = await startHttpServer((_request, response) => {
       response.setHeader("content-type", "application/json");
@@ -4255,7 +4296,7 @@ function routedAgentsConfig(): Pick<ProxyConfigStore, "get" | "subscribe"> {
       version: 1,
       appsAuthRelay: true,
       search_broker: { route: "gpt-6-luna" },
-      routed_agents: { enabled: true },
+      routed_agents: { enabled: true, prefer_native_spawn_models: false },
     }),
     subscribe: () => () => {},
   };

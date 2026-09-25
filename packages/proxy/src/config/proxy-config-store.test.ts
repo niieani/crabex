@@ -12,7 +12,7 @@ describe("proxy config", () => {
       version: 1,
       appsAuthRelay: true,
       search_broker: { route: "gpt-6-luna" },
-      routed_agents: { enabled: false, instructions: "" },
+      routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
     });
     const observed: boolean[] = [];
     const unsubscribe = store.subscribe(() => observed.push(store.get().appsAuthRelay));
@@ -22,7 +22,7 @@ describe("proxy config", () => {
       version: 1,
       appsAuthRelay: false,
       search_broker: { route: "gpt-6-luna" },
-      routed_agents: { enabled: false, instructions: "" },
+      routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
     });
     expect((await openProxyConfigStore(path)).get().appsAuthRelay).toBe(false);
     unsubscribe();
@@ -35,7 +35,7 @@ describe("proxy config", () => {
       version: 1,
       appsAuthRelay: true,
       search_broker: { route: "gpt-6-luna" },
-      routed_agents: { enabled: false, instructions: "" },
+      routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
     });
     expect(() => parseProxyConfig({ version: 1, search_broker: { route: "" } })).toThrow(
       "search_broker.route",
@@ -44,6 +44,18 @@ describe("proxy config", () => {
     expect(() => parseProxyConfig({ version: 1, routed_agents: { enabled: "yes" } })).toThrow(
       "routed_agents.enabled",
     );
+    expect(() =>
+      parseProxyConfig({
+        version: 1,
+        routed_agents: { enabled: true, prefer_native_spawn_models: "yes" },
+      }),
+    ).toThrow("routed_agents.prefer_native_spawn_models");
+    expect(
+      parseProxyConfig({
+        version: 1,
+        routed_agents: { enabled: true, prefer_native_spawn_models: true },
+      }).routed_agents.prefer_native_spawn_models,
+    ).toBe(true);
     expect(() => parseProxyConfig({ version: 2 })).toThrow("version 1");
     expect(
       parseProxyConfig({ version: 1, routed_agents: { enabled: true, instructions: "Use GLM" } })

@@ -1010,10 +1010,13 @@ async function proxyHttpRequest(
       headers: downstreamResponseHeaders,
     });
     if (isModelsRequest(request.method, requestUrl.pathname)) {
+      const routedAgents = proxyConfigSource?.get().routed_agents;
       return await transformModelsResponse(downstream, {
         routes,
         adjustments: routeSet.adjustments,
         fixture: { models: fixtureModels, pins: routeSet.fixturePins },
+        preferNativeSpawnModels:
+          routedAgents?.enabled === true && routedAgents.prefer_native_spawn_models,
         observe:
           upstreamCache === undefined ? undefined : (body) => upstreamCache.observe("models", body),
         applyTransformations: (models) =>

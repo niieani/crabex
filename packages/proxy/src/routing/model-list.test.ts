@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { transformModels, transformModelsResponse } from "./model-list.ts";
+import {
+  nativeSpawnModelSlots,
+  prioritizeNativeSpawnModels,
+  transformModels,
+  transformModelsResponse,
+} from "./model-list.ts";
 import { modelRouteFromConfig, type ModelRoute } from "./model-routes.ts";
 
 const route: ModelRoute = modelRouteFromConfig({
@@ -33,6 +38,69 @@ const template = {
 };
 
 describe("transformModels", () => {
+  it("computes five native spawn slots from priority, picker visibility, and V2 support", () => {
+    const models = [
+      { slug: "hidden", visibility: "hide", priority: 1 },
+      { slug: "disabled", visibility: "list", multi_agent_version: "disabled", priority: 2 },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        slug: `native-${index + 1}`,
+        visibility: "list",
+        multi_agent_version: index === 0 ? null : "v2",
+        priority: index + 3,
+      })),
+    ].reverse();
+    expect(nativeSpawnModelSlots(models)).toEqual([
+      "native-1",
+      "native-2",
+      "native-3",
+      "native-4",
+      "native-5",
+    ]);
+  });
+
+  it("moves plaintext routes behind native and upstream models without changing group order", () => {
+    const plain = { ...route, handoffClass: "plaintext" as const };
+    const models = [
+      { slug: "native-a", visibility: "list", priority: 1 },
+      { slug: "kimi-k3", visibility: "list", priority: 2 },
+      { slug: "native-b", visibility: "list", priority: 3 },
+      { slug: "upstream", visibility: "list", priority: 4 },
+    ];
+    const ordered = prioritizeNativeSpawnModels(models, [plain]);
+    expect(ordered.map((model) => [model.slug, model.priority])).toEqual([
+      ["native-a", 1],
+      ["native-b", 2],
+      ["upstream", 3],
+      ["kimi-k3", 4],
+    ]);
+    expect(nativeSpawnModelSlots(ordered)).toEqual(["native-a", "native-b", "upstream", "kimi-k3"]);
+    expect(models[1]?.priority).toBe(2);
+  });
+
+  it("removes a plaintext route from the five native spawn slots when enough native models exist", () => {
+    const opus = {
+      ...route,
+      handoffClass: "plaintext" as const,
+      model: { ...route.model, slug: "claude-opus-5.5" },
+    };
+    const models = [
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
+      "claude-opus-5.5",
+      "gpt-5.6-sol",
+      "gpt-5.6-luna",
+    ].map((slug, index) => ({ slug, priority: index + 1, visibility: "list" }));
+    expect(nativeSpawnModelSlots(models)).toContain("claude-opus-5.5");
+    expect(nativeSpawnModelSlots(prioritizeNativeSpawnModels(models, [opus]))).toEqual([
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-luna",
+    ]);
+  });
+
   it("applies local capability overrides and removes inherited lifecycle metadata", () => {
     const result = transformModels({ models: [template] }, [route]);
 
@@ -335,6 +403,29 @@ describe("transformModels", () => {
 });
 
 describe("transformModelsResponse", () => {
+  it("changes served catalog priority only when native spawn preference is enabled", async () => {
+    const plain = { ...route, handoffClass: "plaintext" as const };
+    const upstream = () =>
+      Response.json({ models: [{ ...template, visibility: "list", priority: 2 }] });
+    const off = await transformModelsResponse(upstream(), { routes: [plain] });
+    const on = await transformModelsResponse(upstream(), {
+      routes: [plain],
+      preferNativeSpawnModels: true,
+    });
+    const offModels = ((await off.json()) as { models: Array<{ slug: string; priority: number }> })
+      .models;
+    const onModels = ((await on.json()) as { models: Array<{ slug: string; priority: number }> })
+      .models;
+    expect(offModels.map((model) => [model.slug, model.priority])).toEqual([
+      ["kimi-k3", 1],
+      ["gpt-5.6-terra", 2],
+    ]);
+    expect(onModels.map((model) => [model.slug, model.priority])).toEqual([
+      ["gpt-5.6-terra", 1],
+      ["kimi-k3", 2],
+    ]);
+  });
+
   it("keeps policy gates after local catalog transformations", async () => {
     const restricted = modelRouteFromConfig({
       authorization_env: "TEST_KEY",

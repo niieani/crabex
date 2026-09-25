@@ -1,6 +1,7 @@
 import type { ModelAdjustment, ModelRoute } from "./model-routes.ts";
 
 export type ModelDefinition = Record<string, unknown> & { slug: string };
+export const NATIVE_SPAWN_MODEL_SLOT_COUNT = 5;
 
 type ModelsResponse = Record<string, unknown> & { models: ModelDefinition[] };
 
@@ -141,6 +142,7 @@ export interface TransformModelsResponseOptions {
   fixture?: ModelsFixtureOptions;
   observe?: (body: unknown) => Promise<void> | void;
   applyTransformations?: (models: ModelDefinition[]) => ModelDefinition[];
+  preferNativeSpawnModels?: boolean;
 }
 
 export async function transformModelsResponse(
@@ -218,6 +220,15 @@ export async function transformModelsResponse(
       };
     }
   }
+  if (options.preferNativeSpawnModels) {
+    const models = modelsArrayOf(transformed);
+    if (models !== undefined) {
+      transformed = {
+        ...(transformed as Record<string, unknown>),
+        models: prioritizeNativeSpawnModels(models, routes),
+      };
+    }
+  }
   const headers = new Headers(response.headers);
   headers.delete("content-encoding");
   headers.delete("content-length");
@@ -226,6 +237,40 @@ export async function transformModelsResponse(
     headers,
     status: response.status,
     statusText: response.statusText,
+  });
+}
+
+/** Codex sorts by priority before taking its first five picker-visible V2 models. */
+export function nativeSpawnModelSlots(models: readonly ModelDefinition[]): string[] {
+  return catalogPriorityOrder(models)
+    .filter((model) => model.visibility === "list" && model.multi_agent_version !== "disabled")
+    .slice(0, NATIVE_SPAWN_MODEL_SLOT_COUNT)
+    .map((model) => model.slug);
+}
+
+/** Move plaintext routes behind all native-capable entries, including upstream models. */
+export function prioritizeNativeSpawnModels(
+  models: readonly ModelDefinition[],
+  routes: readonly ModelRoute[],
+): ModelDefinition[] {
+  const plaintext = new Set(
+    routes.filter((route) => route.handoffClass === "plaintext").map((route) => route.model.slug),
+  );
+  const ordered = catalogPriorityOrder(models);
+  const native = ordered.filter((model) => !plaintext.has(model.slug));
+  const routed = ordered.filter((model) => plaintext.has(model.slug));
+  const partitioned = [...native, ...routed];
+  if (partitioned.every((model, index) => model === ordered[index])) return ordered;
+  return partitioned.map((model, index) => ({ ...model, priority: index + 1 }));
+}
+
+function catalogPriorityOrder(models: readonly ModelDefinition[]): ModelDefinition[] {
+  return [...models].sort((left, right) => {
+    const leftPriority =
+      typeof left.priority === "number" ? left.priority : Number.MAX_SAFE_INTEGER;
+    const rightPriority =
+      typeof right.priority === "number" ? right.priority : Number.MAX_SAFE_INTEGER;
+    return leftPriority - rightPriority;
   });
 }
 
