@@ -14,6 +14,7 @@ vi.mock("../lib/api.ts", () => ({
     routes: ["Astra", "Sol", "Luna"].map((name, index) => ({
       authorization_env: "GATEWAY_KEY",
       upstream: "https://gateway.example/v1",
+      effective_handoff_class: name === "Luna" ? "plaintext" : "native-encrypted",
       model: {
         slug: name,
         template_slug: name,
@@ -25,6 +26,7 @@ vi.mock("../lib/api.ts", () => ({
     })),
     adjustments: [{ slug: "other", overrides: { context_window: 123 } }],
     fixture_pins: ["other"],
+    native_spawn_slots: { limit: 5, slugs: ["Astra", "Luna"] },
   }),
   getModelRouteEnvStatus: async () => ({ GATEWAY_KEY: true }),
   getProxyConfig: async () => ({
@@ -59,6 +61,20 @@ function setup() {
 }
 
 describe("ModelRoutesPage ordering", () => {
+  it("badges native spawn slots and warns when a plaintext route occupies one", async () => {
+    setup();
+    await screen.findByRole("button", { name: "Move Astra up" });
+    expect(screen.getByText("Native spawn slot 1/5")).toBeTruthy();
+    expect(screen.getByText("Native spawn slot 2/5")).toBeTruthy();
+    expect(
+      screen
+        .getAllByRole("alert")
+        .some((alert) =>
+          alert.textContent?.includes("Offered via encrypted tool; will be refused"),
+        ),
+    ).toBe(true);
+  });
+
   it("saves moves in both directions with matching priorities and preserves route settings", async () => {
     vi.mocked(putModelRoutes).mockImplementation(async (set) => set);
     const client = setup();

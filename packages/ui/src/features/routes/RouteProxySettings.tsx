@@ -11,7 +11,10 @@ export function RouteProxySettings({ routes }: { routes: ModelRouteConfig[] }) {
   const query = useQuery({ queryKey: ["proxy-config"], queryFn: getProxyConfig });
   const mutation = useMutation({
     mutationFn: patchProxyConfig,
-    onSuccess: (state) => client.setQueryData(["proxy-config"], state),
+    onSuccess: (state) => {
+      client.setQueryData(["proxy-config"], state);
+      void client.invalidateQueries({ queryKey: ["model-routes"] });
+    },
   });
   const state = query.data;
   useEffect(() => {
@@ -62,7 +65,12 @@ export function RouteProxySettings({ routes }: { routes: ModelRouteConfig[] }) {
               aria-checked={state.routed_agents.enabled}
               disabled={mutation.isPending}
               onClick={() =>
-                mutation.mutate({ routed_agents: { enabled: !state.routed_agents.enabled } })
+                mutation.mutate({
+                  routed_agents: {
+                    ...state.routed_agents,
+                    enabled: !state.routed_agents.enabled,
+                  },
+                })
               }
               className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-50 ${
                 state.routed_agents.enabled ? "bg-accent-dim text-accent" : "bg-canvas text-muted"
@@ -75,6 +83,36 @@ export function RouteProxySettings({ routes }: { routes: ModelRouteConfig[] }) {
             Adds routed_agents tools for native parents to reach routes in the plaintext handoff
             class. This opt-in relies on undocumented Codex backend behavior. Native-to-native agent
             tools stay encrypted.
+          </p>
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <h4 className="text-xs font-semibold">Prefer native models in spawn list</h4>
+            <button
+              type="button"
+              role="switch"
+              aria-label="Prefer native models in spawn list"
+              aria-checked={state.routed_agents.prefer_native_spawn_models ?? false}
+              disabled={mutation.isPending || !state.routed_agents.enabled}
+              onClick={() =>
+                mutation.mutate({
+                  routed_agents: {
+                    ...state.routed_agents,
+                    prefer_native_spawn_models: !state.routed_agents.prefer_native_spawn_models,
+                  },
+                })
+              }
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-50 ${
+                state.routed_agents.prefer_native_spawn_models
+                  ? "bg-accent-dim text-accent"
+                  : "bg-canvas text-muted"
+              }`}
+            >
+              {state.routed_agents.prefer_native_spawn_models ? "Enabled" : "Disabled"}
+            </button>
+          </div>
+          <p className="mt-2 text-[11px] leading-5 text-muted">
+            Moves plaintext-class routes after native-capable models in the served catalog. This
+            also changes /model picker order. If fewer than five native models are visible, a
+            plaintext route may still appear in the native spawn list.
           </p>
           <label htmlFor="routed-agent-instructions" className="mt-3 block text-xs font-semibold">
             Routed agent instructions

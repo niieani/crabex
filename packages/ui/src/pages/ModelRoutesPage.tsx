@@ -135,6 +135,11 @@ export function ModelRoutesPage() {
           </p>
         ) : null}
         <RouteProxySettings routes={set.routes} />
+        {set.native_spawn_slots?.slugs === null ? (
+          <p className="mb-4 text-xs text-muted">
+            Native spawn slots unavailable: {set.native_spawn_slots.unavailable_reason}
+          </p>
+        ) : null}
         <div className="space-y-2">
           {set.routes.length === 0 ? (
             <div className="rounded-xl border border-dashed border-line p-10 text-center text-sm text-muted">
@@ -145,6 +150,8 @@ export function ModelRoutesPage() {
               <RouteCard
                 key={route.model.slug}
                 route={route}
+                nativeSpawnSlot={set.native_spawn_slots?.slugs?.indexOf(route.model.slug) ?? -1}
+                nativeSpawnLimit={set.native_spawn_slots?.limit ?? 5}
                 pending={mutation.isPending}
                 canMoveUp={index > 0}
                 canMoveDown={index < set.routes.length - 1}
@@ -283,6 +290,8 @@ function breakerUntilFor(
 
 function RouteCard({
   route,
+  nativeSpawnSlot,
+  nativeSpawnLimit,
   envSet,
   routes,
   defaultBroker,
@@ -298,6 +307,8 @@ function RouteCard({
   onMoveDown,
 }: {
   route: ModelRouteConfig;
+  nativeSpawnSlot: number;
+  nativeSpawnLimit: number;
   envSet?: boolean;
   routes: ModelRouteConfig[];
   defaultBroker: string;
@@ -362,6 +373,11 @@ function RouteCard({
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5 text-[10px] text-muted">
             <Tag>{route.model.slug}</Tag>
+            {nativeSpawnSlot < 0 ? null : (
+              <span className="rounded-full border border-accent/40 px-2.5 py-1 text-accent">
+                Native spawn slot {nativeSpawnSlot + 1}/{nativeSpawnLimit}
+              </span>
+            )}
             <Tag>template:{route.model.template_slug}</Tag>
             <Tag>priority:{route.model.priority}</Tag>
             <Tag>{route.upstream}</Tag>
@@ -379,6 +395,12 @@ function RouteCard({
               {envSet === undefined ? "" : envSet ? " set" : " missing"}
             </Tag>
           </div>
+          {enabled && nativeSpawnSlot >= 0 && route.effective_handoff_class === "plaintext" ? (
+            <p role="alert" className="mt-3 rounded-md bg-danger-dim px-3 py-2 text-xs text-danger">
+              Offered via encrypted tool; will be refused — reorder this route or enable “Prefer
+              native models in spawn list”.
+            </p>
+          ) : null}
           {telemetry === undefined ? null : <RouteStats telemetry={telemetry} />}
           {breakerUntil === undefined ? null : (
             <p className="mt-3 rounded-md bg-danger-dim px-3 py-2 text-[10px] text-danger">

@@ -13,7 +13,7 @@ const state: ProxyConfigState = {
   appsAuthRelay: true,
   allowAppsAuthRelay: true,
   search_broker: { route: "missing-search" },
-  routed_agents: { enabled: false },
+  routed_agents: { enabled: false, prefer_native_spawn_models: false },
 };
 
 const broker: ModelRouteConfig = {
@@ -84,7 +84,7 @@ it("shows missing default broker and saves a Responses route selection and nativ
   fireEvent.click(screen.getByRole("switch", { name: "Native parents to routed agents" }));
   await waitFor(() =>
     expect(vi.mocked(patchProxyConfig).mock.calls[1]?.[0]).toEqual({
-      routed_agents: { enabled: true },
+      routed_agents: { enabled: true, prefer_native_spawn_models: false },
     }),
   );
   fireEvent.change(screen.getByLabelText("Routed agent instructions"), {
@@ -93,7 +93,21 @@ it("shows missing default broker and saves a Responses route selection and nativ
   fireEvent.click(screen.getByRole("button", { name: "Save instructions" }));
   await waitFor(() =>
     expect(vi.mocked(patchProxyConfig).mock.calls[2]?.[0]).toEqual({
-      routed_agents: { enabled: true, instructions: "Use these routes for narrow reviews" },
+      routed_agents: {
+        enabled: true,
+        prefer_native_spawn_models: false,
+        instructions: "Use these routes for narrow reviews",
+      },
+    }),
+  );
+  fireEvent.click(screen.getByRole("switch", { name: "Prefer native models in spawn list" }));
+  await waitFor(() =>
+    expect(vi.mocked(patchProxyConfig).mock.calls[3]?.[0]).toEqual({
+      routed_agents: {
+        enabled: true,
+        prefer_native_spawn_models: true,
+        instructions: "Use these routes for narrow reviews",
+      },
     }),
   );
 });

@@ -304,6 +304,12 @@ export interface ModelRouteSet {
   routes: ModelRouteConfig[];
   adjustments?: ModelAdjustment[];
   fixture_pins?: string[];
+  native_spawn_slots?: {
+    limit: number;
+    slugs: string[] | null;
+    observed_at?: string;
+    unavailable_reason?: string;
+  };
 }
 
 export type ModelDefinition = Record<string, unknown> & { slug: string };
@@ -352,5 +358,9 @@ export interface ProxyConfigState {
   appsAuthRelayOverride?: boolean;
   allowAppsAuthRelay: boolean;
   search_broker: { route: string };
-  routed_agents: { enabled: boolean; instructions?: string };
+  routed_agents: {
+    enabled: boolean;
+    instructions?: string;
+    prefer_native_spawn_models: boolean;
+  };
 }

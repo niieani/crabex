@@ -61,6 +61,7 @@ To let a native parent reach plaintext-class routes, enable proxy-wide `routed_a
   "version": 1,
   "routed_agents": {
     "enabled": true,
+    "prefer_native_spawn_models": false,
     "instructions": "Use the fast route for short checks."
   }
 }
@@ -70,7 +71,15 @@ The proxy adds a non-reserved `routed_agents` namespace to native ChatGPT reques
 
 The proxy restores a `routed_agents` call to Codex's `collaboration` name with an empty encrypted-args marker, then restores the variant name in replay. It tracks child paths and models in the agent tree, including after a proxy restart, so native agents can message plaintext-class parents and siblings. Relative targets resolve against the caller's canonical path; unknown paths fail visibly. `followup_task` cannot target `/root` in Codex; use `send_message` for a root parent. To let a child delegate again, enable Codex's V2 feature and advertise `multi_agent_version: "v2"` for that model. The global feature flag and the active thread's chosen version take precedence over a later catalog edit.
 
-If a native agent uses reserved `collaboration.spawn_agent` for a plaintext-class route, its encrypted task fails at the child with an instruction to use `routed_agents.spawn_agent` for that slug. The same refusal points to `routed_agents.send_message` or `followup_task` for encrypted messages. With the opt-in off, the error explains how to enable it. The refusal appears as an errored child or tool output to the parent; the proxy never forwards unreadable ciphertext. Codex's native collaboration tool advertises only its picker-visible model overrides, which may omit an otherwise accepted route. Explicit model selection or the `routed_agents` enum avoids that discovery limit.
+If a native agent uses reserved `collaboration.spawn_agent` for a plaintext-class route, its encrypted task fails at the child with an instruction to use `routed_agents.spawn_agent` for that slug. The same refusal points to `routed_agents.send_message` or `followup_task` for encrypted messages. With the opt-in off, the error explains how to enable it. The refusal appears as an errored child or tool output to the parent; the proxy never forwards unreadable ciphertext.
+
+### Native spawn model slots
+
+Codex CLI 0.156.1 and current Codex source cap the model names in the native `collaboration.spawn_agent` description at **five** (`NATIVE_SPAWN_MODEL_SLOT_COUNT` in the proxy). Codex sorts the effective catalog by `priority`, skips entries whose picker visibility is hidden or whose V2 version is disabled, then takes five. Route priority and the Model routes page's reorder arrows therefore affect this list. A route outside the five can still be selected explicitly; `routed_agents.spawn_agent` lists eligible plaintext-class routes separately without this cap.
+
+The Model routes page badges routed models occupying a native spawn slot. A plaintext-class route in one of those slots is also flagged: the encrypted native tool may choose it, then the child refuses the unreadable task. The badge uses the last observed upstream `/models` response plus route overrides; it is unavailable until that response is observed, and a new Codex thread/catalog refresh may be needed before a changed list appears in a running client.
+
+`routed_agents.prefer_native_spawn_models` is an optional proxy-wide switch, off by default and active only when `routed_agents.enabled` is true. It moves plaintext-class routes after native-encrypted routes and upstream models in the served `/models` array **and priority order**. This also changes the `/model` picker order. If fewer than five native candidates are picker-visible, a plaintext route can still occupy a native slot. To exclude a route from the native list entirely, set its advertised `visibility` override to `"hide"` (Codex derives `show_in_picker: false`); this also hides it from the `/model` picker. The proxy does not change route order or priorities when the switch is off.
 
 A full-history fork can inherit another provider's reasoning or instructions. The proxy removes reasoning before the child's task only when the recorded parent and child have different reasoning families. Native ChatGPT models share a family within the account; routed Responses models share one only for the same upstream origin and authorization; Anthropic envelopes carry their own authenticated route scope. Same-family replay and stored continuation retain reasoning. A proxy-sealed Anthropic `acta1:` envelope sent to a non-Anthropic route is removed. Unknown provenance is kept. A provably foreign opaque compaction fails with 422 because removing it would lose the summary. For inherited instructions that mislead the child, use a short task or `fork_turns: "none"`.
 
