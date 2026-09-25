@@ -3,30 +3,37 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { parseModelRouteSet, type ModelRouteSetData } from "../routing/model-routes.ts";
+import { validateTemplateReplacements } from "../routing/model-list.ts";
 
 export interface ModelRouteStore {
   get(): ModelRouteSetData;
   replace(set: ModelRouteSetData): Promise<void>;
 }
 
-export async function openModelRouteStore(filePath: string): Promise<ModelRouteStore> {
+export async function openModelRouteStore(
+  filePath: string,
+  upstreamModels?: () => unknown,
+): Promise<ModelRouteStore> {
   let initial: ModelRouteSetData = { routes: [], adjustments: [], fixture_pins: [] };
   try {
     initial = parseModelRouteSet(JSON.parse(await readFile(filePath, "utf8")));
+    validateTemplateReplacements(initial, upstreamModels?.());
     warnLegacyToolTypes(initial);
   } catch (error) {
     if (!isMissingFile(error)) throw error;
   }
-  return new FileModelRouteStore(filePath, initial);
+  return new FileModelRouteStore(filePath, initial, upstreamModels);
 }
 
 class FileModelRouteStore implements ModelRouteStore {
   #set: ModelRouteSetData;
   readonly #filePath: string;
+  readonly #upstreamModels?: () => unknown;
 
-  constructor(filePath: string, initial: ModelRouteSetData) {
+  constructor(filePath: string, initial: ModelRouteSetData, upstreamModels?: () => unknown) {
     this.#filePath = filePath;
     this.#set = initial;
+    this.#upstreamModels = upstreamModels;
   }
 
   get(): ModelRouteSetData {
@@ -35,6 +42,7 @@ class FileModelRouteStore implements ModelRouteStore {
 
   async replace(value: ModelRouteSetData): Promise<void> {
     const set = parseModelRouteSet({ version: 1, ...value });
+    validateTemplateReplacements(set, this.#upstreamModels?.());
     await mkdir(dirname(this.#filePath), { recursive: true });
     const temporaryPath = `${this.#filePath}.${randomUUID()}.tmp`;
     await writeFile(temporaryPath, `${JSON.stringify({ version: 1, ...set }, null, 2)}\n`, {

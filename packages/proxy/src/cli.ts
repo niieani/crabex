@@ -92,9 +92,12 @@ async function main(): Promise<void> {
   const capturePath = join(options.capturesDirectory, captureFileName());
   const captureSink = await openNdjsonCaptureSink(capturePath);
   const transformationStore = await openTransformationStore(options.transformationsPath);
-  const modelRouteStore = await openModelRouteStore(options.modelRoutesPath);
-  const configBundleStore = await openConfigBundleStore(options.configBundlePath);
   const upstreamCacheStore = await openUpstreamCacheStore(options.upstreamCachePath);
+  const modelRouteStore = await openModelRouteStore(
+    options.modelRoutesPath,
+    () => upstreamCacheStore.get().models?.body,
+  );
+  const configBundleStore = await openConfigBundleStore(options.configBundlePath);
   const statsStore = await StatsStore.open(options.statsPath);
   const snapshotRepository = new FileCaptureRepository(
     options.capturesDirectory,

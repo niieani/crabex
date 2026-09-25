@@ -140,4 +140,15 @@ describe("ModelRoutesPage ordering", () => {
       (screen.getByRole("button", { name: "Move Sol up" }) as HTMLButtonElement).disabled,
     ).toBe(false);
   });
+
+  it("shows an unmatched template replacement as a visible warning", async () => {
+    vi.mocked(putModelRoutes).mockRejectedValueOnce(
+      new Error('route[0].model.template_replacements find "old sentence" must match exactly once'),
+    );
+    setup();
+    fireEvent.click(await screen.findByRole("button", { name: "Move Sol up" }));
+    expect((await screen.findByText("Template replacement warning:")).textContent).toContain(
+      "Template replacement warning",
+    );
+  });
 });

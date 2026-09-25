@@ -82,6 +82,76 @@ describe("model route store", () => {
     );
   });
 
+  it("rejects unmatched replacements on load and save before changing the file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-routes-"));
+    const path = join(directory, "routes.json");
+    const mismatched = [
+      {
+        ...routes[0]!,
+        model: {
+          ...routes[0]!.model,
+          template_slug: "gpt-6-astra",
+          template_replacements: [{ find: "missing opening sentence", replace: "new" }],
+        },
+      },
+    ];
+    const store = await openModelRouteStore(path);
+    await expect(
+      store.replace({ routes: mismatched, adjustments: [], fixture_pins: [] }),
+    ).rejects.toThrow(
+      'route[0].model.template_replacements find "missing opening sentence" must match exactly once',
+    );
+    expect(store.get().routes).toEqual([]);
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await Bun.write(path, JSON.stringify({ version: 1, routes: mismatched }));
+    await expect(openModelRouteStore(path)).rejects.toThrow("must match exactly once");
+  });
+
+  it("uses the resolved upstream template and honors fixture pins", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-routes-"));
+    const path = join(directory, "routes.json");
+    const replacement = [
+      {
+        ...routes[0]!,
+        model: {
+          ...routes[0]!.model,
+          template_slug: "gpt-6-astra",
+          template_replacements: [
+            { find: "You are Codex, an agent based on GPT-6.", replace: "new" },
+          ],
+        },
+      },
+    ];
+    const upstream = () => ({
+      models: [{ slug: "gpt-6-astra", model_messages: { instructions_template: "Upstream text" } }],
+    });
+    const store = await openModelRouteStore(path, upstream);
+    await expect(
+      store.replace({ routes: replacement, adjustments: [], fixture_pins: [] }),
+    ).rejects.toThrow("must match exactly once");
+    await store.replace({ routes: replacement, adjustments: [], fixture_pins: ["gpt-6-astra"] });
+    expect((await openModelRouteStore(path, upstream)).get().routes).toEqual(replacement);
+  });
+
+  it("validates the instruction text after model overrides, as catalog generation does", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "act-routes-"));
+    const path = join(directory, "routes.json");
+    const store = await openModelRouteStore(path);
+    const adjusted = [
+      {
+        ...routes[0]!,
+        model: {
+          ...routes[0]!.model,
+          template_slug: "gpt-6-astra",
+          overrides: { model_messages: { instructions_template: "Custom opening sentence." } },
+          template_replacements: [{ find: "Custom opening sentence.", replace: "Replacement." }],
+        },
+      },
+    ];
+    await store.replace({ routes: adjusted, adjustments: [], fixture_pins: [] });
+    expect(store.get().routes).toEqual(adjusted);
+  });
+
   it("warns when loading or saving legacy allowed_tool_types", async () => {
     const directory = await mkdtemp(join(tmpdir(), "act-routes-"));
     const path = join(directory, "routes.json");

@@ -1,4 +1,5 @@
-import type { ModelAdjustment, ModelRoute } from "./model-routes.ts";
+import type { ModelAdjustment, ModelRoute, ModelRouteSetData } from "./model-routes.ts";
+import { modelsFixture } from "./models-fixture.ts";
 
 export type ModelDefinition = Record<string, unknown> & { slug: string };
 export const NATIVE_SPAWN_MODEL_SLOT_COUNT = 5;
@@ -16,6 +17,75 @@ export interface ModelsFixtureOptions {
   pins?: readonly string[];
 }
 
+/** Check instruction edits against the same upstream/fixture template selected for /models. */
+export function validateTemplateReplacements(
+  set: ModelRouteSetData,
+  upstreamResponse?: unknown,
+): void {
+  const templates = resolveTemplates(upstreamResponse, {
+    models: modelsFixture(),
+    pins: set.fixture_pins,
+  });
+  for (const [index, route] of set.routes.entries()) {
+    const replacements = route.model.template_replacements ?? [];
+    if (replacements.length === 0) continue;
+    const template = templates.get(route.model.template_slug);
+    if (!template) {
+      throw new Error(
+        `route[${index}].model.template_slug ${route.model.template_slug} cannot be resolved for template_replacements`,
+      );
+    }
+    const messages = { ...template, ...route.model.overrides }.model_messages;
+    if (!isRecord(messages) || typeof messages.instructions_template !== "string") {
+      throw new Error(
+        `route[${index}].model.template_replacements requires an instruction template`,
+      );
+    }
+    applyInstructionReplacements(
+      messages.instructions_template,
+      replacements,
+      `route[${index}].model.template_replacements`,
+    );
+  }
+}
+
+function resolveTemplates(
+  response: unknown,
+  fixture?: ModelsFixtureOptions,
+): Map<string, ModelDefinition> {
+  const fixtureBySlug = new Map((fixture?.models ?? []).map((model) => [model.slug, model]));
+  const pins = new Set(fixture?.pins ?? []);
+  const upstream =
+    isRecord(response) && Array.isArray(response.models)
+      ? modelDefinitions(response.models, "upstream /models response.models")
+      : [];
+  const templates = new Map(
+    upstream.map((model) => [
+      model.slug,
+      pins.has(model.slug) ? (fixtureBySlug.get(model.slug) ?? model) : model,
+    ]),
+  );
+  for (const model of fixture?.models ?? [])
+    if (!templates.has(model.slug)) templates.set(model.slug, model);
+  return templates;
+}
+
+function applyInstructionReplacements(
+  source: string,
+  replacements: readonly { find: string; replace: string }[],
+  label: string,
+): string {
+  let instructions = source;
+  for (const { find, replace } of replacements) {
+    const first = instructions.indexOf(find);
+    if (first < 0 || instructions.indexOf(find, first + find.length) >= 0) {
+      throw new Error(`${label} find ${JSON.stringify(find)} must match exactly once`);
+    }
+    instructions = instructions.slice(0, first) + replace + instructions.slice(first + find.length);
+  }
+  return instructions;
+}
+
 export function transformModels(
   response: unknown,
   modelRoutes: readonly ModelRoute[],
@@ -31,10 +101,7 @@ export function transformModels(
   const upstreamModels = modelDefinitions(response.models, "upstream /models response.models").map(
     (model) => (pins.has(model.slug) ? (fixtureBySlug.get(model.slug) ?? model) : model),
   );
-  const templates = new Map(upstreamModels.map((model) => [model.slug, model]));
-  for (const fixtureModel of fixture?.models ?? []) {
-    if (!templates.has(fixtureModel.slug)) templates.set(fixtureModel.slug, fixtureModel);
-  }
+  const templates = resolveTemplates(response, fixture);
   const advertisedSlugs = new Set<string>();
   const advertisedModels = modelRoutes.map((route) => {
     if (advertisedSlugs.has(route.model.slug)) {
@@ -68,17 +135,11 @@ export function transformModels(
       if (!isRecord(messages) || typeof messages.instructions_template !== "string") {
         throw new Error(`routed model ${route.model.slug} requires an instruction template`);
       }
-      let instructions = messages.instructions_template;
-      for (const { find, replace } of route.model.templateReplacements) {
-        const first = instructions.indexOf(find);
-        if (first < 0 || instructions.indexOf(find, first + find.length) >= 0) {
-          throw new Error(
-            `routed model ${route.model.slug} requires exactly one instruction match: ${find}`,
-          );
-        }
-        instructions =
-          instructions.slice(0, first) + replace + instructions.slice(first + find.length);
-      }
+      const instructions = applyInstructionReplacements(
+        messages.instructions_template,
+        route.model.templateReplacements,
+        `routed model ${route.model.slug} requires exactly one instruction match:`,
+      );
       model.model_messages = { ...messages, instructions_template: instructions };
       model.base_instructions = instructions;
     }
@@ -99,7 +160,7 @@ export function transformModels(
       model.default_reasoning_level =
         route.model.overrides.default_reasoning_level ??
         (route.anthropic?.thinking === "disabled" ? "none" : "medium");
-      model.supported_reasoning_levels =
+      const reasoningLevels =
         route.model.overrides.supported_reasoning_levels ??
         (route.anthropic?.thinking === "disabled"
           ? ["none"]
@@ -110,11 +171,18 @@ export function transformModels(
               "high",
               "xhigh",
               "max",
-            ]
-        ).map((effort) => ({
-          effort,
-          description: effort === "none" ? "Disable thinking" : `${effort} reasoning effort`,
-        }));
+            ]);
+      model.supported_reasoning_levels = Array.isArray(reasoningLevels)
+        ? reasoningLevels.map((effort: unknown) =>
+            typeof effort === "string"
+              ? {
+                  effort,
+                  description:
+                    effort === "none" ? "Disable thinking" : `${effort} reasoning effort`,
+                }
+              : effort,
+          )
+        : reasoningLevels;
     }
     delete model.upgrade;
     return model;

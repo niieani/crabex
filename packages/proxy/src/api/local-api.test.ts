@@ -690,6 +690,38 @@ describe("local context API", () => {
     expect(sources.currentRoutes()).toEqual([]);
   });
 
+  it("returns a clear validation error for an unmatched template replacement", async () => {
+    const sources = stubSources({});
+    const api = createLocalApi({
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+    });
+    const route = {
+      ...routeConfigs[0]!,
+      model: {
+        ...routeConfigs[0]!.model,
+        template_slug: "gpt-6-astra",
+        template_replacements: [{ find: "old sentence", replace: "new sentence" }],
+      },
+    };
+    const response = await api.handle(
+      new Request("http://localhost/__agent-context-trimmer/api/model-routes", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: 1, routes: [route] }),
+      }),
+    );
+    expect(response?.status).toBe(400);
+    expect(await response?.json()).toEqual({
+      error: 'route[0].model.template_replacements find "old sentence" must match exactly once',
+    });
+    expect(sources.currentRoutes()).toEqual([]);
+  });
+
   it("rejects a tool policy action before saving a route", async () => {
     const sources = stubSources({});
     const api = createLocalApi({

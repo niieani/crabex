@@ -24,6 +24,7 @@ import {
   nativeSpawnModelSlots,
   prioritizeNativeSpawnModels,
   transformModels,
+  validateTemplateReplacements,
 } from "../routing/model-list.ts";
 import type { SnapshotSource } from "../recording/capture-repository.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
@@ -172,6 +173,7 @@ export function createLocalApi(options: {
         }
         if (url.pathname === `${API_PREFIX}/model-routes` && request.method === "PUT") {
           const set = parseModelRouteSet(await request.json());
+          validateTemplateReplacements(set, options.upstreamCache.get().models?.body);
           await options.modelRoutes.replace(set);
           return json(modelRoutesResponse(options.modelRoutes.get(), options));
         }

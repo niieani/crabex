@@ -263,6 +263,43 @@ describe("transformModels", () => {
     expect(transformModels(upstream, [rejected]).models[0]?.supports_search_tool).toBe(false);
   });
 
+  it("advertises explicit Anthropic effort overrides in Codex's object shape", () => {
+    const anthropic = modelRouteFromConfig({
+      api: "anthropic-messages",
+      authorization_env: "ANTHROPIC_KEY",
+      upstream: "https://api.example.com/anthropic",
+      model: {
+        description: "Claude",
+        display_name: "Claude",
+        priority: 1,
+        slug: "claude",
+        template_slug: "gpt-5.6-terra",
+        overrides: { supported_reasoning_levels: ["low", "high", "max"] },
+      },
+    });
+    const advertised = transformModels(
+      { models: [{ ...template, supported_reasoning_levels: [] }] },
+      [anthropic],
+    ).models[0];
+    expect(advertised?.supported_reasoning_levels).toEqual([
+      { effort: "low", description: "low reasoning effort" },
+      { effort: "high", description: "high reasoning effort" },
+      { effort: "max", description: "max reasoning effort" },
+    ]);
+    const objectOverride = {
+      ...anthropic,
+      model: {
+        ...anthropic.model,
+        overrides: { supported_reasoning_levels: [{ effort: "low", description: "Fast" }] },
+      },
+    };
+    expect(
+      transformModels({ models: [{ ...template, supported_reasoning_levels: [] }] }, [
+        objectOverride,
+      ]).models[0]?.supported_reasoning_levels,
+    ).toEqual([{ effort: "low", description: "Fast" }]);
+  });
+
   it("replaces one exact instruction span and updates the legacy field", () => {
     const instructions = "You are Codex, an agent based on GPT-5. Use the listed tools.";
     const routed: ModelRoute = {

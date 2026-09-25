@@ -130,7 +130,10 @@ export function ModelRoutesPage() {
           </div>
         </div>
         {mutation.isError ? (
-          <p className="mb-4 rounded-lg bg-danger-dim px-3 py-2 text-xs text-danger">
+          <p role="alert" className="mb-4 rounded-lg bg-danger-dim px-3 py-2 text-xs text-danger">
+            {mutation.error.message.includes("template_replacements") ? (
+              <strong>Template replacement warning: </strong>
+            ) : null}
             {mutation.error.message}
           </p>
         ) : null}
