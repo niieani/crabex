@@ -6,13 +6,13 @@ import { createWebUi } from "./web-ui.ts";
 
 describe("single-port web UI", () => {
   it("serves client routes and assets without claiming upstream API requests", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "relaydeck-web-"));
+    const directory = await mkdtemp(join(tmpdir(), "crabex-web-"));
     await mkdir(join(directory, "assets"));
-    await writeFile(join(directory, "index.html"), "<title>Relaydeck</title>");
+    await writeFile(join(directory, "index.html"), "<title>Crabex</title>");
     await writeFile(join(directory, "assets", "app-123.js"), "export {};");
     const handle = createWebUi(directory);
     const page = await handle(new Request("http://localhost/routes"));
-    expect(await page?.text()).toContain("Relaydeck");
+    expect(await page?.text()).toContain("Crabex");
     expect(page?.headers.get("cache-control")).toBe("no-cache");
     const asset = await handle(new Request("http://localhost/assets/app-123.js"));
     expect(asset?.headers.get("cache-control")).toContain("immutable");

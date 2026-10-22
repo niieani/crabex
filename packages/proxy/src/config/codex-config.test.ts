@@ -23,12 +23,9 @@ describe("applyCodexConfigToggle", () => {
     const next = applyCodexConfigToggle("", KEY, MANAGED, true);
 
     expect(next).toBe(
-      [
-        `# >>> agent-context-trimmer:${KEY} >>>`,
-        `${KEY} = "${MANAGED}"`,
-        `# <<< agent-context-trimmer:${KEY} <<<`,
-        "",
-      ].join("\n"),
+      [`# >>> crabex:${KEY} >>>`, `${KEY} = "${MANAGED}"`, `# <<< crabex:${KEY} <<<`, ""].join(
+        "\n",
+      ),
     );
     expect(effectiveValue(next)).toBe(MANAGED);
   });
@@ -40,10 +37,10 @@ describe("applyCodexConfigToggle", () => {
     expect(enabled).toBe(
       [
         `model = "gpt-5.6"`,
-        `# >>> agent-context-trimmer:${KEY} >>>`,
+        `# >>> crabex:${KEY} >>>`,
         `# ${KEY} = "https://api.openai.com/v1"`,
         `${KEY} = "${MANAGED}"`,
-        `# <<< agent-context-trimmer:${KEY} <<<`,
+        `# <<< crabex:${KEY} <<<`,
         "",
       ].join("\n"),
     );
@@ -58,7 +55,7 @@ describe("applyCodexConfigToggle", () => {
     const original = `model = "gpt-5.6"\n\n[profiles.work]\n${KEY} = "https://profile.example/v1"\n`;
     const enabled = applyCodexConfigToggle(original, KEY, MANAGED, true);
 
-    expect(enabled.startsWith(`# >>> agent-context-trimmer:${KEY} >>>`)).toBe(true);
+    expect(enabled.startsWith(`# >>> crabex:${KEY} >>>`)).toBe(true);
     expect(enabled).toContain(`[profiles.work]\n${KEY} = "https://profile.example/v1"`);
     const parsed = Bun.TOML.parse(enabled) as Record<string, unknown>;
     expect(parsed[KEY]).toBe(MANAGED);
@@ -89,9 +86,9 @@ describe("applyCodexConfigToggle", () => {
   });
 
   it("rejects an unclosed fence", () => {
-    const broken = `# >>> agent-context-trimmer:${KEY} >>>\n${KEY} = "${MANAGED}"\n`;
+    const broken = `# >>> crabex:${KEY} >>>\n${KEY} = "${MANAGED}"\n`;
     expect(() => applyCodexConfigToggle(broken, KEY, MANAGED, false)).toThrow(
-      `unclosed agent-context-trimmer fence for ${KEY}`,
+      `unclosed crabex fence for ${KEY}`,
     );
   });
 });

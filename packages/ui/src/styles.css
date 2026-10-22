@@ -101,13 +101,13 @@
   color: var(--color-ink);
 }
 .brand-mark {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  background: var(--color-accent);
-  color: #17210e;
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  /* The mark's dark shell needs a light tile to read on the dark sidebar. */
+  padding: 4px;
+  border-radius: 10px;
+  background: #f4efe6;
   flex-shrink: 0;
 }
 .brand-copy strong {

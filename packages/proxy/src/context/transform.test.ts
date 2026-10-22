@@ -63,7 +63,7 @@ describe("transformResponseCreate", () => {
 
     const result = transformResponseCreate(payload, transformations, {
       harness: { kind: "tui", version: "0.146.0" },
-      project: "agent-context-trimmer",
+      project: "crabex",
     });
 
     expect(result.payload).not.toBe(payload);

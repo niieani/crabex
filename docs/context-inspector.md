@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Agent Context Trimmer answers one primary question: what consumes the tokens supplied to a model before useful work begins, and which of those inputs can be safely removed or mechanically rewritten?
+Crabex answers one primary question: what consumes the tokens supplied to a model before useful work begins, and which of those inputs can be safely removed or mechanically rewritten?
 
 The primary workflow is one deliberately trivial Probe, such as asking the model to reply with a fixed string. The product is request-centric rather than a general session-history analyzer. Protocol events and timing remain useful diagnostics, but are not the main interface.
 
@@ -153,7 +153,7 @@ Regular expressions require bounded execution semantics. The implementation shou
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Agent Context Trimmer       Probe: latest ▾       Harness: TUI       Model: gpt-5.6-luna    │
+│ Crabex       Probe: latest ▾       Harness: TUI       Model: gpt-5.6-luna    │
 │ Effective input: 17,938 tokens · 8,960 cached        [Capture smoke] [Original | Effective] │
 ├──────────────────────────────┬────────────────────────────────────────────┬───────────────────┤
 │ INPUT COMPOSITION            │ CONTENT                                    │ TRANSFORMATION    │

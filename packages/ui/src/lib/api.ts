@@ -13,7 +13,7 @@ import type {
   UpstreamCacheState,
 } from "./types.ts";
 
-const API = "/__agent-context-trimmer/api";
+const API = "/__crabex/api";
 
 export async function getProxyConfig(): Promise<ProxyConfigState> {
   return (await (await request(`${API}/proxy-config`)).json()) as ProxyConfigState;

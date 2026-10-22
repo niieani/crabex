@@ -30,7 +30,7 @@ From the repository root:
 The official file is excluded from Oxfmt so that its bytes remain identical to
 the published catalog.
 
-The local `GET /__agent-context-trimmer/api/models-fixture` endpoint returns
+The local `GET /__crabex/api/models-fixture` endpoint returns
 `{ "models": [...] }` from the fixture. The proxied
 `GET /backend-api/codex/models` endpoint uses the live upstream response and
 preserves top-level upstream fields when passing through or transforming it.

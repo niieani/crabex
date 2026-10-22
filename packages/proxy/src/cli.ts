@@ -8,7 +8,8 @@ import { readTls, syncProxyStartupCodexCa, tlsStatus } from "./service/tls.ts";
 import { serviceCommand } from "./service/launch-agent.ts";
 import { createLocalApi } from "./api/local-api.ts";
 import { createWebUi, findUiDirectory } from "./api/web-ui.ts";
-import { createCodexConfigManager } from "./config/codex-config.ts";
+import { createCodexConfigManager, migrateCodexConfigFile } from "./config/codex-config.ts";
+import { migrateLocalDataDirectory } from "./config/legacy-migration.ts";
 import { openProxyConfigStore } from "./config/proxy-config-store.ts";
 import { openConfigBundleStore } from "./config/config-bundle-store.ts";
 import { openModelRouteStore } from "./config/model-route-store.ts";
@@ -23,45 +24,40 @@ import { openNdjsonCaptureSink } from "./recording/ndjson-capture-sink.ts";
 import { StatsStore } from "./recording/stats-store.ts";
 import { LiveRequestStore } from "./requests/live-request-store.ts";
 
-const HELP = `Relaydeck - agent control room
+const HELP = `Crabex - any model, living in Codex's shell
 
-Usage (agent-context-trimmer remains a compatible alias):
-  relaydeck proxy [options]
-  relaydeck service install [--https] [--env NAME]... [-- proxy options]
-  relaydeck service uninstall|status|restart|logs
-
-Legacy invocation:
-  agent-context-trimmer proxy [options]
-  agent-context-trimmer service install [--https] [--env NAME]... [-- proxy options]
-  agent-context-trimmer service uninstall|status|restart|logs
-  agent-context-trimmer service tls status|renew|remove
+Usage:
+  crabex proxy [options]
+  crabex service install [--https] [--env NAME]... [-- proxy options]
+  crabex service uninstall|status|restart|logs
+  crabex service tls status|renew|remove
 
 Service commands install a macOS LaunchAgent that starts at login. Install/update
 and restart use an independent worker; inspect service status/logs for completion.
 
 Options:
   --tls-dir <dir>      HTTPS certificate directory (cert.pem, key.pem, ca.pem)
-  --config <file>      Proxy settings (default: .agent-context-trimmer/config.json)
+  --config <file>      Proxy settings (default: .crabex/config.json)
   --no-apps-auth-relay Disable Apps credential reuse (enabled by default)
   --apps-auth-relay    Override config to enable Apps credential reuse
   --listen <host:port>  Listener address (default: 127.0.0.1:8765)
   --upstream <origin>   Upstream origin (default: https://chatgpt.com)
-  --captures <dir>      Capture directory (default: .agent-context-trimmer/captures)
+  --captures <dir>      Capture directory (default: .crabex/captures)
   --transformations <file>
-                        Transformation set (default: .agent-context-trimmer/transformations.json)
-  --model-routes <file> Model route set (default: .agent-context-trimmer/model-routes.json)
+                        Transformation set (default: .crabex/transformations.json)
+  --model-routes <file> Model route set (default: .crabex/model-routes.json)
   --config-bundle <file>
-                        Config bundle override (default: .agent-context-trimmer/config-bundle.json)
+                        Config bundle override (default: .crabex/config-bundle.json)
   --codex-config <file> Codex config for UI toggles (default: $CODEX_HOME/config.toml or
                         ~/.codex/config.toml)
   --upstream-cache <file>
                         Last observed upstream models/bundle responses
-                        (default: .agent-context-trimmer/upstream-cache.json)
+                        (default: .crabex/upstream-cache.json)
   --stats <file>        Persisted telemetry counters
-                        (default: .agent-context-trimmer/stats.json)
+                        (default: .crabex/stats.json)
   --snapshot-cache <file>
                         Context snapshot disk cache
-                        (default: .agent-context-trimmer/snapshot-cache.json)
+                        (default: .crabex/snapshot-cache.json)
   --project <key>       Optional project scope for captures and transformations
 `;
 
@@ -72,11 +68,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] !== "service" || args[1] === "install")
+    reportMigration(await migrateLocalDataDirectory());
   if (args[0] === "service") {
     await serviceCommand(args.slice(1));
     return;
   }
   const options = parseCliOptions(args);
+  reportMigration(await migrateCodexConfigFile(options.codexConfigPath));
   if (options.codexCaBundlePath !== undefined) {
     try {
       syncProxyStartupCodexCa({ path: options.codexCaBundlePath });
@@ -161,12 +160,16 @@ async function main(): Promise<void> {
     }),
   });
 
-  process.stdout.write(`Relaydeck UI & proxy: ${proxy.origin}\ncapturing ${capturePath}\n`);
+  process.stdout.write(`Crabex UI & proxy: ${proxy.origin}\ncapturing ${capturePath}\n`);
   await waitForShutdownSignal();
   await proxy.close();
   await captureSink.close();
   await statsStore.flush();
   await snapshotRepository.flush();
+}
+
+function reportMigration(notice: string | undefined): void {
+  if (notice !== undefined) process.stderr.write(`${notice}\n`);
 }
 
 function captureFileName(): string {

@@ -217,7 +217,7 @@ describe("managed local TLS", () => {
       set: (name: string, value: string) => values.set(name, value),
       unset: (name: string) => values.delete(name),
     };
-    syncProxyStartupCodexCa({ path: newPath }, { RELAYDECK_MANAGED_SERVICE: "1" }, environment);
+    syncProxyStartupCodexCa({ path: newPath }, { CRABEX_MANAGED_SERVICE: "1" }, environment);
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe(oldPath);
     syncPublishedCodexCa({ path: newPath, previous: oldPath }, true, environment);
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe(newPath);

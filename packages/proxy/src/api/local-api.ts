@@ -30,7 +30,7 @@ import type { SnapshotSource } from "../recording/capture-repository.ts";
 import type { StatsStore } from "../recording/stats-store.ts";
 import type { LiveRequestStore } from "../requests/live-request-store.ts";
 
-const API_PREFIX = "/__agent-context-trimmer/api";
+const API_PREFIX = "/__crabex/api";
 
 export interface LocalApi {
   handle(request: Request): Promise<Response | undefined>;

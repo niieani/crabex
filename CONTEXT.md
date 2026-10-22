@@ -1,6 +1,6 @@
-# Agent Context Trimmer
+# Crabex
 
-Agent Context Trimmer observes and transforms the effective context supplied by a Codex harness for an inference request.
+Crabex routes Codex model traffic and observes and transforms the effective context supplied by a Codex harness for an inference request. This glossary covers the context inspector.
 
 ## Language
 

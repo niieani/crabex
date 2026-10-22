@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { LEGACY_NAME } from "./legacy-migration.ts";
 
-const MANAGED_MARKER = "agent-context-trimmer";
+const MANAGED_MARKER = "crabex";
 
 export interface CodexConfigToggleDefinition {
   key: string;
@@ -117,7 +118,7 @@ export function applyCodexConfigToggle(
   managedValue: string,
   enabled: boolean,
 ): string {
-  const stripped = stripFence(text.split("\n"), key);
+  const stripped = stripFence(migrateCodexConfigText(text).split("\n"), key);
   if (!enabled) {
     const output = [...stripped.lines];
     if (stripped.preserved.length > 0) {
@@ -143,7 +144,7 @@ function toggleState(
   definition: CodexConfigToggleDefinition,
   parsed: Record<string, unknown> | undefined,
 ): CodexConfigToggleState {
-  const stripped = stripFence(content.split("\n"), definition.key);
+  const stripped = stripFence(migrateCodexConfigText(content).split("\n"), definition.key);
   const effective = parsed?.[definition.key];
   const preserved = stripped.preserved[0];
   return {
@@ -152,6 +153,29 @@ function toggleState(
     ...(typeof effective === "string" ? { effectiveValue: effective } : {}),
     ...(preserved === undefined ? {} : { preservedValue: preserved }),
   };
+}
+
+/** Renames fences written under the former project name. */
+export function migrateCodexConfigText(text: string): string {
+  return text.replace(
+    new RegExp(`^(\\s*# (?:>>>|<<<) )${LEGACY_NAME}:`, "gm"),
+    `$1${MANAGED_MARKER}:`,
+  );
+}
+
+/** Rewrites legacy fences in place; returns a notice when the file changed. */
+export async function migrateCodexConfigFile(path: string): Promise<string | undefined> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingFile(error)) return undefined;
+    throw error;
+  }
+  const migrated = migrateCodexConfigText(text);
+  if (migrated === text) return undefined;
+  await writeAtomic(path, migrated);
+  return `Renamed ${LEGACY_NAME} fences in ${path}`;
 }
 
 function stripFence(

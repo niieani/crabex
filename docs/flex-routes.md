@@ -99,7 +99,7 @@ flex-preferred when most requests actually stay on flex.
 
 ## How the proxy measures this
 
-Routing counters persist in `.agent-context-trimmer/stats.json` (reset from
+Routing counters persist in `.crabex/stats.json` (reset from
 the Model routes page). After each served completion the proxy records
 `usage.input_tokens` and `usage.input_tokens_details.cached_tokens`.
 

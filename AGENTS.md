@@ -32,10 +32,11 @@ release. Add a tool name to select part of the graph. For example, run
 - Codex source is cloned on this machine; pull latest main and inspect it before relying on Codex docs.
 - Tests need Bun-native APIs: run `vp run test`, not bare `vp test`.
 - Monorepo packages: `packages/proxy` (Bun CLI/server) and `packages/ui` (React/Tailwind UI).
+- Renamed from agent-context-trimmer: startup migrations and the upgrade checklist are in `docs/upgrading.md`; no legacy aliases are kept.
 
 ## Local infrastructure
 
-Keep machine-specific route configuration, private upstream URLs, internal hostnames, and their related notes or examples in the gitignored `.agent-context-trimmer/` directory alongside local configuration. Use reserved example domains in tracked tests and documentation. Before committing or pushing, check staged files for private infrastructure details; if one entered Git history, remove it from the affected history before publishing.
+Keep machine-specific route configuration, private upstream URLs, internal hostnames, and their related notes or examples in the gitignored `.crabex/` directory alongside local configuration. Use reserved example domains in tracked tests and documentation. Before committing or pushing, check staged files for private infrastructure details; if one entered Git history, remove it from the affected history before publishing.
 
 ## Live OAuth test
 
@@ -55,4 +56,4 @@ Codex may depend on the proxy being restarted for its own model and tool request
 2. Identify the listener's PID, supervisor/tmux session, exact launch arguments, working directory, and required environment. Build and validate the replacement before stopping the working instance; retain a runnable previous build for recovery.
 3. When running as Codex, prepare a single restart script that stops the identified instance, waits for the port to be released, starts the replacement with the preserved settings, polls readiness with a deadline, and restores the previous build if startup fails. The entire sequence must run without another model response or tool call. Launch it independently of the target process/session (for example, in a separate detached tmux session with logs redirected to a file), and verify that the restart worker is running before it stops the proxy. A single tool call alone does not make the worker independent.
 4. For an installed LaunchAgent, use `service restart`; see `docs/macos-service.md` for worker logs, readiness checks, updates, and migration. For tmux, create the replacement session explicitly: stopping the proxy may also terminate its shell, pane, and the last tmux session. Do not depend on sending a later command to the old pane. For a supervised service, let its supervisor restart it and keep readiness/recovery in the independent script.
-5. After connectivity returns, verify the new PID owns the intended port and `GET /__agent-context-trimmer/api/proxy-config` succeeds with the expected settings. Inspect the restart log before declaring success. Keep the same Codex URLs; switching them is a separate change.
+5. After connectivity returns, verify the new PID owns the intended port and `GET /__crabex/api/proxy-config` succeeds with the expected settings. Inspect the restart log before declaring success. Keep the same Codex URLs; switching them is a separate change.

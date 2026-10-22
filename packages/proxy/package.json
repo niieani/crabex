@@ -1,10 +1,9 @@
 {
-  "name": "@agent-context-trimmer/proxy",
+  "name": "crabex",
   "version": "0.0.0",
   "private": true,
   "bin": {
-    "agent-context-trimmer": "./dist/cli.mjs",
-    "relaydeck": "./dist/cli.mjs"
+    "crabex": "./dist/cli.mjs"
   },
   "type": "module",
   "scripts": {

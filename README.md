@@ -1,13 +1,74 @@
-# Relaydeck
+<p align="center">
+  <img src="docs/assets/crabex.png" alt="Crabex logo: a hermit crab living in a terminal-window shell" width="220">
+</p>
 
-Your agent control room: inspect captured context, follow live requests, route
-models, and manage transformations and configuration. Relaydeck preserves the
-existing Codex OAuth login and supports HTTP streaming and WebSocket traffic.
+<h1 align="center">Crabex</h1>
 
-Previously Agent Context Trimmer. Existing command names, data directories,
-service identifiers, and API paths remain compatible.
+<p align="center"><strong>Any model, living in Codex's shell.</strong><br>
+Keep your ChatGPT login, route every turn, see every token.</p>
 
-## Run
+---
+
+Crabex is a local proxy that sits between [Codex](https://github.com/openai/codex)
+(CLI and Desktop) and its backend. Codex keeps working exactly as it does today:
+your ChatGPT subscription login, the `/model` picker, native subagents, Apps,
+WebSockets. Crabex lets you put **other models inside that shell**, and shows you
+precisely what Codex sends to them.
+
+Like a hermit crab, the model moves in; the shell stays the same.
+
+## Why
+
+Most "use other models with Codex" setups replace Codex's provider with an API key
+and lose what makes the harness good. Crabex takes the opposite approach:
+
+- **No new login.** It forwards your existing Codex OAuth session to
+  `chatgpt.com`. No API key, no CLIProxyAPI. Routed models use their own tokens.
+- **Native, not bolted on.** Routed models appear in Codex's own model picker,
+  can be spawned as native subagents, and keep tool calls, compaction, and
+  reasoning working across providers.
+- **Glass box.** Every request chain is captured locally, so you can see which
+  instructions, tools, and history consume your context, then trim them.
+
+## What it does
+
+|     | Capability                     | Details                                                                                                                                                                                                                                               |
+| --- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🔀  | **Model routing**              | Map any Codex model slug to an OpenAI-compatible Responses gateway or a native **Anthropic Messages** API (including Bedrock Mantle). HTTP/SSE and WebSocket on both sides. [Anthropic routes](docs/anthropic-routes.md)                              |
+| 📋  | **Model picker integration**   | Routed models are injected into Codex's `/models` catalog with display names, descriptions, ordering, and metadata copied from a template model. [Catalog refresh](docs/refresh-model-catalog.md)                                                     |
+| 🛟  | **Failover and flex**          | Ordered fallback targets with retry, backoff, and circuit breakers. Advertise `-flex` slugs for half-price OpenAI flex processing that falls back to standard. [Flex routes](docs/flex-routes.md)                                                     |
+| 🧑‍🤝‍🧑  | **Subagents across providers** | Spawn routed models as Codex subagents, see which routes hold native spawn slots, and safely mix provider histories in forks and child agents. [Tool compatibility](docs/codex-tool-compatibility.md)                                                 |
+| 🧰  | **Tool compatibility**         | Per-route tool policy: pass, translate, broker, omit, or reject each tool type. Freeform `apply_patch`, `tool_search`, and web search keep working on models that don't support them natively. [Tool compatibility](docs/codex-tool-compatibility.md) |
+| 🔍  | **Context inspector**          | Captures every request chain and breaks it into context parts, sections, tools, and token estimates, per model, harness, and project. [Captures](docs/captures.md) · [Design](docs/context-inspector.md)                                              |
+| ✂️  | **Transformations**            | Rules that delete context parts, rewrite text, or disable tools before a request leaves your machine, with hit/miss telemetry and on-demand preview. [Inspector](docs/context-inspector.md)                                                           |
+| 🔌  | **Apps relay**                 | Keeps Slack, Drive, and other ChatGPT Apps working when Codex's ChatGPT base URL points at the proxy. [Apps relay](docs/apps-auth-relay.md)                                                                                                           |
+| ⚙️  | **Config-bundle overrides**    | Answer Codex's remote config-bundle fetch with your own edited bundle.                                                                                                                                                                                |
+| 📈  | **Live traffic and stats**     | Watch in-flight requests, routing attempts, fallbacks, cache use, and flex vs. standard serves.                                                                                                                                                       |
+| 🍎  | **macOS service**              | One command installs a LaunchAgent with its own runtime, local HTTPS with Keychain trust, safe restarts, and automatic rollback. [macOS service](docs/macos-service.md)                                                                               |
+
+Everything is configured from the web UI served on the proxy's own port, or
+from plain JSON files under `.crabex/`.
+
+## How it works
+
+```text
+ Codex CLI / Desktop                     Crabex (127.0.0.1:8765)                     Upstreams
+┌──────────────────┐   Responses API   ┌───────────────────────────────┐   OAuth   ┌──────────────────┐
+│ /model picker    │ ────────────────▶ │ capture ─▶ transform ─▶ route │ ────────▶ │ chatgpt.com      │
+│ subagents, tools │   HTTP / WS       │                               │ ────────▶ │ Responses gateway│
+│ Apps (MCP)       │ ◀──────────────── │ UI + local API on same port   │ ────────▶ │ Anthropic API    │
+└──────────────────┘                   └───────────────────────────────┘           └──────────────────┘
+```
+
+Unrouted models go to `chatgpt.com` with your login, unchanged except for any
+transformations you enable. Routed models are translated to the target API and
+back, so Codex never knows the difference.
+
+## Quick start
+
+Requirements: [Vite+](https://viteplus.dev) (`vp`, which provides Bun) and a
+working Codex login. The proxy runs anywhere Bun does; the background service is
+macOS-only.
 
 ```sh
 vp install
@@ -15,186 +76,82 @@ vp run build
 ./packages/proxy/dist/cli.mjs proxy
 ```
 
-The default listener is `http://127.0.0.1:8765`. Captures are append-only NDJSON
-files under `.agent-context-trimmer/captures` with mode `0600`. Headers are never
-included in captures. Open `http://127.0.0.1:8765` for the UI: Bun serves the
-application, local API, and proxy on the same port, including in installed
-services. No separate UI service is needed.
-
-For development, `vp run dev` builds both packages and watches the UI and proxy
-sources with one listener. Vite+ still supplies the frontend build, formatting,
-linting, type checking, and Vitest. `vp run dev:ui` remains an optional standalone
-Vite development server for frontend-only work.
-
-Captures uses a lightweight live index and fetches full content only when opened.
-Search by model, project, or session; filter by harness; pause live updates; or
-step between captures. **Preview rules** applies the current transformation set
-on demand. The retained catalog keeps the newest three snapshots per
-model/project/harness combination, up to 50 overall; raw captures are unaffected.
-
-The proxy must be running before starting Codex with the audit profile.
-
-## Install the Codex audit profile
-
-Create `~/.codex/audit.config.toml`:
-
-```toml
-openai_base_url = "http://127.0.0.1:8765/backend-api/codex"
-```
-
-This profile layers only the proxy destination onto the normal Codex
-configuration, preserving the existing ChatGPT subscription/OAuth login. No API
-key or CLIProxyAPI is involved.
-
-## Apps with a proxied ChatGPT base URL
-
-When `chatgpt_base_url` points at this proxy, Codex also sends Apps MCP traffic
-here. Codex withholds its ambient ChatGPT login from a localhost MCP endpoint,
-which can leave Slack, Drive, and other native Apps tools unavailable with an
-upstream `451 no_biscuit_no_service` response.
-
-For a single-account local setup, credential reuse is enabled by default:
-
-```sh
-vp run dev:proxy
-```
-
-Keep both proxy settings in Codex:
+Open <http://127.0.0.1:8765>. On the **Codex setup** page, turn on both endpoint
+toggles. Or add them to `~/.codex/config.toml` yourself:
 
 ```toml
 openai_base_url = "http://127.0.0.1:8765/backend-api/codex"
 chatgpt_base_url = "http://127.0.0.1:8765/backend-api"
 ```
 
-Use **Connection → Proxy settings → Apps authentication relay** to toggle it.
-Changes take effect immediately, clear cached credentials when disabling, and
-persist in `.agent-context-trimmer/config.json`:
+Prefer to opt in per session? Put those lines in `~/.codex/crabex.config.toml`
+and run `codex --profile crabex`.
 
-```json
-{
-  "version": 1,
-  "appsAuthRelay": false
-}
-```
+Then run Codex as usual. Captures show up live in the UI. Add a route on the
+**Model routes** page and the new model appears in Codex's `/model` picker.
 
-An absent config file or omitted `appsAuthRelay` field defaults to `true`.
-Use `--config <file>` for another settings file. Direct file edits are read on
-startup; changes through the UI apply live. `--no-apps-auth-relay` and
-`--apps-auth-relay` override the file for that process and lock the UI toggle
-until the proxy restarts without the override. Proxy settings live separately
-from Codex's `config.toml` and never contain credentials.
-
-The relay remembers the bearer token and account header from authenticated
-`/backend-api/` requests, including config-bundle fetches answered locally and
-WebSocket handshakes. It adds them only to unauthenticated requests to
-`/backend-api/ps/mcp`, forwarding to the configured upstream without following
-redirects. Explicit Apps authorization is preserved. Credentials stay in memory
-and are never added to captures or persisted configuration. Config-bundle
-overrides, model routing, and context transformations continue to work.
-
-Limitations:
-
-- The relay requires a loopback listener; use `--no-apps-auth-relay` when binding
-  the proxy to a non-loopback address. Other local processes
-  that can reach that listener can use its Apps endpoint with the cached login;
-  use it only on a trusted, single-user machine.
-- One ChatGPT account per proxy process is supported. If authenticated traffic
-  identifies a second account, credential reuse stops with a 503. Restart the
-  proxy after an account switch; simultaneous accounts are unsupported.
-- Apps can arrive first. The relay waits up to five seconds for authenticated
-  Codex traffic, then returns a clear 503 with `Retry-After: 1`. A retry or a new
-  Codex session may be needed once credentials have arrived.
-- Codex owns login and token refresh. The relay learns new tokens only from
-  subsequent authenticated requests. It does not refresh tokens or replay failed
-  tool calls, and cannot detect logout until it observes new traffic or restarts.
-- Account headers identify the supported workspace/account, not an individual
-  login within that account. Different users sharing one workspace are also
-  unsupported. Stop the proxy when ending the authenticated session.
-- Connector permissions and approval prompts still apply. The relay repairs
-  authentication transport; it does not change tool approval policies.
-
-The proxy disables Bun's HTTP idle timer for forwarded requests. ChatGPT's
-connector directory can take tens of seconds before returning headers, and MCP
-streams can pause; the default idle timer otherwise resets the local connection
-and makes `app/list` fail with `Failed to send request`. Local UI/API requests
-retain the normal timeout. Upstream and client deadlines still apply.
-
-## Run an interactive audit
+To keep Crabex running across reboots (and use the ChatGPT desktop app, which
+requires HTTPS):
 
 ```sh
-codex --profile audit
+./packages/proxy/dist/cli.mjs service install --https
 ```
 
-The proxy forwards to `https://chatgpt.com`, records the request chain, and
-applies enabled transformations before forwarding each request.
+## Configuration
 
-## Run a smoke Probe
+All state lives in `.crabex/` relative to where you start the proxy (the macOS
+service keeps its own copy under `~/Library/Application Support/crabex/data`).
+Keep private route configuration there rather than in a repository.
 
-A Probe should be a trivial one-turn request whose purpose is to reveal the
-initial context supplied by the harness:
+| File                                                       | Purpose                                                   |
+| ---------------------------------------------------------- | --------------------------------------------------------- |
+| `model-routes.json`                                        | Routes, targets, tool policies, picker metadata           |
+| `transformations.json`                                     | Context transformation rules                              |
+| `config.json`                                              | Proxy settings (Apps relay, routed agents, search broker) |
+| `config-bundle.json`                                       | Config-bundle override                                    |
+| `captures/`                                                | NDJSON request captures                                   |
+| `stats.json`, `upstream-cache.json`, `snapshot-cache.json` | Telemetry and caches                                      |
 
-```sh
-codex exec \
-  --profile audit \
-  --ephemeral \
-  --model gpt-5.6-luna \
-  -c 'model_reasoning_effort="low"' \
-  'Reply with exactly: audit-ok'
-```
+Every path can be overridden with a flag; run `crabex --help` for the full list.
 
-Expected model output: `audit-ok`. Open `http://127.0.0.1:8765` to inspect the
-linked prewarm and inference requests, context parts, tools, token estimates,
-and original/effective transformation results.
-
-Codex subprocesses launched from inside Codex Desktop can inherit Desktop
-originator identity. Trust the harness shown in the capture; run the Probe from
-an independent terminal when specifically testing TUI-scoped transformations.
-
-Captures persist under `.agent-context-trimmer/captures`. New captures retain
-full payloads only through the first ordinary user message in a Probe. Later
-client and upstream events retain metadata—protocol fields, message roles and
-stable harness classifications, payload size, usage, and transformation
-executions—but no raw payload or effective payload. Harness-injected messages
-such as `<environment_context>` do not end the full-capture window. Existing
-capture files are not rewritten. To inspect captures from another directory,
-start the proxy with an explicit `--captures <dir>`.
-
-## Commands
+## CLI
 
 ```text
-agent-context-trimmer proxy \
-  --listen 127.0.0.1:8765 \
-  --upstream https://chatgpt.com \
-  --captures .agent-context-trimmer/captures \
-  --transformations .agent-context-trimmer/transformations.json \
-  --model-routes .agent-context-trimmer/model-routes.json \
-  --config-bundle .agent-context-trimmer/config-bundle.json \
-  --codex-config ~/.codex/config.toml \
-  --project agent-context-trimmer
+crabex proxy [--listen 127.0.0.1:8765] [--upstream https://chatgpt.com] [--project <key>] ...
+crabex service install [--https] [--env NAME]... [-- proxy options]
+crabex service uninstall|status|restart|logs
+crabex service tls status|renew|remove
 ```
+
+## Documentation
+
+- [Anthropic Messages routes](docs/anthropic-routes.md): Claude via Anthropic or Bedrock Mantle
+- [Flex routes](docs/flex-routes.md): half-price flex processing with fallback
+- [Codex tool compatibility](docs/codex-tool-compatibility.md): tool policies, search, subagent handoff
+- [Captures and Probes](docs/captures.md): what is recorded and how to inspect it
+- [Context inspector design](docs/context-inspector.md) and [domain language](CONTEXT.md)
+- [Apps authentication relay](docs/apps-auth-relay.md): keeping ChatGPT Apps working
+- [macOS service](docs/macos-service.md): LaunchAgent, HTTPS, updates
+- [Refreshing the model catalog](docs/refresh-model-catalog.md)
+- [Upgrading from agent-context-trimmer](docs/upgrading.md)
+
+## Privacy and security
+
+Crabex binds to loopback by default and is meant for a trusted, single-user
+machine. Captures stay on disk with owner-only permissions and never include
+headers. Your ChatGPT credentials are held in memory only; route tokens come from
+environment variables you name. See the [Apps relay limitations](docs/apps-auth-relay.md)
+before exposing the listener beyond localhost.
 
 ## Development
 
 ```sh
-vp run test
-vp check
+vp run dev     # build both packages and watch, single listener
+vp check       # format, lint, type check
+vp run test    # tests (Bun-native; not bare `vp test`)
 vp run build
 ```
 
-To refresh the bundled Codex model catalog, follow the [model catalog playbook](docs/refresh-model-catalog.md).
-For route tool policies, search, and V2 agent handoff, see [Codex tool compatibility](docs/codex-tool-compatibility.md).
-
-## Flex routes
-
-Advertise a `-flex` slug and fail over to the regular model when flex is
-unavailable. Flex is half-price (Batch rates) but slower, and a flex →
-standard fallback drops the prompt cache. See [docs/flex-routes.md](docs/flex-routes.md).
-
-## Workspace layout
-
-- `packages/proxy`: Bun server and CLI.
-- `packages/ui`: React and Tailwind context inspector.
-
-## Run automatically on macOS
-
-Use `agent-context-trimmer service install` to install a per-user LaunchAgent with a stable runtime and supervised restarts. See [macOS service setup](docs/macos-service.md) for installation, updates, environment settings, and migration from an existing proxy.
+The repository holds `packages/proxy` (Bun server and CLI) and `packages/ui`
+(React and Tailwind UI). `vp run dev:ui` runs a standalone Vite server for
+frontend-only work.

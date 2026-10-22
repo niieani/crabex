@@ -27,18 +27,27 @@ import {
   tlsStatus,
   type PublishedCodexCa,
 } from "./tls.ts";
-import { applyCodexConfigToggle } from "../config/codex-config.ts";
+import { applyCodexConfigToggle, migrateCodexConfigFile } from "../config/codex-config.ts";
+import { DATA_DIRECTORY, LEGACY_NAME } from "../config/legacy-migration.ts";
 import { parseCliOptions } from "../cli/options.ts";
 import { findUiDirectory } from "../api/web-ui.ts";
 
-const LABEL = "com.agent-context-trimmer.proxy";
-const ROOT = join(homedir(), "Library/Application Support/agent-context-trimmer");
+const LABEL = "com.crabex.proxy";
+const ROOT = join(homedir(), "Library/Application Support/crabex");
 const PLIST = join(homedir(), "Library/LaunchAgents", `${LABEL}.plist`);
-const LOGS = join(homedir(), "Library/Logs/agent-context-trimmer");
+const LOGS = join(homedir(), "Library/Logs/crabex");
 const TLS_ROOT = join(ROOT, "tls");
 const STATE = join(ROOT, "service.json");
 const LOCK = join(ROOT, "operation.lock");
 const TARGET = `gui/${process.getuid?.()}/${LABEL}`;
+// An installation under the former name is migrated by the next `service install`.
+const LEGACY_LABEL = `com.${LEGACY_NAME}.proxy`;
+const LEGACY_ROOT = join(homedir(), "Library/Application Support", LEGACY_NAME);
+const LEGACY_PLIST = join(homedir(), "Library/LaunchAgents", `${LEGACY_LABEL}.plist`);
+const LEGACY_LOGS = join(homedir(), "Library/Logs", LEGACY_NAME);
+const LEGACY_TARGET = `gui/${process.getuid?.()}/${LEGACY_LABEL}`;
+// Copied once from the legacy root; releases, launchers, and state are rebuilt.
+const LEGACY_SKIPPED = new Set(["releases", "bin", "current", "service.json", "operation.lock"]);
 
 interface ServiceState {
   release: string;
@@ -97,8 +106,8 @@ export function installArguments(args: string[], cwd: string, data: string): str
   for (const [flag, path] of Object.entries(paths)) {
     const explicit = args.includes(flag);
     const absolute =
-      !explicit && path.startsWith(".agent-context-trimmer/")
-        ? join(data, path.slice(".agent-context-trimmer/".length))
+      !explicit && path.startsWith(`${DATA_DIRECTORY}/`)
+        ? join(data, path.slice(`${DATA_DIRECTORY}/`.length))
         : resolve(cwd, path);
     result.push(flag, absolute);
   }
@@ -157,9 +166,9 @@ function ctl(...args: string[]): string {
   return result.stdout;
 }
 
-async function state(): Promise<ServiceState | undefined> {
+async function state(path = STATE): Promise<ServiceState | undefined> {
   try {
-    return JSON.parse(await readFile(STATE, "utf8")) as ServiceState;
+    return JSON.parse(await readFile(path, "utf8")) as ServiceState;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -177,18 +186,23 @@ async function save(path: string, value: string): Promise<void> {
 }
 
 async function ready(origin: string, tlsDirectory?: string): Promise<boolean> {
-  try {
-    const response = await fetch(`${origin}/__agent-context-trimmer/api/proxy-config`, {
-      signal: AbortSignal.timeout(1000),
-      ...(tlsDirectory
-        ? { tls: { ca: await readFile(join(tlsDirectory, "ca.pem"), "utf8") } }
-        : {}),
-    });
-    const config = (await response.json()) as { version?: number; appsAuthRelay?: boolean };
-    return response.ok && config.version === 1 && typeof config.appsAuthRelay === "boolean";
-  } catch {
-    return false;
+  // A rollback to a release from before the rename serves the legacy API prefix.
+  for (const prefix of ["crabex", LEGACY_NAME]) {
+    try {
+      const response = await fetch(`${origin}/__${prefix}/api/proxy-config`, {
+        signal: AbortSignal.timeout(1000),
+        ...(tlsDirectory
+          ? { tls: { ca: await readFile(join(tlsDirectory, "ca.pem"), "utf8") } }
+          : {}),
+      });
+      const config = (await response.json()) as { version?: number; appsAuthRelay?: boolean };
+      if (response.ok && config.version === 1 && typeof config.appsAuthRelay === "boolean")
+        return true;
+    } catch {
+      /* try the next prefix */
+    }
   }
+  return false;
 }
 
 async function waitReady(origin: string, tlsDirectory?: string): Promise<void> {
@@ -224,19 +238,49 @@ async function ensurePortFree(origin: string): Promise<void> {
   await server.stop(true);
 }
 
-async function unload(): Promise<void> {
+async function unload(target = TARGET): Promise<void> {
   try {
-    ctl("print", TARGET);
+    ctl("print", target);
   } catch {
     return;
   }
-  ctl("bootout", TARGET);
+  ctl("bootout", target);
 }
 
 interface Operation {
   next: ServiceState;
   previous?: ServiceState;
   configUpdate?: { path: string; before: string | null; after: string };
+  /** `previous` is the legacy installation, still running from LEGACY_ROOT. */
+  legacy?: boolean;
+}
+
+/** Points a legacy service's paths at their copies in the new root. */
+export function relocateServiceState(
+  state: ServiceState,
+  from = LEGACY_ROOT,
+  to = ROOT,
+): ServiceState {
+  const relocate = (value: unknown): unknown => {
+    if (typeof value === "string")
+      return value === from || value.startsWith(`${from}/`) ? to + value.slice(from.length) : value;
+    if (Array.isArray(value)) return value.map(relocate);
+    if (typeof value === "object" && value !== null)
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, relocate(item)]));
+    return value;
+  };
+  return relocate(state) as ServiceState;
+}
+
+async function copyLegacyRoot(): Promise<void> {
+  await cp(LEGACY_ROOT, ROOT, {
+    recursive: true,
+    force: true,
+    filter: (source) => {
+      const relative = source.slice(LEGACY_ROOT.length + 1);
+      return !LEGACY_SKIPPED.has(relative.split("/")[0]!);
+    },
+  });
 }
 
 export async function activateWithRollback(
@@ -278,6 +322,18 @@ async function worker(operationPath: string): Promise<void> {
   try {
     await activateWithRollback(operation, {
       activate: async (candidate) => {
+        if (operation.legacy) {
+          await unload(LEGACY_TARGET);
+          await rm(LEGACY_PLIST, { force: true });
+          // Data written after install copied it, until the legacy proxy stopped.
+          if (candidate === operation.next)
+            await cp(join(LEGACY_ROOT, "data"), join(ROOT, "data"), {
+              recursive: true,
+              force: true,
+            }).catch((error: NodeJS.ErrnoException) => {
+              if (error.code !== "ENOENT") throw error;
+            });
+        }
         await unload();
         await save(PLIST, launchAgentPlist(candidate));
         await bootstrapWithRetry(() => ctl("bootstrap", `gui/${process.getuid?.()}`, PLIST));
@@ -322,6 +378,11 @@ async function worker(operationPath: string): Promise<void> {
         await rm(PLIST, { force: true });
       },
     });
+    if (operation.legacy) {
+      await rm(LEGACY_ROOT, { recursive: true, force: true });
+      await rm(LEGACY_LOGS, { recursive: true, force: true });
+      console.log(`Migrated legacy ${LEGACY_LABEL} service; removed ${LEGACY_ROOT}`);
+    }
     console.log("Service ready", operation.next.origin);
   } finally {
     await rm(LOCK, { recursive: true, force: true });
@@ -418,10 +479,14 @@ export async function serviceCommand(args: string[]): Promise<void> {
     );
     return;
   }
+  const legacyHint = async () =>
+    (await state(join(LEGACY_ROOT, "service.json")))
+      ? `; a ${LEGACY_LABEL} service exists, run service install to migrate it`
+      : "";
   if (command === "status") {
     const installed = await state();
     if (!installed) {
-      console.log("Service is not installed");
+      console.log(`Service is not installed${await legacyHint()}`);
       return;
     }
     const details = ctl("print", TARGET);
@@ -460,7 +525,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
     const previous = await state();
     if (command === "uninstall") {
       if (!previous) {
-        console.log("Service is not installed");
+        console.log(`Service is not installed${await legacyHint()}`);
         return;
       }
       await unload();
@@ -489,11 +554,25 @@ export async function serviceCommand(args: string[]): Promise<void> {
       return;
     }
     if (command === "restart") {
-      if (!previous) throw new Error("Service is not installed");
+      if (!previous) throw new Error(`Service is not installed${await legacyHint()}`);
       await schedule({ next: previous, previous });
       scheduled = true;
       return;
     }
+    // A rolled-back migration leaves the legacy release installed; migrate it again.
+    const legacy = previous
+      ? previous.release.startsWith(`${LEGACY_ROOT}/`)
+        ? previous
+        : undefined
+      : await state(join(LEGACY_ROOT, "service.json"));
+    if (legacy) {
+      if (await Bun.file(join(LEGACY_ROOT, "operation.lock")).exists())
+        throw new Error(`A legacy service operation is active; inspect ${LEGACY_LOGS}`);
+      await copyLegacyRoot();
+      console.log(`Copied legacy service data from ${LEGACY_ROOT}`);
+    }
+    // Settings come from the installed service, or a relocated copy of the legacy one.
+    const base = legacy ? relocateServiceState(legacy) : previous;
     if (!previous) {
       let registered = false;
       try {
@@ -513,7 +592,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
     const environment = {
       HOME: homedir(),
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-      ...previous?.environment,
+      ...base?.environment,
     };
     let https = false;
     for (let index = 0; index < flags.length; index += 2) {
@@ -532,19 +611,19 @@ export async function serviceCommand(args: string[]): Promise<void> {
     }
     const data = join(ROOT, "data");
     let launchArgs =
-      previous && separator < 0 ? previous.args : installArguments(proxyArgs, process.cwd(), data);
+      base && separator < 0 ? base.args : installArguments(proxyArgs, process.cwd(), data);
     if (proxyArgs.includes("--tls-dir"))
       throw new Error(
         "Use service install --https for managed certificates, or proxy --tls-dir for custom certificates",
       );
-    const existingTls = previous ? parseCliOptions(previous.args).tlsDirectory : undefined;
+    const existingTls = base ? parseCliOptions(base.args).tlsDirectory : undefined;
     launchArgs = withoutOptions(launchArgs, ["--tls-dir", "--codex-ca-bundle"]);
     const parsed = parseCliOptions(launchArgs);
     if (parsed.port === 0) throw new Error("Service requires a fixed port");
     const origin = serviceOrigin(
       https || existingTls ? [...launchArgs, "--tls-dir", existingTls ?? TLS_ROOT] : launchArgs,
     );
-    if (!previous || new URL(previous.origin).host !== new URL(origin).host) {
+    if (!base || new URL(base.origin).host !== new URL(origin).host) {
       await ensurePortFree(origin).catch(() => {
         throw new Error(
           `Port is occupied at ${origin}. Existing unmanaged proxies are left running; migrate using an independent restart script or choose another --listen port.`,
@@ -562,25 +641,21 @@ export async function serviceCommand(args: string[]): Promise<void> {
     );
     const customCaBundle =
       https || existingTls
-        ? resolveCustomCaSource(
-            TLS_ROOT,
-            [environment, inheritedEnvironment],
-            previous?.desktopCodexCa,
-          )
+        ? resolveCustomCaSource(TLS_ROOT, [environment, inheritedEnvironment], base?.desktopCodexCa)
         : undefined;
     const codexCaBundle =
       (https || existingTls) && customCaBundle !== undefined
         ? await prepareCodexCaBundle(TLS_ROOT, customCaBundle)
-        : previous?.desktopCodexCa?.path;
+        : base?.desktopCodexCa?.path;
     let desktopCodexCa: PublishedCodexCa | undefined;
     if (codexCaBundle !== undefined) {
       launchArgs = [...launchArgs, "--codex-ca-bundle", codexCaBundle];
       const prior = originalCodexCaValue(
         TLS_ROOT,
-        previous?.desktopCodexCa === undefined
+        base?.desktopCodexCa === undefined
           ? launchctlEnvironment().get("CODEX_CA_CERTIFICATE")
           : undefined,
-        previous?.desktopCodexCa,
+        base?.desktopCodexCa,
       );
       desktopCodexCa = {
         path: codexCaBundle,
@@ -589,7 +664,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
       };
     }
     if (!(await Bun.file(join(data, ".migrated")).exists())) {
-      const source = resolve(".agent-context-trimmer");
+      const source = resolve(DATA_DIRECTORY);
       if (source !== data) {
         try {
           await cp(source, data, { recursive: true, force: false, errorOnExist: true });
@@ -603,7 +678,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
     const release = join(ROOT, "releases", randomUUID());
     const uiDirectory = await findUiDirectory(dirname(resolve(process.argv[1]!)));
     if (!uiDirectory)
-      throw new Error("Build the Relaydeck UI with vp run build before installing the service");
+      throw new Error("Build the Crabex UI with vp run build before installing the service");
     await mkdir(release, { recursive: true, mode: 0o700 });
     await cp(uiDirectory, join(release, "ui"), { recursive: true });
     const build = await Bun.build({
@@ -624,16 +699,16 @@ export async function serviceCommand(args: string[]): Promise<void> {
     if (smoke.status !== 0) throw new Error("Installed runtime failed its startup check");
     const bin = join(ROOT, "bin");
     await mkdir(bin, { recursive: true });
-    const launcher = join(bin, "agent-context-trimmer");
+    const launcher = join(bin, "crabex");
     await save(
       launcher,
       '#!/bin/sh\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 1\nexec "$root/current/bun" "$root/current/cli.mjs" "$@"\n',
     );
     await chmod(launcher, 0o700);
-    const brandedLauncher = join(bin, "relaydeck");
-    await copyFile(launcher, brandedLauncher);
-    await chmod(brandedLauncher, 0o700);
     let configUpdate: Operation["configUpdate"];
+    // Before snapshotting: the new proxy would otherwise rewrite it during startup.
+    const configNotice = await migrateCodexConfigFile(parsed.codexConfigPath);
+    if (configNotice) console.log(configNotice);
     if (https) {
       const before = await optionalText(parsed.codexConfigPath);
       Bun.TOML.parse(before ?? "");
@@ -651,10 +726,11 @@ export async function serviceCommand(args: string[]): Promise<void> {
         origin,
         ...(desktopCodexCa === undefined ? {} : { desktopCodexCa }),
       },
-      previous,
+      previous: previous ?? legacy,
       configUpdate,
+      ...(legacy ? { legacy: true } : {}),
     });
-    console.log(`Installed command: ${brandedLauncher}\nCompatible alias: ${launcher}`);
+    console.log(`Installed command: ${launcher}`);
     scheduled = true;
   } finally {
     if (!scheduled) await rm(LOCK, { recursive: true, force: true });

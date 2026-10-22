@@ -98,7 +98,7 @@ describe("local context API", () => {
         expiresAt: "2027-09-18T00:00:00.000Z",
       }),
     });
-    const url = "http://localhost/__agent-context-trimmer/api/tls-status";
+    const url = "http://localhost/__crabex/api/tls-status";
     expect(await (await api.handle(new Request(url)))?.json()).toEqual({
       enabled: true,
       trusted: true,
@@ -121,7 +121,7 @@ describe("local context API", () => {
       proxyConfig,
     };
     const api = createLocalApi(options);
-    const url = "http://localhost/__agent-context-trimmer/api/proxy-config";
+    const url = "http://localhost/__crabex/api/proxy-config";
     expect(await (await api.handle(new Request(url)))?.json()).toMatchObject({
       path,
       appsAuthRelay: true,
@@ -267,13 +267,11 @@ describe("local context API", () => {
       ...stubSources({}),
     });
 
-    const response = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/snapshots"),
-    );
+    const response = await api.handle(new Request("http://localhost/__crabex/api/snapshots"));
     expect(response?.status).toBe(200);
     expect(await response?.json()).toEqual({ snapshots });
     const index = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/snapshots?view=index"),
+      new Request("http://localhost/__crabex/api/snapshots?view=index"),
     );
     expect(await index?.json()).toEqual({
       snapshots: snapshots.map(({ parts, ...item }) => ({
@@ -285,20 +283,16 @@ describe("local context API", () => {
     });
     const detail = await api.handle(
       new Request(
-        `http://localhost/__agent-context-trimmer/api/snapshots/${encodeURIComponent(snapshots[0]!.id)}`,
+        `http://localhost/__crabex/api/snapshots/${encodeURIComponent(snapshots[0]!.id)}`,
       ),
     );
     expect(await detail?.json()).toEqual({ snapshot: snapshots[0] });
     expect(
-      (
-        await api.handle(
-          new Request("http://localhost/__agent-context-trimmer/api/snapshots/missing"),
-        )
-      )?.status,
+      (await api.handle(new Request("http://localhost/__crabex/api/snapshots/missing")))?.status,
     ).toBe(404);
 
     const telemetry = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/transformation-telemetry"),
+      new Request("http://localhost/__crabex/api/transformation-telemetry"),
     );
     expect(await telemetry?.json()).toEqual({
       telemetry: [
@@ -314,7 +308,7 @@ describe("local context API", () => {
     });
 
     const routing = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/routing-telemetry"),
+      new Request("http://localhost/__crabex/api/routing-telemetry"),
     );
     expect(await routing?.json()).toEqual({
       telemetry: [
@@ -342,7 +336,7 @@ describe("local context API", () => {
       ],
     };
     const preview = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/preview", {
+      new Request("http://localhost/__crabex/api/preview", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ snapshotId: "session:2", transformations: next.transformations }),
@@ -352,7 +346,7 @@ describe("local context API", () => {
     expect(await preview?.json()).toMatchObject({ snapshot: { id: "session:2" } });
 
     const update = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/transformations", {
+      new Request("http://localhost/__crabex/api/transformations", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(next),
@@ -362,13 +356,13 @@ describe("local context API", () => {
     expect(set).toEqual(next);
 
     const reset = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/stats/reset", {
+      new Request("http://localhost/__crabex/api/stats/reset", {
         method: "POST",
       }),
     );
     expect(reset?.status).toBe(200);
     const cleared = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/transformation-telemetry"),
+      new Request("http://localhost/__crabex/api/transformation-telemetry"),
     );
     expect(await cleared?.json()).toEqual({ telemetry: [] });
   });
@@ -407,7 +401,7 @@ describe("local context API", () => {
     });
 
     const update = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/model-routes", {
+      new Request("http://localhost/__crabex/api/model-routes", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version: 1, routes: routeConfigs }),
@@ -416,9 +410,7 @@ describe("local context API", () => {
     expect(update?.status).toBe(200);
     expect(sources.currentRoutes()).toEqual(routeConfigs);
 
-    const listed = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/model-routes"),
-    );
+    const listed = await api.handle(new Request("http://localhost/__crabex/api/model-routes"));
     expect(await listed?.json()).toEqual({
       version: 1,
       routes: [
@@ -453,14 +445,14 @@ describe("local context API", () => {
 
     delete process.env.ACT_TEST_ROUTE_KEY;
     const missing = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/model-routes/env-status"),
+      new Request("http://localhost/__crabex/api/model-routes/env-status"),
     );
     expect(await missing?.json()).toEqual({ env: { ACT_TEST_ROUTE_KEY: false } });
 
     process.env.ACT_TEST_ROUTE_KEY = "local-api-key";
     try {
       const present = await api.handle(
-        new Request("http://localhost/__agent-context-trimmer/api/model-routes/env-status"),
+        new Request("http://localhost/__crabex/api/model-routes/env-status"),
       );
       expect(await present?.json()).toEqual({ env: { ACT_TEST_ROUTE_KEY: true } });
     } finally {
@@ -509,7 +501,7 @@ describe("local context API", () => {
         observe: async () => {},
       },
     });
-    const url = "http://localhost/__agent-context-trimmer/api/model-routes";
+    const url = "http://localhost/__crabex/api/model-routes";
     const slots = async () => {
       const response = await api.handle(new Request(url));
       expect(response?.status).toBe(200);
@@ -545,7 +537,7 @@ describe("local context API", () => {
       },
       ...sources,
     });
-    const url = "http://localhost/__agent-context-trimmer/api/model-routes";
+    const url = "http://localhost/__crabex/api/model-routes";
 
     const listed = await api.handle(new Request(url));
     const listedBody = (await listed?.json()) as { routes: Record<string, unknown>[] };
@@ -614,9 +606,7 @@ describe("local context API", () => {
     process.env.ACT_TEST_ROUTE_KEY = "broker-token";
     delete process.env.ACT_MISSING_BROKER_TOKEN;
     try {
-      const response = await api.handle(
-        new Request("http://localhost/__agent-context-trimmer/api/model-routes"),
-      );
+      const response = await api.handle(new Request("http://localhost/__crabex/api/model-routes"));
       expect(response?.status).toBe(200);
       const body = (await response?.json()) as {
         routes: { search_broker_eligibility: { eligible: boolean; code?: string } }[];
@@ -654,9 +644,7 @@ describe("local context API", () => {
       upstreamCache: { get: () => cacheState, observe: async () => {} },
     });
 
-    const response = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/upstream-cache"),
-    );
+    const response = await api.handle(new Request("http://localhost/__crabex/api/upstream-cache"));
 
     expect(response?.status).toBe(200);
     expect(await response?.json()).toEqual(cacheState);
@@ -677,7 +665,7 @@ describe("local context API", () => {
     });
 
     const update = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/model-routes", {
+      new Request("http://localhost/__crabex/api/model-routes", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version: 1, routes: [{ model: {} }] }),
@@ -709,7 +697,7 @@ describe("local context API", () => {
       },
     };
     const response = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/model-routes", {
+      new Request("http://localhost/__crabex/api/model-routes", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version: 1, routes: [route] }),
@@ -734,7 +722,7 @@ describe("local context API", () => {
     });
 
     const update = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/model-routes", {
+      new Request("http://localhost/__crabex/api/model-routes", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -766,9 +754,7 @@ describe("local context API", () => {
       ...sources,
     });
 
-    const initial = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/config-bundle"),
-    );
+    const initial = await api.handle(new Request("http://localhost/__crabex/api/config-bundle"));
     expect(await initial?.json()).toEqual({ version: 1, enabled: false, bundle: null });
 
     const override: ConfigBundleOverride = {
@@ -777,7 +763,7 @@ describe("local context API", () => {
       bundle: { requirements_toml: null },
     };
     const update = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/config-bundle", {
+      new Request("http://localhost/__crabex/api/config-bundle", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(override),
@@ -787,7 +773,7 @@ describe("local context API", () => {
     expect(sources.currentBundle()).toEqual(override);
 
     const removed = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/config-bundle", {
+      new Request("http://localhost/__crabex/api/config-bundle", {
         method: "DELETE",
       }),
     );
@@ -810,7 +796,7 @@ describe("local context API", () => {
     });
 
     const update = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/config-bundle", {
+      new Request("http://localhost/__crabex/api/config-bundle", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version: 1, enabled: true, bundle: "not-an-object" }),
@@ -850,9 +836,7 @@ describe("local context API", () => {
       },
     });
 
-    const state = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/codex-config"),
-    );
+    const state = await api.handle(new Request("http://localhost/__crabex/api/codex-config"));
     expect(state?.status).toBe(200);
     expect(await state?.json()).toEqual({
       path: "/tmp/act-test/config.toml",
@@ -861,7 +845,7 @@ describe("local context API", () => {
     });
 
     const update = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/codex-config", {
+      new Request("http://localhost/__crabex/api/codex-config", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ key: "openai_base_url", enabled: true }),
@@ -872,7 +856,7 @@ describe("local context API", () => {
     expect(await update?.json()).toMatchObject({ toggles: [toggle] });
 
     const invalid = await api.handle(
-      new Request("http://localhost/__agent-context-trimmer/api/codex-config", {
+      new Request("http://localhost/__crabex/api/codex-config", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ key: "openai_base_url" }),

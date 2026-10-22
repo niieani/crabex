@@ -1,6 +1,6 @@
 # Anthropic Messages routes
 
-Relaydeck translates Codex's Responses protocol into native Anthropic Messages.
+Crabex translates Codex's Responses protocol into native Anthropic Messages.
 This works with Anthropic-compatible gateways, including Bedrock Mantle, using
 HTTP/SSE upstreams and either HTTP/SSE or WebSocket Codex clients. No Converse,
 AWS binary EventStream, or Chat Completions intermediary is needed.
@@ -9,7 +9,7 @@ AWS binary EventStream, or Chat Completions intermediary is needed.
 
 Choose **Anthropic Messages (including Bedrock Mantle)** in Model routes, or add
 an entry to the local route file. Keep actual infrastructure configuration in
-`.agent-context-trimmer/`; the following uses a reserved example domain.
+`.crabex/`; the following uses a reserved example domain.
 
 ```json
 {
@@ -73,7 +73,7 @@ available through this wrapping. Claude routes default to regular Codex tools;
 Codex remains responsible for client function execution and approvals. Broken
 call/result pairs fail explicitly. Hosted tools follow the route policy: the
 default rejects them, while legacy allowlists omit them with a recorded warning.
-With `web_search: "broker"`, Relaydeck itself executes web search through a
+With `web_search: "broker"`, Crabex itself executes web search through a
 configured OpenAI Responses route and continues the Claude turn before
 returning it to Codex.
 See [Codex tool compatibility](codex-tool-compatibility.md) for per-route rejection
@@ -105,7 +105,7 @@ a stable 32-byte `anthropicKey` for resume across instances; an omitted key is
 intentionally ephemeral. Do not copy opaque history between providers/routes.
 
 Both current `compaction_trigger` requests and legacy `POST /responses/compact`
-are supported. Relaydeck asks Claude for a continuation summary preserving goals,
+are supported. Crabex asks Claude for a continuation summary preserving goals,
 instructions, changes, decisions and pending work, then emits a Codex compaction
 item containing the encrypted summary. Later requests decode it into context.
 This state is self-contained in the saved task and survives proxy restarts; no

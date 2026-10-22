@@ -223,7 +223,7 @@ function TlsCard() {
             trust.
           </p>
           <code className="mt-2 block text-xs">
-            agent-context-trimmer{" "}
+            crabex{" "}
             {status.enabled && status.trusted ? "service tls renew" : "service install --https"}
           </code>
         </>

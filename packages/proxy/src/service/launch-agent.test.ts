@@ -11,6 +11,7 @@ import {
   updateServiceCodexConfig,
   bootstrapWithRetry,
   LaunchctlError,
+  relocateServiceState,
 } from "./launch-agent.ts";
 
 const previous = {
@@ -54,7 +55,7 @@ describe("LaunchAgent service", () => {
     expect(plist).toContain("&lt;secret&gt;&amp;&quot;");
     expect(plist).toContain("<key>KeepAlive</key><true/>");
     expect(plist).toContain("<key>Umask</key><integer>63</integer>");
-    expect(plist).toContain("<key>RELAYDECK_MANAGED_SERVICE</key><string>1</string>");
+    expect(plist).toContain("<key>CRABEX_MANAGED_SERVICE</key><string>1</string>");
   });
 
   it("persists a new release only after it becomes ready", async () => {
@@ -271,5 +272,48 @@ describe("custom CA publication across service updates", () => {
     expect(() => syncCodexCaTransition(newCa, oldCa, true, env)).toThrow("changed");
     syncCodexCaTransition(newCa, oldCa, false, env);
     expect(env.get("CODEX_CA_CERTIFICATE")).toBe("/user-changed.pem");
+  });
+});
+
+describe("legacy service migration", () => {
+  it("relocates paths under the legacy root and keeps external ones", () => {
+    const legacy = "/Users/me/Library/Application Support/agent-context-trimmer";
+    const root = "/Users/me/Library/Application Support/crabex";
+    const relocated = relocateServiceState(
+      {
+        release: `${legacy}/releases/a`,
+        args: [
+          "proxy",
+          "--config",
+          `${legacy}/data/config.json`,
+          "--codex-config",
+          "/Users/me/.codex/config.toml",
+        ],
+        environment: { SSL_CERT_FILE: "/Users/me/ca.pem" },
+        origin: "https://127.0.0.1:8765",
+        desktopCodexCa: {
+          path: `${legacy}/tls/codex-ca-bundles/b.pem`,
+          source: "/Users/me/ca.pem",
+        },
+      },
+      legacy,
+      root,
+    );
+    expect(relocated).toEqual({
+      release: `${root}/releases/a`,
+      args: [
+        "proxy",
+        "--config",
+        `${root}/data/config.json`,
+        "--codex-config",
+        "/Users/me/.codex/config.toml",
+      ],
+      environment: { SSL_CERT_FILE: "/Users/me/ca.pem" },
+      origin: "https://127.0.0.1:8765",
+      desktopCodexCa: { path: `${root}/tls/codex-ca-bundles/b.pem`, source: "/Users/me/ca.pem" },
+    });
+    expect(
+      relocateServiceState({ ...previous, release: `${legacy}-other/x` }, legacy, root).release,
+    ).toBe(`${legacy}-other/x`);
   });
 });

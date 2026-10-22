@@ -20,7 +20,7 @@ Switch Codex's endpoint settings only after checking the new service. To retain 
 The installed command lives at:
 
 ```sh
-"$HOME/Library/Application Support/agent-context-trimmer/bin/agent-context-trimmer" service status
+"$HOME/Library/Application Support/crabex/bin/crabex" service status
 ```
 
 Add that `bin` directory to your shell's PATH if desired. Supported commands:
@@ -35,7 +35,7 @@ Add that `bin` directory to your shell's PATH if desired. Supported commands:
 
 Install and restart return once the worker acknowledges startup, **before readiness is known**. The worker survives loss of the calling Codex connection. It owns stop/start, checks that the launchd PID owns the port and the local API responds, and restores the previous release if an update fails. Because launchd can finish unloading asynchronously, bootstrap error 5 is retried for up to five seconds before rollback. Restart errors retain the underlying diagnostic in the result log. Inspect its result log and `service status` afterward. First-install failure removes the registration. A restart uses the same release for recovery; it cannot fix an invalid configuration or unavailable runtime. Interrupted operations leave a lock under the installation directory; inspect worker logs/processes before removing a stale lock.
 
-The installation contains a copied Bun runtime and bundled CLI under `~/Library/Application Support/agent-context-trimmer/releases/`. Default proxy data lives under `data/`, the LaunchAgent plist under `~/Library/LaunchAgents/`, and logs under `~/Library/Logs/agent-context-trimmer/`. Existing releases and logs are retained for manual inspection; automatic pruning/rotation is not yet implemented.
+The installation contains a copied Bun runtime and bundled CLI under `~/Library/Application Support/crabex/releases/`. Default proxy data lives under `data/`, the LaunchAgent plist under `~/Library/LaunchAgents/`, and logs under `~/Library/Logs/crabex/`. Existing releases and logs are retained for manual inspection; automatic pruning/rotation is not yet implemented.
 
 LaunchAgents do not inherit your interactive shell setup. Pass environment variable **names** when installing routes that require them:
 
@@ -46,6 +46,12 @@ bun packages/proxy/dist/cli.mjs service install --env MY_PROVIDER_TOKEN
 Only explicitly selected variables plus HOME and PATH are configured. Existing selected values survive updates; repeat `--env NAME` to refresh a value. Values are stored locally in files restricted to the user, including the plist and operation records. ChatGPT bearer tokens are not copied from Codex: the Apps relay still learns those from live authenticated Codex traffic. Existing Codex config path selection is preserved as an absolute path.
 
 Uninstall does not rewrite Codex endpoint settings. Point Codex at a working endpoint before removing a service it depends on.
+
+## Upgrading from agent-context-trimmer
+
+A service installed under the former name (`com.agent-context-trimmer.proxy`) is
+migrated by the next `service install`. See [upgrading.md](upgrading.md) for
+what moves, how rollback works, and the verification checklist.
 
 ## Local HTTPS and Keychain trust
 
@@ -104,8 +110,8 @@ stages a renewal. There is no background renewal job: use the CLI before expiry.
 Setup in the web UI shows the expiry, renewal warning, and Keychain validation.
 
 ```sh
-agent-context-trimmer service tls status
-agent-context-trimmer service tls renew
+crabex service tls status
+crabex service tls renew
 ```
 
 Renewal preserves the CA and stages a new certificate directory, then restarts
@@ -119,7 +125,7 @@ TLS directory, identified by its recorded SHA-256 fingerprint. Other Keychain
 certificates are left unchanged. To clean up TLS files after an interrupted setup:
 
 ```sh
-agent-context-trimmer service tls remove
+crabex service tls remove
 ```
 
 Removal refuses while an installed service is configured to use TLS. Uninstall
@@ -129,7 +135,7 @@ For a manually launched proxy, `proxy --tls-dir <directory>` accepts `cert.pem`,
 `key.pem`, and `ca.pem`. It does not install trust. The service installer owns its
 certificates and uses `--https` instead of accepting custom `--tls-dir` options.
 
-The Relaydeck UI is included in each service release and served on the proxy's
+The Crabex UI is included in each service release and served on the proxy's
 own origin (for example `https://127.0.0.1:8765`). No separate UI server, port,
 or proxy-origin environment variable is required. Rebuild both packages with
 `vp run build` before installing an updated release.

@@ -11,7 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
-.agent-context-trimmer/
+.crabex/
 
 # Editor directories and files
 .vscode/*

@@ -7,18 +7,18 @@ describe("parseCliOptions", () => {
   it("defaults to the ChatGPT backend origin", () => {
     expect(parseCliOptions(["proxy"])).toEqual({
       command: "proxy",
-      configPath: ".agent-context-trimmer/config.json",
+      configPath: ".crabex/config.json",
       host: "127.0.0.1",
       port: 8765,
       upstreamOrigin: "https://chatgpt.com",
-      capturesDirectory: ".agent-context-trimmer/captures",
-      transformationsPath: ".agent-context-trimmer/transformations.json",
-      modelRoutesPath: ".agent-context-trimmer/model-routes.json",
-      configBundlePath: ".agent-context-trimmer/config-bundle.json",
+      capturesDirectory: ".crabex/captures",
+      transformationsPath: ".crabex/transformations.json",
+      modelRoutesPath: ".crabex/model-routes.json",
+      configBundlePath: ".crabex/config-bundle.json",
       codexConfigPath: defaultCodexConfigPath(),
-      upstreamCachePath: ".agent-context-trimmer/upstream-cache.json",
-      statsPath: ".agent-context-trimmer/stats.json",
-      snapshotCachePath: ".agent-context-trimmer/snapshot-cache.json",
+      upstreamCachePath: ".crabex/upstream-cache.json",
+      statsPath: ".crabex/stats.json",
+      snapshotCachePath: ".crabex/snapshot-cache.json",
     });
   });
 
@@ -51,7 +51,7 @@ describe("parseCliOptions", () => {
       ]),
     ).toEqual({
       command: "proxy",
-      configPath: ".agent-context-trimmer/config.json",
+      configPath: ".crabex/config.json",
       host: "0.0.0.0",
       port: 9000,
       upstreamOrigin: "http://127.0.0.1:8317",

@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 
 const DAY = 86_400_000;
 const CA_BUNDLE_GRACE_MS = 7 * DAY;
-export const MANAGED_SERVICE_ENV = "RELAYDECK_MANAGED_SERVICE";
+export const MANAGED_SERVICE_ENV = "CRABEX_MANAGED_SERVICE";
 export interface TlsStatus {
   enabled: boolean;
   expiresAt?: string;
@@ -288,7 +288,7 @@ export async function prepareTls(
     const config = join(root, "ca.cnf");
     await writeFile(
       config,
-      `[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=ca\n[dn]\nCN=Agent Context Trimmer ${randomUUID()}\n[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n`,
+      `[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=ca\n[dn]\nCN=Crabex ${randomUUID()}\n[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n`,
       { mode: 0o600 },
     );
     // Restrictive directory and umask keep generated keys private from creation.

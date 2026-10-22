@@ -1,13 +1,5 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import {
-  Activity,
-  ArrowRightLeft,
-  Boxes,
-  Cable,
-  Layers3,
-  Radio,
-  SlidersHorizontal,
-} from "lucide-react";
+import { Activity, ArrowRightLeft, Boxes, Cable, Layers3, SlidersHorizontal } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { getProxyConfig } from "../lib/api.ts";
 
@@ -29,13 +21,11 @@ export function AppShell() {
   return (
     <div className="app-shell">
       <aside className="app-navigation">
-        <Link to="/" className="brand" aria-label="Relaydeck home">
-          <span className="brand-mark">
-            <Radio size={23} strokeWidth={1.8} />
-          </span>
+        <Link to="/" className="brand" aria-label="Crabex home">
+          <img className="brand-mark" src="/crabex.png" alt="" />
           <span className="brand-copy">
-            <strong>Relaydeck</strong>
-            <small>AGENT CONTROL ROOM</small>
+            <strong>Crabex</strong>
+            <small>ANY MODEL, CODEX SHELL</small>
           </span>
         </Link>
         <div className="nav-label">Workspace</div>
