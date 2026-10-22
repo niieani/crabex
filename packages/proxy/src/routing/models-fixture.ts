@@ -4,9 +4,9 @@ import fixture from "./models-fixture.json";
 let cached: ModelDefinition[] | undefined;
 
 /**
- * The model catalog baked into the proxy (a captured upstream /models
- * response). Used as a template source for model routes and as a pin target
- * for serving the fixture version of a model in place of the fetched one.
+ * The official Codex model catalog baked into the proxy. Used as a template
+ * source for model routes and as a pin target for serving the fixture version
+ * of a model in place of the fetched one.
  */
 export function modelsFixture(): ModelDefinition[] {
   cached ??= parseModels(fixture);

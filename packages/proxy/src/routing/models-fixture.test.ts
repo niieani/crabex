@@ -9,14 +9,15 @@ describe("modelsFixture", () => {
     const slugs = modelsFixture().map((model) => model.slug);
 
     expect(slugs).toContain("gpt-6-astra");
+    expect(slugs).toContain("gpt-6.1-sol");
     expect(slugs).toContain("gpt-6-sol");
     expect(slugs).toContain("gpt-6-luna");
     expect(slugs).toContain("gpt-5.6-terra");
-    expect(slugs).toHaveLength(9);
+    expect(slugs).toHaveLength(11);
   });
 
-  it("does not bundle the local cache account identity", () => {
-    expect(fixture).not.toHaveProperty("identity");
+  it("bundles the official catalog without local cache metadata", () => {
+    expect(Object.keys(fixture)).toEqual(["models"]);
   });
 
   it("exposes the astra model_messages strings as catalog fields", () => {
@@ -45,5 +46,16 @@ describe("modelsFixture", () => {
     );
 
     expect(field?.identifier).toBe("segment:codex_base");
+  });
+
+  it("includes the official GPT-6.1 Sol route template and reasoning levels", () => {
+    const sol = modelsFixture().find((model) => model.slug === "gpt-6.1-sol");
+    expect(sol?.model_messages).toHaveProperty("instructions_template");
+    expect(sol?.supported_reasoning_levels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ effort: "low" }),
+        expect.objectContaining({ effort: "ultra" }),
+      ]),
+    );
   });
 });
