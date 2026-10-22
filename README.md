@@ -155,3 +155,7 @@ vp run build
 The repository holds `packages/proxy` (Bun server and CLI) and `packages/ui`
 (React and Tailwind UI). `vp run dev:ui` runs a standalone Vite server for
 frontend-only work.
+
+## License
+
+[MIT](LICENSE) © Bazyli Brzóska
