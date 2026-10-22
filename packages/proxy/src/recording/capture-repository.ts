@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import type { ModelRouteStore } from "../config/model-route-store.ts";
@@ -70,6 +70,17 @@ interface ScannedFile {
   snapshotIds: string[];
 }
 
+/** Byte ranges of a capture file's snapshot-relevant lines, up to `scanned`. */
+interface LineIndex {
+  scanned: number;
+  lines: [start: number, end: number][];
+  /** Bytes just before `scanned`, to tell an appended file from a rewritten one. */
+  tail: string;
+}
+
+const EMPTY_INDEX: LineIndex = { scanned: 0, lines: [], tail: "" };
+const TAIL_BYTES = 256;
+
 /**
  * Snapshot catalog over the capture directory. Snapshots are built
  * incrementally — only capture files whose size/mtime changed are reparsed —
@@ -84,6 +95,8 @@ export class FileCaptureRepository implements SnapshotSource {
   readonly #total: number;
   readonly #snapshots = new Map<string, ContextSnapshot>();
   readonly #files = new Map<string, ScannedFile>();
+  /** In-memory only: lets a growing live capture be rescanned from where it ended. */
+  readonly #indexes = new Map<string, LineIndex>();
   #listing: Promise<ContextSnapshot[]> | undefined;
   #modelSignature: string | undefined;
   #dirty = false;
@@ -161,7 +174,7 @@ export class FileCaptureRepository implements SnapshotSource {
       ) {
         continue;
       }
-      const events = parseEvents(await readFile(path, "utf8"));
+      const events = await this.#readEvents(name, fileStat.size);
       const built = buildSnapshots(events, models);
       for (const id of previous?.snapshotIds ?? []) this.#snapshots.delete(id);
       for (const snapshot of built) this.#snapshots.set(snapshot.id, snapshot);
@@ -198,12 +211,28 @@ export class FileCaptureRepository implements SnapshotSource {
       throw error;
     }
     for (const name of names) {
-      const events = parseEvents(await readFile(join(this.#directory, name), "utf8"));
+      const fileStat = await stat(join(this.#directory, name));
+      const events = await this.#readEvents(name, fileStat.size);
       const previewEvents = events.map((event) => previewEvent(event, transformations));
       const snapshot = buildSnapshots(previewEvents, models).find((item) => item.id === snapshotId);
       if (snapshot !== undefined) return snapshot;
     }
     return undefined;
+  }
+
+  /**
+   * Reads the events snapshots depend on. Captures can grow to gigabytes of
+   * metadata-only lines, so the file is streamed, irrelevant lines are skipped
+   * before parsing, and a file that only grew is indexed from where it ended.
+   */
+  async #readEvents(name: string, size: number): Promise<CaptureEvent[]> {
+    const path = join(this.#directory, name);
+    let index = this.#indexes.get(name) ?? EMPTY_INDEX;
+    if (index.scanned > size || (await tailOf(path, index.scanned)) !== index.tail)
+      index = EMPTY_INDEX;
+    index = await extendLineIndex(path, index);
+    this.#indexes.set(name, index);
+    return readIndexedEvents(path, index);
   }
 
   /** Applies the combo/total caps, pruning the in-memory map to match. */
@@ -356,15 +385,64 @@ function previewEvent(event: CaptureEvent, transformations: Transformation[]): C
   return preview;
 }
 
-function parseEvents(content: string): CaptureEvent[] {
-  const lines = content.split("\n");
-  const completeLineCount = content.endsWith("\n") ? lines.length : lines.length - 1;
+const NEWLINE = 0x0a;
+
+/** Only these events feed snapshots; the rest are metadata-only stream events. */
+function isRelevantLine(line: string): boolean {
+  return (
+    line.includes('"payload":') ||
+    line.includes('"responseSummary":') ||
+    line.includes('"errorSummary":')
+  );
+}
+
+/** Scans complete lines after `index.scanned`; a trailing partial line waits for the next scan. */
+async function extendLineIndex(path: string, index: LineIndex): Promise<LineIndex> {
+  const lines = [...index.lines];
+  const decoder = new TextDecoder();
+  let offset = index.scanned;
+  // Chunks of the current unfinished line, joined only once its newline arrives.
+  let partial: Uint8Array[] = [];
+  let partialLength = 0;
+  for await (const chunk of Bun.file(path).slice(index.scanned).stream()) {
+    let start = 0;
+    for (let end = chunk.indexOf(NEWLINE); end !== -1; end = chunk.indexOf(NEWLINE, start)) {
+      const piece = chunk.subarray(start, end);
+      const line = partialLength === 0 ? piece : Buffer.concat([...partial, piece]);
+      const lineStart = offset - partialLength;
+      if (isRelevantLine(decoder.decode(line))) lines.push([lineStart, lineStart + line.length]);
+      offset += piece.length + 1;
+      partial = [];
+      partialLength = 0;
+      start = end + 1;
+    }
+    if (start < chunk.length) {
+      partial.push(chunk.slice(start));
+      partialLength += chunk.length - start;
+      offset += chunk.length - start;
+    }
+  }
+  const scanned = offset - partialLength;
+  return { scanned, lines, tail: await tailOf(path, scanned) };
+}
+
+async function tailOf(path: string, end: number): Promise<string> {
+  return Bun.file(path)
+    .slice(Math.max(0, end - TAIL_BYTES), end)
+    .text();
+}
+
+async function readIndexedEvents(path: string, index: LineIndex): Promise<CaptureEvent[]> {
   const events: CaptureEvent[] = [];
-  for (let index = 0; index < completeLineCount; index += 1) {
-    const line = lines[index];
-    if (line === undefined || line.trim() === "") continue;
-    const event = JSON.parse(line) as CaptureEvent;
-    events.push(event);
+  const handle = await open(path, "r");
+  try {
+    for (const [start, end] of index.lines) {
+      const buffer = Buffer.alloc(end - start);
+      await handle.read(buffer, 0, buffer.length, start);
+      events.push(JSON.parse(buffer.toString("utf8")) as CaptureEvent);
+    }
+  } finally {
+    await handle.close();
   }
   return events;
 }

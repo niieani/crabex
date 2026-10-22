@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -10,7 +10,7 @@ import type { Transformation } from "../context/transformation.ts";
 
 describe("file capture repository", () => {
   it("shares concurrent scans and restores the file index across restarts", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "relaydeck-cache-"));
+    const directory = await mkdtemp(join(tmpdir(), "crabex-cache-"));
     const path = join(directory, "snapshot-cache.json");
     const capture = join(directory, "capture.ndjson");
     await writeFile(
@@ -37,8 +37,46 @@ describe("file capture repository", () => {
     await restored.flush();
   });
 
+  it("indexes a growing capture incrementally and skips metadata-only lines", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "crabex-growing-"));
+    const capture = join(directory, "capture.ndjson");
+    const request = (sequence: number, text: string) =>
+      JSON.stringify(
+        event(sequence, "client_to_upstream", {
+          type: "response.create",
+          model: "test",
+          input: [message("user", text)],
+        }),
+      );
+    const metadata = JSON.stringify({
+      sessionId: "session",
+      sequence: 2,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      transport: "websocket",
+      direction: "upstream_to_client",
+      encoding: "utf8",
+      payloadMode: "metadata",
+      payloadBytes: 10,
+    });
+    const third = request(3, "third");
+    await writeFile(capture, `${request(1, "first")}\n${metadata}\n${third.slice(0, 20)}`);
+    const repository = new FileCaptureRepository(directory);
+    expect((await repository.list()).map((snapshot) => snapshot.id)).toEqual(["session:1"]);
+
+    await appendFile(capture, `${third.slice(20)}\n`);
+    expect((await repository.list()).map((snapshot) => snapshot.parts[0]?.text)).toEqual([
+      "third",
+      "first",
+    ]);
+
+    await writeFile(capture, `${request(1, "rewritten, not appended")}\n${metadata}\n`);
+    expect((await repository.list()).map((snapshot) => snapshot.parts[0]?.text)).toEqual([
+      "rewritten, not appended",
+    ]);
+  });
+
   it("previews only the indexed capture even when another file cannot be parsed", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "relaydeck-preview-"));
+    const directory = await mkdtemp(join(tmpdir(), "crabex-preview-"));
     await writeFile(
       join(directory, "z-target.ndjson"),
       `${JSON.stringify(event(1, "client_to_upstream", { type: "response.create", model: "test", input: [message("user", "hello")] }))}\n`,
