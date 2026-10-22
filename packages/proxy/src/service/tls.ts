@@ -6,6 +6,8 @@ import { homedir } from "node:os";
 
 const DAY = 86_400_000;
 const CA_BUNDLE_GRACE_MS = 7 * DAY;
+/** macOS rejects TLS server certificates valid for more than 825 days, even under a user-trusted CA. */
+const SERVER_CERTIFICATE_DAYS = 825;
 export const MANAGED_SERVICE_ENV = "CRABEX_MANAGED_SERVICE";
 export interface TlsStatus {
   enabled: boolean;
@@ -364,7 +366,7 @@ export async function prepareTls(
       "-set_serial",
       `0x${randomUUID().replaceAll("-", "")}`,
       "-days",
-      "365",
+      String(SERVER_CERTIFICATE_DAYS),
       "-extfile",
       config,
       "-extensions",

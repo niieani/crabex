@@ -78,7 +78,7 @@ export function ConfigBundlePage() {
         <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="section-label">Managed policy</p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Configuration</h1>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Advanced</h1>
           </div>
           <button
             type="button"

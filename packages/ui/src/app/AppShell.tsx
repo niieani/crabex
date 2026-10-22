@@ -4,11 +4,11 @@ import { useQuery } from "@tanstack/react-query";
 import { getProxyConfig } from "../lib/api.ts";
 
 const navigation = [
+  { to: "/routes", label: "Model routes", icon: ArrowRightLeft },
   { to: "/", label: "Captures", icon: Layers3 },
   { to: "/requests", label: "Live traffic", icon: Activity },
-  { to: "/routes", label: "Model routes", icon: ArrowRightLeft },
   { to: "/transformations", label: "Transformations", icon: SlidersHorizontal },
-  { to: "/config-bundle", label: "Configuration", icon: Boxes },
+  { to: "/config-bundle", label: "Advanced", icon: Boxes },
   { to: "/setup", label: "Connection", icon: Cable },
 ] as const;
 

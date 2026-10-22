@@ -104,9 +104,10 @@ edits. Fully restart ChatGPT afterward to use its new endpoints. Existing client
 holding an HTTP URL will not work against a listener converted to HTTPS.
 
 Certificates and private keys live under the installation's `tls/` directory,
-outside versioned releases. The CA lasts ten years; server certificates last one
-year. Updates reuse certificates until their last 30 days, when installation
-stages a renewal. There is no background renewal job: use the CLI before expiry.
+outside versioned releases. The CA lasts ten years; server certificates last 825
+days, the longest macOS accepts for any TLS server certificate. Updates reuse
+certificates until their last 30 days, when installation stages a renewal. There
+is no background renewal job: use the CLI before expiry.
 Setup in the web UI shows the expiry, renewal warning, and Keychain validation.
 
 ```sh
