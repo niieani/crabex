@@ -58,9 +58,12 @@ resource unavailable, which is free (OpenAI does not charge that attempt).
 Default retry statuses already include `429` and the 5xx set. The gateway
 sometimes accepts the request with HTTP 200 and then emits
 `rate_limit_exceeded` on the SSE stream (“We're currently processing too many
-requests”). That in-stream error is treated as a `429`: the same target is
+requests”) or `flex_unavailable` (“Flex capacity unavailable”). Either error
+before any output is treated as a `429`: the same target is
 retried, then the route fails over to the regular model. Those attempts count
-as failures on the flex target in Model Routes stats, not as serves.
+as failures on the flex target in Model Routes stats, not as serves. Once output
+starts, errors are forwarded without retrying to avoid duplicating output or
+tool calls.
 
 A circuit breaker skips a target that has just exhausted its attempts, so the
 next request can go straight to standard instead of waiting on a dead flex

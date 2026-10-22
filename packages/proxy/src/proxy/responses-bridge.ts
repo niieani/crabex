@@ -120,6 +120,7 @@ export function wrappedErrorEvent(status: number, detail: string): string {
  */
 const STREAM_RETRY_CODES = new Map([
   ["rate_limit_exceeded", 429],
+  ["flex_unavailable", 429],
   ["anthropic_overloaded", 503],
 ]);
 const STREAM_ERROR_TYPES = new Set(["error", "response.failed", "response.error"]);
@@ -171,7 +172,7 @@ function streamEventType(eventData: string): string | undefined {
 
 /**
  * After an HTTP 200, look at the SSE stream before committing the attempt.
- * `rate_limit_exceeded` before any output is a 429-equivalent; otherwise the
+ * Rate limits and unavailable flex capacity before any output are 429-equivalent; otherwise the
  * original events are replayed so the caller can forward them.
  */
 export async function resolveEventStreamResponse(

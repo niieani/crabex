@@ -236,6 +236,82 @@ describe("fetchWithFailover", () => {
     ]);
   });
 
+  it.each(["error", "response.failed", "response.error"])(
+    "retries a streamed flex_unavailable %s before falling back to standard",
+    async (type) => {
+      const error = {
+        type: "resource_unavailable",
+        code: "flex_unavailable",
+        message: "Flex capacity unavailable.",
+      };
+      const failure =
+        type === "error" ? { type, error } : { type, response: { status: "failed", error } };
+      const flexUnavailable = () =>
+        sseResponse([{ type: "response.created", response: { status: "in_progress" } }, failure]);
+      const standardEvents = [
+        { type: "response.output_text.delta", delta: "ok" },
+        { type: "response.completed", response: { status: "completed" } },
+      ];
+      const fetchImpl = fakeFetch({
+        "openai.gpt-6-astra-flex": [flexUnavailable, flexUnavailable, flexUnavailable],
+        "openai.gpt-6-astra": [sseResponse(standardEvents)],
+      });
+
+      const result = await fetchWithFailover({
+        route: astraRoute(),
+        fetchImpl,
+        sleep: noSleep,
+        requestFor: (target) => ({
+          url: new URL("https://gateway.test/openai/v1/responses"),
+          init: { method: "POST", body: JSON.stringify({ model: target.upstreamModel }) },
+        }),
+      });
+
+      expect(result.servedBy).toBe("openai.gpt-6-astra");
+      expect(fetchImpl.seen).toEqual([
+        "openai.gpt-6-astra-flex",
+        "openai.gpt-6-astra-flex",
+        "openai.gpt-6-astra-flex",
+        "openai.gpt-6-astra",
+      ]);
+      expect(result.attempts.map(({ outcome, status }) => ({ outcome, status }))).toEqual([
+        { outcome: "retry", status: 429 },
+        { outcome: "retry", status: 429 },
+        { outcome: "retry", status: 429 },
+        { outcome: "served", status: 200 },
+      ]);
+      expect(await readSseData(result.response)).toEqual(standardEvents);
+    },
+  );
+
+  it("forwards flex_unavailable after output starts without retrying or falling back", async () => {
+    const events = [
+      { type: "response.created", response: { status: "in_progress" } },
+      { type: "response.output_item.added", item: { type: "message" } },
+      {
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: { code: "flex_unavailable", message: "Flex capacity unavailable." },
+        },
+      },
+    ];
+    const fetchImpl = fakeFetch({ "openai.gpt-6-astra-flex": [sseResponse(events)] });
+
+    const result = await fetchWithFailover({
+      route: astraRoute(),
+      fetchImpl,
+      sleep: noSleep,
+      requestFor: (target) => ({
+        url: new URL("https://gateway.test/openai/v1/responses"),
+        init: { method: "POST", body: JSON.stringify({ model: target.upstreamModel }) },
+      }),
+    });
+
+    expect(fetchImpl.seen).toEqual(["openai.gpt-6-astra-flex"]);
+    expect(await readSseData(result.response)).toEqual(events);
+  });
+
   it("fails over to the regular model when flex exhausts its attempts", async () => {
     const fetchImpl = fakeFetch({
       "openai.gpt-6-astra-flex": [
