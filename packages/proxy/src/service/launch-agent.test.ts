@@ -12,6 +12,7 @@ import {
   bootstrapWithRetry,
   LaunchctlError,
   relocateServiceState,
+  changedSinceCopy,
 } from "./launch-agent.ts";
 
 const previous = {
@@ -315,5 +316,17 @@ describe("legacy service migration", () => {
     expect(
       relocateServiceState({ ...previous, release: `${legacy}-other/x` }, legacy, root).release,
     ).toBe(`${legacy}-other/x`);
+  });
+
+  it("re-syncs only legacy files changed since the install copied them", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "crabex-resync-"));
+    const source = join(directory, "source");
+    const destination = join(directory, "destination");
+    await writeFile(source, "same");
+    await writeFile(destination, "same");
+    expect(await changedSinceCopy(source, destination)).toBe(false);
+    expect(await changedSinceCopy(source, join(directory, "missing"))).toBe(true);
+    await writeFile(source, "appended later");
+    expect(await changedSinceCopy(source, destination)).toBe(true);
   });
 });

@@ -8,6 +8,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -283,6 +284,14 @@ async function copyLegacyRoot(): Promise<void> {
   });
 }
 
+/** Skips files the install already copied, so re-syncing gigabytes of captures stays fast. */
+export async function changedSinceCopy(source: string, destination: string): Promise<boolean> {
+  const [from, to] = await Promise.all([stat(source), stat(destination).catch(() => undefined)]);
+  return (
+    from.isDirectory() || to === undefined || from.size !== to.size || from.mtimeMs > to.mtimeMs
+  );
+}
+
 export async function activateWithRollback(
   operation: Operation,
   actions: {
@@ -330,6 +339,7 @@ async function worker(operationPath: string): Promise<void> {
             await cp(join(LEGACY_ROOT, "data"), join(ROOT, "data"), {
               recursive: true,
               force: true,
+              filter: changedSinceCopy,
             }).catch((error: NodeJS.ErrnoException) => {
               if (error.code !== "ENOENT") throw error;
             });
