@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
-import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
 import { readTls, syncProxyStartupCodexCa, tlsStatus } from "./service/tls.ts";
@@ -20,7 +19,7 @@ import { TargetBreakers } from "./routing/failover.ts";
 import { openAnthropicKey } from "./proxy/anthropic/envelope.ts";
 import { modelRouteFromConfig } from "./routing/model-routes.ts";
 import { FileCaptureRepository } from "./recording/capture-repository.ts";
-import { openNdjsonCaptureSink } from "./recording/ndjson-capture-sink.ts";
+import { openRotatingCaptureSink } from "./recording/ndjson-capture-sink.ts";
 import { StatsStore } from "./recording/stats-store.ts";
 import { LiveRequestStore } from "./requests/live-request-store.ts";
 
@@ -43,6 +42,9 @@ Options:
   --listen <host:port>  Listener address (default: 127.0.0.1:8765)
   --upstream <origin>   Upstream origin (default: https://chatgpt.com)
   --captures <dir>      Capture directory (default: .crabex/captures)
+  --capture-retention-days <n>
+                        Delete capture files older than n days (default: 7)
+  --capture-max-mb <n>  Delete oldest captures beyond n MiB in total (default: 2048)
   --transformations <file>
                         Transformation set (default: .crabex/transformations.json)
   --model-routes <file> Model route set (default: .crabex/model-routes.json)
@@ -88,8 +90,9 @@ async function main(): Promise<void> {
     }
   }
   const proxyConfig = await openProxyConfigStore(options.configPath);
-  const capturePath = join(options.capturesDirectory, captureFileName());
-  const captureSink = await openNdjsonCaptureSink(capturePath);
+  const captureSink = await openRotatingCaptureSink(options.capturesDirectory, {
+    retention: { maxAgeDays: options.captureRetentionDays, maxTotalBytes: options.captureMaxBytes },
+  });
   const transformationStore = await openTransformationStore(options.transformationsPath);
   const upstreamCacheStore = await openUpstreamCacheStore(options.upstreamCachePath);
   const modelRouteStore = await openModelRouteStore(
@@ -160,7 +163,9 @@ async function main(): Promise<void> {
     }),
   });
 
-  process.stdout.write(`Crabex UI & proxy: ${proxy.origin}\ncapturing ${capturePath}\n`);
+  process.stdout.write(
+    `Crabex UI & proxy: ${proxy.origin}\ncapturing to ${options.capturesDirectory} (kept ${options.captureRetentionDays} days, up to ${Math.round(options.captureMaxBytes / 1024 / 1024)} MiB)\n`,
+  );
   await waitForShutdownSignal();
   await proxy.close();
   await captureSink.close();
@@ -170,11 +175,6 @@ async function main(): Promise<void> {
 
 function reportMigration(notice: string | undefined): void {
   if (notice !== undefined) process.stderr.write(`${notice}\n`);
-}
-
-function captureFileName(): string {
-  const timestamp = new Date().toISOString().replaceAll(":", "-");
-  return `${timestamp}-${randomUUID()}.ndjson`;
 }
 
 function waitForShutdownSignal(): Promise<void> {

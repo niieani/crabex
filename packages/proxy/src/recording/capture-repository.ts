@@ -163,6 +163,13 @@ export class FileCaptureRepository implements SnapshotSource {
       if (isMissingDirectory(error)) names = [];
       else throw error;
     }
+    // Pruned captures keep their snapshots; only their scan bookkeeping goes.
+    const present = new Set(names);
+    for (const name of [...this.#files.keys(), ...this.#indexes.keys()]) {
+      if (present.has(name)) continue;
+      this.#dirty ||= this.#files.delete(name);
+      this.#indexes.delete(name);
+    }
     for (const name of names) {
       const path = join(this.#directory, name);
       const fileStat = await stat(path);

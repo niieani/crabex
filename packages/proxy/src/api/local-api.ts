@@ -142,6 +142,9 @@ export function createLocalApi(options: {
         if (url.pathname === `${API_PREFIX}/live-requests` && request.method === "GET") {
           return json(options.requests?.snapshot() ?? { active: [], recent: [] });
         }
+        if (url.pathname === `${API_PREFIX}/usage` && request.method === "GET") {
+          return json({ days: options.stats?.usageLedger() ?? {} });
+        }
         if (url.pathname === `${API_PREFIX}/stats/reset` && request.method === "POST") {
           await options.stats?.reset();
           return json({ ok: true });

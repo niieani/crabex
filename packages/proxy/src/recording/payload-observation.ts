@@ -105,6 +105,7 @@ function responseSummary(value: Record<string, unknown>): CaptureResponseSummary
     ...(stringValue(response?.previous_response_id) === undefined
       ? {}
       : { previousResponseId: response?.previous_response_id as string }),
+    ...(stringValue(response?.model) === undefined ? {} : { model: response?.model as string }),
     ...(usageValue(response?.usage) === undefined ? {} : { usage: usageValue(response?.usage) }),
   };
 }
@@ -183,8 +184,13 @@ function usageValue(value: unknown): CaptureUsage | undefined {
   const usage = objectValue(value);
   if (typeof usage?.input_tokens !== "number") return undefined;
   const details = objectValue(usage.input_tokens_details);
+  const outputDetails = objectValue(usage.output_tokens_details);
   return {
     inputTokens: usage.input_tokens,
     cachedTokens: typeof details?.cached_tokens === "number" ? details.cached_tokens : 0,
+    ...(typeof usage.output_tokens === "number" ? { outputTokens: usage.output_tokens } : {}),
+    ...(typeof outputDetails?.reasoning_tokens === "number"
+      ? { reasoningTokens: outputDetails.reasoning_tokens }
+      : {}),
   };
 }

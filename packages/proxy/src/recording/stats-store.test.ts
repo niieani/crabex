@@ -282,6 +282,47 @@ describe("stats store", () => {
     });
   });
 
+  it("keeps a daily usage ledger per served model through counter resets", async () => {
+    const path = await temporaryPath();
+    const store = await StatsStore.open(path);
+    const routed = {
+      action: "routed" as const,
+      routeSlugs: ["kimi-k3"],
+      upstreamModel: "moonshot-kimi-k3",
+    };
+    const usage = { inputTokens: 100, cachedTokens: 40, outputTokens: 10, reasoningTokens: 4 };
+    store.recordUsage(undefined, usage, "2026-10-01T10:00:00.000Z", "gpt-6-sol");
+    store.recordUsage(undefined, usage, "2026-10-01T23:00:00.000Z", "gpt-6-sol");
+    store.recordUsage(routed, { inputTokens: 5, cachedTokens: 0 }, "2026-10-02T01:00:00.000Z");
+
+    await store.reset();
+    const ledger = (await StatsStore.open(path)).usageLedger();
+
+    expect(ledger).toEqual({
+      "2026-10-01": {
+        "gpt-6-sol": {
+          model: "gpt-6-sol",
+          responses: 2,
+          inputTokens: 200,
+          cachedTokens: 80,
+          outputTokens: 20,
+          reasoningTokens: 8,
+        },
+      },
+      "2026-10-02": {
+        "kimi-k3:moonshot-kimi-k3": {
+          model: "moonshot-kimi-k3",
+          routeSlug: "kimi-k3",
+          responses: 1,
+          inputTokens: 5,
+          cachedTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+        },
+      },
+    });
+  });
+
   it("persists across restarts and resets counters", async () => {
     const path = await temporaryPath();
     const store = await StatsStore.open(path);

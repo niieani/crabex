@@ -12,6 +12,8 @@ describe("parseCliOptions", () => {
       port: 8765,
       upstreamOrigin: "https://chatgpt.com",
       capturesDirectory: ".crabex/captures",
+      captureRetentionDays: 7,
+      captureMaxBytes: 2048 * 1024 * 1024,
       transformationsPath: ".crabex/transformations.json",
       modelRoutesPath: ".crabex/model-routes.json",
       configBundlePath: ".crabex/config-bundle.json",
@@ -32,6 +34,10 @@ describe("parseCliOptions", () => {
         "http://127.0.0.1:8317",
         "--captures",
         "captures.local",
+        "--capture-retention-days",
+        "30",
+        "--capture-max-mb",
+        "512",
         "--transformations",
         "rules.local.json",
         "--model-routes",
@@ -56,6 +62,8 @@ describe("parseCliOptions", () => {
       port: 9000,
       upstreamOrigin: "http://127.0.0.1:8317",
       capturesDirectory: "captures.local",
+      captureRetentionDays: 30,
+      captureMaxBytes: 512 * 1024 * 1024,
       transformationsPath: "rules.local.json",
       modelRoutesPath: "routes.local.json",
       configBundlePath: "bundle.local.json",
@@ -65,6 +73,12 @@ describe("parseCliOptions", () => {
       snapshotCachePath: "snapshots.local.json",
       project: "fixture-project",
     });
+  });
+
+  it("rejects non-positive capture limits", () => {
+    expect(() => parseCliOptions(["proxy", "--capture-retention-days", "0"])).toThrow(
+      "invalid --capture-retention-days value: 0",
+    );
   });
 
   it("rejects unknown arguments", () => {

@@ -103,14 +103,15 @@ All state lives in `.crabex/` relative to where you start the proxy (the macOS
 service keeps its own copy under `~/Library/Application Support/crabex/data`).
 Keep private route configuration there rather than in a repository.
 
-| File                                                       | Purpose                                                   |
-| ---------------------------------------------------------- | --------------------------------------------------------- |
-| `model-routes.json`                                        | Routes, targets, tool policies, picker metadata           |
-| `transformations.json`                                     | Context transformation rules                              |
-| `config.json`                                              | Proxy settings (Apps relay, routed agents, search broker) |
-| `config-bundle.json`                                       | Config-bundle override                                    |
-| `captures/`                                                | NDJSON request captures                                   |
-| `stats.json`, `upstream-cache.json`, `snapshot-cache.json` | Telemetry and caches                                      |
+| File                                         | Purpose                                                                                     |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `model-routes.json`                          | Routes, targets, tool policies, picker metadata                                             |
+| `transformations.json`                       | Context transformation rules                                                                |
+| `config.json`                                | Proxy settings (Apps relay, routed agents, search broker)                                   |
+| `config-bundle.json`                         | Config-bundle override                                                                      |
+| `captures/`                                  | NDJSON request captures, kept for 7 days or 2 GiB ([retention](docs/captures.md#retention)) |
+| `stats.json`                                 | Route counters and a daily per-model token ledger, kept indefinitely                        |
+| `upstream-cache.json`, `snapshot-cache.json` | Caches                                                                                      |
 
 Every path can be overridden with a flag; run `crabex --help` for the full list.
 

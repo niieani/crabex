@@ -25,6 +25,21 @@ transformation set on demand. The retained catalog keeps the newest three
 snapshots per model/project/harness combination, up to 50 overall; raw captures
 are unaffected.
 
+## Retention
+
+The proxy starts a new capture file every UTC day and whenever the current one
+reaches 256 MiB. On startup and at each rotation it deletes capture files last
+written more than 7 days ago, then the oldest remaining files while the
+directory exceeds 2 GiB. The file being written is never deleted. Adjust with
+`--capture-retention-days <n>` and `--capture-max-mb <n>`.
+
+Snapshots already in the catalog outlive their capture file, though **Preview
+rules** needs the raw capture. Stats are recorded as traffic happens and are
+kept in `stats.json` indefinitely, including a daily per-model token ledger
+(responses, input, cached, output, and reasoning tokens) served at
+`GET /__crabex/api/usage`. **Reset counters** on the Model routes page clears
+route counters but keeps that ledger.
+
 ## Run a smoke Probe
 
 A Probe is a trivial one-turn request whose purpose is to reveal the initial

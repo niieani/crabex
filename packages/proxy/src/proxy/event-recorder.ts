@@ -37,9 +37,9 @@ export class EventRecorder {
   }
 
   /** Attributes completed-response token usage to a prior routing decision. */
-  recordUsage(routing: CaptureRouting, usage: CaptureUsage): void {
+  recordUsage(routing: CaptureRouting, usage: CaptureUsage, responseModel?: string): void {
     try {
-      this.#stats?.recordUsage(routing, usage, this.#now().toISOString());
+      this.#stats?.recordUsage(routing, usage, this.#now().toISOString(), responseModel);
     } catch {
       // stats are best-effort
     }
@@ -120,9 +120,13 @@ export class EventRecorder {
         this.#stats?.recordRouting(metadata.routing, common.timestamp);
       }
       const usage = observation.responseSummary?.usage;
-      const usageFor = metadata.usageFor ?? metadata.routing;
-      if (usage !== undefined && usageFor !== undefined) {
-        this.#stats?.recordUsage(usageFor, usage, common.timestamp);
+      if (usage !== undefined) {
+        this.#stats?.recordUsage(
+          metadata.usageFor ?? metadata.routing,
+          usage,
+          common.timestamp,
+          observation.responseSummary?.model,
+        );
       }
     } catch {
       // stats are best-effort

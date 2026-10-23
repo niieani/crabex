@@ -1,5 +1,7 @@
 import { defaultCodexConfigPath } from "../config/codex-config.ts";
 
+const MIB = 1024 * 1024;
+
 export interface ProxyCliOptions {
   command: "proxy";
   appsAuthRelay?: boolean;
@@ -8,6 +10,10 @@ export interface ProxyCliOptions {
   port: number;
   upstreamOrigin: string;
   capturesDirectory: string;
+  /** Capture files older than this are deleted. */
+  captureRetentionDays: number;
+  /** Oldest capture files are deleted while the directory exceeds this. */
+  captureMaxBytes: number;
   transformationsPath: string;
   modelRoutesPath: string;
   configBundlePath: string;
@@ -32,6 +38,8 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     port: 8765,
     upstreamOrigin: "https://chatgpt.com",
     capturesDirectory: ".crabex/captures",
+    captureRetentionDays: 7,
+    captureMaxBytes: 2048 * MIB,
     transformationsPath: ".crabex/transformations.json",
     modelRoutesPath: ".crabex/model-routes.json",
     configBundlePath: ".crabex/config-bundle.json",
@@ -75,6 +83,12 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
       if (value === undefined) throw new Error("missing value for --captures");
       options.capturesDirectory = value;
       index += 1;
+    } else if (argument === "--capture-retention-days") {
+      options.captureRetentionDays = positiveNumber(argument, value);
+      index += 1;
+    } else if (argument === "--capture-max-mb") {
+      options.captureMaxBytes = positiveNumber(argument, value) * MIB;
+      index += 1;
     } else if (argument === "--transformations") {
       if (value === undefined) throw new Error("missing value for --transformations");
       options.transformationsPath = value;
@@ -116,6 +130,14 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     throw new Error("--codex-ca-bundle requires --tls-dir");
 
   return options;
+}
+
+function positiveNumber(argument: string, value: string | undefined): number {
+  if (value === undefined) throw new Error(`missing value for ${argument}`);
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0)
+    throw new Error(`invalid ${argument} value: ${value}`);
+  return number;
 }
 
 function parseListen(value: string): { host: string; port: number } {

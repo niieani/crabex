@@ -8,6 +8,8 @@ export type CaptureEncoding = "utf8" | "base64";
 export interface CaptureUsage {
   inputTokens: number;
   cachedTokens: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
 }
 
 export interface CaptureMessageObservation {
@@ -31,6 +33,8 @@ export interface CaptureResponseSummary {
   type: "response.completed";
   id?: string;
   previousResponseId?: string;
+  /** Model reported by the upstream response. */
+  model?: string;
   usage?: CaptureUsage;
 }
 

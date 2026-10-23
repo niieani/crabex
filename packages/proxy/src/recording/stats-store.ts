@@ -73,8 +73,25 @@ export interface RouteTargetTelemetry extends RouteTargetStats {
   cacheHitRate?: number;
 }
 
+/** Token totals for one model on one UTC day. */
+export interface ModelUsageEntry {
+  /** Model that served the requests: the upstream model for routes, else the response model. */
+  model: string;
+  routeSlug?: string;
+  responses: number;
+  inputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+}
+
+/** Daily usage ledger: `YYYY-MM-DD` (UTC) to entries keyed by route and model. */
+export type UsageLedger = Record<string, Record<string, ModelUsageEntry>>;
+
 interface StatsFileData {
   version: 1;
+  /** Kept indefinitely, across counter resets, for usage history and cost estimates. */
+  usage: UsageLedger;
   transformations: Record<string, TransformationTelemetry>;
   routes: Record<string, RouteStats>;
   /** Action counts for non-routed routing events (bundle-override, …). */
@@ -86,6 +103,7 @@ interface StatsFileData {
 
 const EMPTY_DATA: StatsFileData = {
   version: 1,
+  usage: {},
   transformations: {},
   routes: {},
   actions: {},
@@ -122,6 +140,7 @@ export class StatsStore {
       const parsed = JSON.parse(raw) as Partial<StatsFileData>;
       return new StatsStore(path, {
         version: 1,
+        usage: parsed.usage ?? {},
         transformations: parsed.transformations ?? {},
         routes: normalizeRoutes(parsed.routes ?? {}),
         actions: parsed.actions ?? {},
@@ -180,14 +199,27 @@ export class StatsStore {
    * are also tallied on `fallbackCache` so we can see whether a flex→standard
    * switch kept the prompt prefix cached.
    */
-  recordUsage(routing: CaptureRouting, usage: CaptureUsage, timestamp: string): void {
-    const slug = routing.action === "routed" ? routing.routeSlugs?.[0] : undefined;
-    if (slug === undefined) return;
+  recordUsage(
+    routing: CaptureRouting | undefined,
+    usage: CaptureUsage,
+    timestamp: string,
+    responseModel?: string,
+  ): void {
+    const slug = routing?.action === "routed" ? routing.routeSlugs?.[0] : undefined;
     const servedBy =
-      routing.upstreamModel ??
-      [...(routing.attempts ?? [])].reverse().find((attempt) => attempt.outcome === "served")
-        ?.upstreamModel;
-    if (servedBy === undefined) return;
+      slug === undefined
+        ? undefined
+        : (routing?.upstreamModel ??
+          [...(routing?.attempts ?? [])].reverse().find((attempt) => attempt.outcome === "served")
+            ?.upstreamModel);
+    this.#recordLedger(
+      servedBy ?? responseModel ?? "unknown",
+      servedBy === undefined ? undefined : slug,
+      usage,
+      timestamp,
+    );
+    this.#scheduleSave();
+    if (routing === undefined || slug === undefined || servedBy === undefined) return;
     const route = this.#data.routes[slug];
     if (route === undefined) return;
 
@@ -197,6 +229,35 @@ export class StatsStore {
     if (target !== undefined) addCache(target, "cache", usage);
     if (timestamp > route.lastSeenAt) route.lastSeenAt = timestamp;
     this.#scheduleSave();
+  }
+
+  #recordLedger(
+    model: string,
+    routeSlug: string | undefined,
+    usage: CaptureUsage,
+    timestamp: string,
+  ): void {
+    const day = timestamp.slice(0, 10);
+    const entries = (this.#data.usage[day] ??= {});
+    const key = routeSlug === undefined ? model : `${routeSlug}:${model}`;
+    const entry = (entries[key] ??= {
+      model,
+      ...(routeSlug === undefined ? {} : { routeSlug }),
+      responses: 0,
+      inputTokens: 0,
+      cachedTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+    });
+    entry.responses += 1;
+    entry.inputTokens += usage.inputTokens;
+    entry.cachedTokens += usage.cachedTokens;
+    entry.outputTokens += usage.outputTokens ?? 0;
+    entry.reasoningTokens += usage.reasoningTokens ?? 0;
+  }
+
+  usageLedger(): UsageLedger {
+    return structuredClone(this.#data.usage);
   }
 
   #recordRouteAttempts(
@@ -290,9 +351,9 @@ export class StatsStore {
     }
   }
 
-  /** Clears every counter and persists the empty state. */
+  /** Clears every counter and persists the empty state; the usage ledger is kept. */
   async reset(): Promise<void> {
-    this.#data = structuredClone(EMPTY_DATA);
+    this.#data = { ...structuredClone(EMPTY_DATA), usage: this.#data.usage };
     await this.flush();
   }
 
