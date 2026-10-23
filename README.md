@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/crabex.png" alt="Crabex logo: a hermit crab living in a terminal-window shell" width="220">
+  <img src="docs/assets/crabex.svg" alt="Crabex logo: a hermit crab living in a terminal-window shell" width="220">
 </p>
 
 <h1 align="center">Crabex</h1>

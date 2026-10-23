@@ -22,7 +22,7 @@ export function AppShell() {
     <div className="app-shell">
       <aside className="app-navigation">
         <Link to="/" className="brand" aria-label="Crabex home">
-          <img className="brand-mark" src="/crabex.png" alt="" />
+          <img className="brand-mark" src="/crabex.svg" alt="" />
           <span className="brand-copy">
             <strong>Crabex</strong>
             <small>ANY MODEL, CODEX SHELL</small>

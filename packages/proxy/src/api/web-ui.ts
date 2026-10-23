@@ -21,7 +21,7 @@ export function createWebUi(directory: string | undefined) {
   return async (request: Request): Promise<Response | undefined> => {
     const pathname = new URL(request.url).pathname;
     const page = PAGES.has(pathname);
-    if (!page && !pathname.startsWith("/assets/") && pathname !== "/crabex.png") return undefined;
+    if (!page && !pathname.startsWith("/assets/") && pathname !== "/crabex.svg") return undefined;
     if (request.method !== "GET" && request.method !== "HEAD")
       return new Response("Method not allowed", { status: 405 });
     if (!directory)
@@ -44,7 +44,7 @@ export function createWebUi(directory: string | undefined) {
       headers: {
         "content-type": file.type,
         "cache-control":
-          page || pathname === "/crabex.png" ? "no-cache" : "public, max-age=31536000, immutable",
+          page || pathname === "/crabex.svg" ? "no-cache" : "public, max-age=31536000, immutable",
         "x-content-type-options": "nosniff",
       },
     });
