@@ -75,8 +75,12 @@ legacy state by hand.
      `~/Library/Application Support/crabex/tls/`.
 6. **Clean up references.** Replace `agent-context-trimmer` or `relaydeck` in
    shell PATH entries, aliases, and scripts with `crabex`, and API calls with
-   `/__crabex/api`. Fully restart ChatGPT Desktop if it uses the service so it
-   picks up the new CA bundle path.
+   `/__crabex/api`. Fully quit and reopen every app that hosts Codex (ChatGPT
+   Desktop, T3 Code, IDE extensions, terminals running `codex`) so each picks up
+   the new `CODEX_CA_CERTIFICATE` path. A Codex process started before the
+   migration keeps the deleted legacy path: it cannot fetch workspace-managed
+   policies, and Computer Use and Browser Use fail with
+   `Failed to load cloud config bundle (workspace-managed policies)`.
 
 ## Rollback
 
