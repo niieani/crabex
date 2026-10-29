@@ -48,17 +48,18 @@ jobs:
         with:
           node-version: "24"
           run-install: false
-      - name: Refresh release lockfile
+      - name: Prepare release metadata
         if: steps.release.outputs.prs_created == 'true'
         env:
           RELEASE_PR: ${{ steps.release.outputs.pr }}
         run: |
-          vp install --lockfile-only --ignore-scripts
-          git add bun.lock
+          vp install --ignore-scripts
+          vp fmt CHANGELOG.md
+          git add bun.lock CHANGELOG.md
           if ! git diff --cached --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "chore: refresh release lockfile"
+            git commit -m "chore: prepare release metadata"
             branch="$(jq -er .headBranchName <<< "$RELEASE_PR")"
             git push origin "HEAD:$branch"
           fi
