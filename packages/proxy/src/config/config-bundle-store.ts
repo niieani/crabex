@@ -54,6 +54,14 @@ export function parseConfigBundleOverride(value: unknown): ConfigBundleOverride 
   return structuredClone(override) as unknown as ConfigBundleOverride;
 }
 
+/** A saved local policy only applies while the proxy config allows it. */
+export function gateConfigBundleOverride(
+  override: ConfigBundleOverride,
+  localPolicyAllowed: boolean,
+): ConfigBundleOverride {
+  return localPolicyAllowed || !override.enabled ? override : { ...override, enabled: false };
+}
+
 class FileConfigBundleStore implements ConfigBundleStore {
   #override: ConfigBundleOverride;
   readonly #filePath: string;

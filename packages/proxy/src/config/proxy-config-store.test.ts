@@ -11,6 +11,7 @@ describe("proxy config", () => {
     expect(store.get()).toEqual({
       version: 1,
       appsAuthRelay: true,
+      local_policy_override: false,
       search_broker: { route: "gpt-6-luna" },
       routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
     });
@@ -21,6 +22,7 @@ describe("proxy config", () => {
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
       version: 1,
       appsAuthRelay: false,
+      local_policy_override: false,
       search_broker: { route: "gpt-6-luna" },
       routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
     });
@@ -34,6 +36,7 @@ describe("proxy config", () => {
     expect(parseProxyConfig({ version: 1 })).toEqual({
       version: 1,
       appsAuthRelay: true,
+      local_policy_override: false,
       search_broker: { route: "gpt-6-luna" },
       routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
     });

@@ -1,6 +1,6 @@
 import { generateBrowserWorkaround } from "../config/browser-workaround.ts";
 import browserManifest from "../config/fixtures/browser-plugin.mcp.json";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -781,6 +781,81 @@ describe("local context API", () => {
     );
     expect(removed?.status).toBe(200);
     expect(sources.currentBundle()).toEqual({ version: 1, enabled: false, bundle: null });
+  });
+
+  it("gates local policy on local_policy_override, which only the config file can change", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "crabex-local-policy-"));
+    const path = join(directory, "config.json");
+    const proxyConfig = await openProxyConfigStore(path);
+    const sources = stubSources({
+      bundle: { version: 1, enabled: false, bundle: null, workarounds: {} },
+    });
+    const api = createLocalApi({
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+      proxyConfig,
+    });
+    const put = (url: string, value: unknown) =>
+      api.handle(
+        new Request(`http://localhost/__crabex/api/${url}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(value),
+        }),
+      );
+    const local = {
+      version: 1,
+      enabled: true,
+      mode: "replace",
+      bundle: { config_toml: { enterprise_managed: [{ id: "a", name: "A", contents: "x = 1" }] } },
+    };
+
+    const denied = await put("config-bundle", local);
+    expect(denied?.status).toBe(403);
+    expect(((await denied!.json()) as { error: string }).error).toContain(path);
+    expect(sources.currentBundle().enabled).toBe(false);
+    // Workarounds stay editable while local policy is off.
+    expect(
+      (
+        await put("config-bundle", {
+          version: 1,
+          enabled: false,
+          bundle: null,
+          workarounds: { cua_repl_browser_access: true },
+        })
+      )?.status,
+    ).toBe(200);
+
+    const toggled = await put("proxy-config", { version: 1, local_policy_override: true });
+    expect(toggled?.status).toBe(400);
+    expect(proxyConfig.get().local_policy_override).toBe(false);
+
+    await writeFile(path, JSON.stringify({ version: 1, local_policy_override: true }));
+    const allowed = createLocalApi({
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+      proxyConfig: await openProxyConfigStore(path),
+    });
+    const saved = await allowed.handle(
+      new Request("http://localhost/__crabex/api/config-bundle", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(local),
+      }),
+    );
+    expect(saved?.status).toBe(200);
+    const effective = (await (
+      await allowed.handle(new Request("http://localhost/__crabex/api/config-bundle/effective"))
+    )?.json()) as { mode: string; bundle: unknown };
+    expect(effective).toMatchObject({ mode: "replace", bundle: local.bundle });
   });
 
   it("rejects an enabled config bundle override without an object bundle", async () => {

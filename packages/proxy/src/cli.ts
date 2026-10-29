@@ -14,7 +14,7 @@ import { createWebUi, findUiDirectory } from "./api/web-ui.ts";
 import { createCodexConfigManager, migrateCodexConfigFile } from "./config/codex-config.ts";
 import { migrateLocalDataDirectory } from "./config/legacy-migration.ts";
 import { openProxyConfigStore } from "./config/proxy-config-store.ts";
-import { openConfigBundleStore } from "./config/config-bundle-store.ts";
+import { gateConfigBundleOverride, openConfigBundleStore } from "./config/config-bundle-store.ts";
 import { openModelRouteStore } from "./config/model-route-store.ts";
 import { openTransformationStore } from "./config/transformation-store.ts";
 import { openUpstreamCacheStore } from "./config/upstream-cache.ts";
@@ -104,6 +104,11 @@ async function main(): Promise<void> {
     () => upstreamCacheStore.get().models?.body,
   );
   const configBundleStore = await openConfigBundleStore(options.configBundlePath);
+  // Overrides saved before local_policy_override existed keep being served.
+  if (configBundleStore.get().enabled && !proxyConfig.get().local_policy_override) {
+    await proxyConfig.replace({ ...proxyConfig.get(), local_policy_override: true });
+    console.log(`Enabled local_policy_override in ${proxyConfig.path} for the saved local policy`);
+  }
   const statsStore = await StatsStore.open(options.statsPath);
   const snapshotRepository = new FileCaptureRepository(
     options.capturesDirectory,
@@ -144,7 +149,10 @@ async function main(): Promise<void> {
         };
       },
     },
-    configBundleSource: { get: () => configBundleStore.get() },
+    configBundleSource: {
+      get: () =>
+        gateConfigBundleOverride(configBundleStore.get(), proxyConfig.get().local_policy_override),
+    },
     upstreamCache: upstreamCacheStore,
     sessionCacheDirectory: dirname(options.snapshotCachePath),
     breakers: targetBreakers,

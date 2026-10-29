@@ -359,6 +359,7 @@ export interface ProxyConfigState {
   appsAuthRelay: boolean;
   appsAuthRelayOverride?: boolean;
   allowAppsAuthRelay: boolean;
+  local_policy_override?: boolean;
   search_broker: { route: string };
   routed_agents: {
     enabled: boolean;

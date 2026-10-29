@@ -51,6 +51,7 @@ describe("broker route validation on both client transports", () => {
         get: () => ({
           version: 1,
           appsAuthRelay: false,
+          local_policy_override: false,
           search_broker: { route: "missing-search" },
           routed_agents: { enabled: false, prefer_native_spawn_models: false },
         }),
@@ -116,6 +117,7 @@ describe("broker route validation on both client transports", () => {
         get: () => ({
           version: 1,
           appsAuthRelay: false,
+          local_policy_override: false,
           search_broker: { route: "missing-search" },
           routed_agents: { enabled: false, prefer_native_spawn_models: false },
         }),

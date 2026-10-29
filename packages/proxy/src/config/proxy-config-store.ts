@@ -5,6 +5,8 @@ import { dirname } from "node:path";
 export interface ProxyConfig {
   version: 1;
   appsAuthRelay: boolean;
+  /** Lets Advanced serve a local managed-policy bundle; only editable in the config file. */
+  local_policy_override: boolean;
   search_broker: { route: string };
   routed_agents: {
     enabled: boolean;
@@ -30,6 +32,8 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
   if (
     config.version !== 1 ||
     (config.appsAuthRelay !== undefined && typeof config.appsAuthRelay !== "boolean") ||
+    (config.local_policy_override !== undefined &&
+      typeof config.local_policy_override !== "boolean") ||
     (config.search_broker !== undefined &&
       (typeof config.search_broker !== "object" ||
         config.search_broker === null ||
@@ -43,7 +47,7 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
         typeof (config.routed_agents as Record<string, unknown>).enabled !== "boolean"))
   ) {
     throw new Error(
-      "invalid proxy config: expected version 1, boolean appsAuthRelay, search_broker.route, and boolean routed_agents.enabled",
+      "invalid proxy config: expected version 1, boolean appsAuthRelay, boolean local_policy_override, search_broker.route, and boolean routed_agents.enabled",
     );
   }
   const instructions = (config.routed_agents as { instructions?: unknown } | undefined)
@@ -65,6 +69,7 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
   return {
     version: 1,
     appsAuthRelay: config.appsAuthRelay ?? true,
+    local_policy_override: (config.local_policy_override as boolean | undefined) ?? false,
     search_broker: {
       route: (config.search_broker as { route: string } | undefined)?.route ?? "gpt-6-luna",
     },
@@ -80,6 +85,7 @@ export async function openProxyConfigStore(path: string): Promise<ProxyConfigSto
   let config: ProxyConfig = {
     version: 1,
     appsAuthRelay: true,
+    local_policy_override: false,
     search_broker: { route: "gpt-6-luna" },
     routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
   };

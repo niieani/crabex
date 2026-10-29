@@ -1,25 +1,51 @@
 # Managed configuration bundles
 
-Advanced lets you edit TOML fragments in the managed config bundle. Merge mode
-fetches the organisation's bundle on each request and places your fragments first,
-in highest precedence order. A local fragment replaces an upstream fragment with
-the same id within its section. Unknown upstream fields pass through. If upstream
-fails or takes more than ten seconds, crabex uses its last observed bundle, or an
-empty bundle if none was observed; your local fragments remain available.
+On business, enterprise and edu ChatGPT plans, Codex fetches a managed config
+bundle and loads its fragments as a layer between `/etc/codex` and
+`~/.codex/config.toml`. Running Codex processes refresh it about every 15
+minutes; restart Codex to apply a change immediately. crabex does not bypass the
+plan gate, and policy enforced outside this bundle (for example, device
+management) is unaffected.
 
-Replace mode serves only the local bundle, while observing upstream in the
-background. Existing overrides without a mode retain replace behavior. Reset to
-passthrough disables the override.
+Advanced has four tabs:
 
-The editor validates TOML and requires non-empty, unique ids within each section.
-The raw JSON tab preserves access to the full bundle, including unknown fields.
-The effective preview uses the saved override and last observed upstream bundle;
-it never fetches upstream. In merge mode a subsequent request may observe a newer
-upstream bundle.
+- **Workarounds**: switches that add generated fragments on top of the
+  organisation's bundle. They save immediately.
+- **Organisation bundle**: the last bundle crabex observed from ChatGPT,
+  including `managed_layers`, read-only.
+- **What Codex receives**: the bundle the next request would get, highest
+  precedence first, with each fragment marked `local`, `upstream` or
+  `workaround`. It uses the last observed upstream bundle and never fetches.
+- **Local policy**: hidden unless the crabex config file allows it (below).
 
-Codex only fetches managed bundles for business, enterprise, and edu ChatGPT plans.
-Running Codex processes refresh them about every 15 minutes. Restart Codex to apply
-changes immediately; this feature does not bypass the plan gate.
+## Local policy
+
+A local policy lets you test managed-config changes on this machine before
+publishing them upstream. Because it can outrank or hide the organisation's
+policy, it is off unless the proxy config file (`config.json`, shown on the
+Connection page) contains:
+
+```json
+{ "version": 1, "local_policy_override": true }
+```
+
+Restart crabex after editing the file. The local API refuses to change this
+flag, and while it is off crabex ignores any saved local policy. Starting crabex
+with a saved, enabled local policy from an earlier version sets the flag once,
+so existing setups keep working.
+
+- **Merge into upstream** fetches the organisation's bundle on each request and
+  places your fragments first. A local fragment replaces an upstream fragment
+  with the same id within its section; unknown upstream fields pass through. If
+  upstream fails or takes more than ten seconds, crabex uses its last observed
+  bundle, or an empty one; your fragments still apply.
+- **Replace upstream** serves only your fragments, observing upstream in the
+  background so the Organisation bundle tab stays current. Saved policies
+  without a mode keep replace behaviour.
+
+The editor validates TOML and requires non-empty, unique ids within each
+section. Raw JSON gives access to the full bundle, including unknown fields.
+Reset to passthrough turns the local policy off.
 
 ## Temporary browser access workaround
 
@@ -29,9 +55,10 @@ unified-computer-use 26.1023.50603, its cua_repl preloads
 require-browser-access.mjs, which only the ChatGPT app can satisfy; Codex CLI and
 app-server hosts such as T3 Code fail with “The browser access host is unavailable”.
 
-Enable the dedicated toggle and save. It works even when the general override is
-disabled: crabex merges just the generated workaround into the organisation's
-bundle. In either override mode, its generated fragment has highest precedence.
+Turn on the switch in the Workarounds tab. It works without a local policy:
+crabex merges just the generated workaround into the organisation's bundle.
+With a local policy in either mode, the workaround fragment has highest
+precedence.
 The effective preview labels it “workaround” and reports whether it is active for
 a version, unnecessary, or the plugin was not found.
 

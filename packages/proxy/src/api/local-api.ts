@@ -5,7 +5,10 @@ import {
   type BrowserWorkaroundSource,
 } from "../config/browser-workaround.ts";
 import { mergeConfigBundles } from "../config/config-bundle-merge.ts";
-import { validateConfigBundleFragments } from "../config/config-bundle-store.ts";
+import {
+  gateConfigBundleOverride,
+  validateConfigBundleFragments,
+} from "../config/config-bundle-store.ts";
 import { createHash } from "node:crypto";
 import type { TlsStatus } from "../service/tls.ts";
 import type { TransformationStore } from "../config/transformation-store.ts";
@@ -60,6 +63,8 @@ export function createLocalApi(options: {
   stats?: StatsStore;
   requests?: LiveRequestStore;
 }): LocalApi {
+  // Without a proxy config file there is nothing to gate on (embedded and test use).
+  const localPolicyAllowed = () => options.proxyConfig?.get().local_policy_override ?? true;
   return {
     async handle(request) {
       const url = new URL(request.url);
@@ -80,6 +85,10 @@ export function createLocalApi(options: {
             )
               throw new Error(
                 "Apps authentication relay is overridden by the command line; restart without the override to edit it",
+              );
+            if (Object.hasOwn(update, "local_policy_override"))
+              throw new Error(
+                `local_policy_override can only be changed by editing ${options.proxyConfig.path}`,
               );
             const current = options.proxyConfig.get();
             const routedAgentUpdate = (update as Record<string, unknown>).routed_agents;
@@ -200,7 +209,10 @@ export function createLocalApi(options: {
           });
         }
         if (url.pathname === `${API_PREFIX}/config-bundle/effective` && request.method === "GET") {
-          const override = options.configBundle.get();
+          const override = gateConfigBundleOverride(
+            options.configBundle.get(),
+            localPolicyAllowed(),
+          );
           const observed = options.upstreamCache.get().configBundle;
           const mode =
             override.enabled || override.workarounds?.cua_repl_browser_access
@@ -226,6 +238,14 @@ export function createLocalApi(options: {
         }
         if (url.pathname === `${API_PREFIX}/config-bundle` && request.method === "PUT") {
           const override = parseConfigBundleOverride(await request.json());
+          // Saving other settings must not fail just because an existing local policy is gated.
+          if (override.enabled && !localPolicyAllowed() && !options.configBundle.get().enabled)
+            return json(
+              {
+                error: `Local policy override is off; set "local_policy_override": true in ${options.proxyConfig?.path ?? "the crabex config file"} and restart crabex`,
+              },
+              403,
+            );
           validateConfigBundleFragments(override.bundle);
           await options.configBundle.replace(override);
           return json(override);

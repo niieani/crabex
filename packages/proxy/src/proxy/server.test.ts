@@ -1861,6 +1861,7 @@ describe("model routing and config bundle override", () => {
           get: () => ({
             version: 1,
             appsAuthRelay: true,
+            local_policy_override: false,
             search_broker: { route: "gpt-6-luna" },
             routed_agents: { enabled, prefer_native_spawn_models: prefer },
           }),
@@ -4427,6 +4428,7 @@ function routedAgentsConfig(): Pick<ProxyConfigStore, "get" | "subscribe"> {
     get: () => ({
       version: 1,
       appsAuthRelay: true,
+      local_policy_override: false,
       search_broker: { route: "gpt-6-luna" },
       routed_agents: { enabled: true, prefer_native_spawn_models: false },
     }),
