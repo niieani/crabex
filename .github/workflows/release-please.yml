@@ -1,0 +1,83 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  release_please:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Create or update release
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      # The node strategy updates package.json files but does not update Bun's
+      # JSONC lockfile. Refresh it on the release branch before running CI.
+      - name: Check out release PR
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+      - name: Set up Vite+
+        if: steps.release.outputs.prs_created == 'true'
+        uses: voidzero-dev/setup-vp@0072dab61af1caed438a55cb90c8d6dc0dfa09ce # v1.22.0
+        with:
+          node-version: "24"
+          run-install: false
+      - name: Refresh release lockfile
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        run: |
+          vp install --lockfile-only --ignore-scripts
+          git add bun.lock
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore: refresh release lockfile"
+            branch="$(jq -er .headBranchName <<< "$RELEASE_PR")"
+            git push origin "HEAD:$branch"
+          fi
+      # Bot-created PR events may require approval; dispatch CI explicitly so the
+      # release PR gets checks without needing another long-lived GitHub token.
+      - name: Check the release PR
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        run: |
+          branch="$(jq -er .headBranchName <<< "$RELEASE_PR")"
+          gh workflow run ci.yml --ref "$branch"
+
+  publish:
+    needs: release_please
+    if: needs.release_please.outputs.release_created == 'true'
+    uses: ./.github/workflows/release-publish.yml
+    with:
+      tag: ${{ needs.release_please.outputs.tag_name }}
+    secrets: inherit

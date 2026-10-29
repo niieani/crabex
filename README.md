@@ -66,9 +66,22 @@ back, so Codex never knows the difference.
 
 ## Quick start
 
-Requirements: [Vite+](https://viteplus.dev) (`vp`, which provides Bun) and a
-working Codex login. The proxy runs anywhere Bun does; the background service is
-macOS-only.
+With [Bun](https://bun.sh) and a working Codex login:
+
+```sh
+bunx crabex@latest proxy
+```
+
+Or install with Homebrew (includes Bun):
+
+```sh
+brew install niieani/tap/crabex
+crabex proxy
+```
+
+The proxy runs anywhere Bun does; the background service is macOS-only.
+To build from source, install [Vite+](https://viteplus.dev) (`vp`, which provides
+Bun), clone this repository, and run:
 
 ```sh
 vp install
@@ -84,8 +97,18 @@ openai_base_url = "http://127.0.0.1:8765/backend-api/codex"
 chatgpt_base_url = "http://127.0.0.1:8765/backend-api"
 ```
 
-Prefer to opt in per session? Put those lines in `~/.codex/crabex.config.toml`
-and run `codex --profile crabex`.
+Prefer to opt in for a single CLI session? Pass both settings on the command line:
+
+```sh
+codex \
+  -c 'openai_base_url="http://127.0.0.1:8765/backend-api/codex"' \
+  -c 'chatgpt_base_url="http://127.0.0.1:8765/backend-api"'
+```
+
+For a reusable opt-in profile on current Codex versions, put those two TOML
+settings in `~/.codex/crabex.config.toml` and run `codex --profile crabex`.
+See the [Codex configuration guide](https://developers.openai.com/codex/config-basic)
+for configuration precedence and profile support.
 
 Then run Codex as usual. Captures show up live in the UI. Add a route on the
 **Model routes** page and the new model appears in Codex's `/model` picker.
@@ -94,8 +117,11 @@ To keep Crabex running across reboots (and use the ChatGPT desktop app, which
 requires HTTPS):
 
 ```sh
-./packages/proxy/dist/cli.mjs service install --https
+bunx crabex@latest service install --https
 ```
+
+With Homebrew, use `crabex service install --https`. After updating the package,
+refresh the service's independent copy using the [service update instructions](docs/macos-service.md#updating).
 
 ## Configuration
 
@@ -156,6 +182,9 @@ vp run build
 The repository holds `packages/proxy` (Bun server and CLI) and `packages/ui`
 (React and Tailwind UI). `vp run dev:ui` runs a standalone Vite server for
 frontend-only work.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and
+[SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 ## License
 

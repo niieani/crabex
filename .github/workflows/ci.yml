@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Validate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@0072dab61af1caed438a55cb90c8d6dc0dfa09ce # v1.22.0
+        with:
+          node-version: "24"
+          run-install: false
+          cache: true
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+      - name: Check formatting, lint, and types
+        run: vp check
+      - name: Test
+        run: vp run test
+      - name: Build distribution package
+        run: vp run release:package
+      - name: Verify packed installation
+        run: vp run release:smoke -- "temp.local/release/crabex-$(jq -r .version package.json).tgz"

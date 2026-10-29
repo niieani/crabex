@@ -1,0 +1,212 @@
+name: Publish release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing v* release tag to publish
+        required: true
+        type: string
+      publish_npm:
+        description: Publish to npm (disable when only repairing release assets or the tap)
+        default: true
+        type: boolean
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* release tag to republish
+        required: true
+        type: string
+      publish_npm:
+        description: Also publish to npm (requires a trusted publisher for this workflow)
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      archive: ${{ steps.release.outputs.archive }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Validate release metadata
+        id: release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          version="${TAG#v}"
+          for package in package.json packages/proxy/package.json packages/ui/package.json; do
+            test "$version" = "$(jq -r .version "$package")"
+          done
+          test "$(git describe --tags --exact-match HEAD)" = "$TAG"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive=crabex-$version.tgz" >> "$GITHUB_OUTPUT"
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@0072dab61af1caed438a55cb90c8d6dc0dfa09ce # v1.22.0
+        with:
+          node-version: "24"
+          run-install: false
+          cache: true
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+      - name: Check formatting, lint, and types
+        run: vp check
+      - name: Test
+        run: vp run test
+      - name: Build distribution package
+        run: vp run release:package
+      - name: Verify packed installation
+        env:
+          ARCHIVE: ${{ steps.release.outputs.archive }}
+        run: vp run release:smoke -- "temp.local/release/$ARCHIVE"
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-package
+          path: temp.local/release/${{ steps.release.outputs.archive }}
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      ARCHIVE: ${{ needs.package.outputs.archive }}
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-package
+          path: release
+      - name: Generate checksums
+        working-directory: release
+        run: |
+          sha256sum "$ARCHIVE" > checksums.txt
+          sha256sum -c checksums.txt
+      - name: Upload immutable release assets
+        working-directory: release
+        run: |
+          gh release view "$TAG" >/dev/null
+          mkdir existing
+          for asset in "$ARCHIVE" checksums.txt; do
+            if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fxq "$asset"; then
+              gh release download "$TAG" --pattern "$asset" --dir existing
+              cmp "$asset" "existing/$asset"
+            else
+              gh release upload "$TAG" "$asset"
+            fi
+          done
+
+  npm:
+    needs: [package, publish]
+    if: inputs.publish_npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-package
+          path: release
+      - name: Set up Node and npm registry
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Publish npm package using OIDC
+        env:
+          VERSION: ${{ needs.package.outputs.version }}
+          ARCHIVE: ${{ needs.package.outputs.archive }}
+        run: |
+          if npm view "crabex@$VERSION" dist.integrity --json > published.json 2> npm-error.log; then
+            expected="sha512-$(openssl dgst -sha512 -binary "release/$ARCHIVE" | openssl base64 -A)"
+            test "$(jq -r . published.json)" = "$expected"
+            echo "Identical package version already published."
+          elif jq -e '.error.code == "E404"' published.json >/dev/null 2>&1; then
+            if [[ "$VERSION" == *-* ]]; then
+              npm publish "release/$ARCHIVE" --access public --tag next
+            else
+              npm publish "release/$ARCHIVE" --access public
+            fi
+          else
+            cat npm-error.log >&2
+            exit 1
+          fi
+
+  homebrew:
+    needs: [package, publish]
+    if: ${{ !contains(needs.package.outputs.version, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.package.outputs.version }}
+      ARCHIVE: ${{ needs.package.outputs.archive }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@0072dab61af1caed438a55cb90c8d6dc0dfa09ce # v1.22.0
+        with:
+          node-version: "24"
+          run-install: false
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-package
+          path: temp.local/release
+      - name: Load Homebrew tap token
+        uses: 1password/load-secrets-action@v4
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: op://Automation/GitHub Token for homebrew-tap/token
+      - name: Update Homebrew tap
+        env:
+          GH_TOKEN: ${{ env.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          checksum="$(sha256sum "temp.local/release/$ARCHIVE" | awk '{ print $1 }')"
+          gh auth setup-git
+          gh repo clone niieani/homebrew-tap temp.local/tap
+          vp run homebrew:formula -- --version "$VERSION" --sha256 "$checksum" --output temp.local/tap/Formula/crabex.rb
+          ruby -c temp.local/tap/Formula/crabex.rb
+          git -C temp.local/tap add Formula/crabex.rb
+          if git -C temp.local/tap diff --cached --quiet; then
+            exit 0
+          fi
+          git -C temp.local/tap config user.name "github-actions[bot]"
+          git -C temp.local/tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C temp.local/tap commit -m "crabex $VERSION"
+          git -C temp.local/tap push

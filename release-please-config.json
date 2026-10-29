@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "include-component-in-tag": false,
+  "packages": {
+    ".": {
+      "package-name": "crabex",
+      "changelog-path": "CHANGELOG.md",
+      "initial-version": "1.0.0",
+      "extra-files": [
+        { "type": "json", "path": "packages/proxy/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/ui/package.json", "jsonpath": "$.version" }
+      ]
+    }
+  }
+}

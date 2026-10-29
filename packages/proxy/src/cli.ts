@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { version } from "../package.json";
 import {
   codexHomeForWorkaround,
   createBrowserWorkaroundSource,
@@ -39,6 +40,8 @@ Service commands install a macOS LaunchAgent that starts at login. Install/updat
 and restart use an independent worker; inspect service status/logs for completion.
 
 Options:
+  --version, -v        Print the package version
+  --help, -h           Print this help
   --tls-dir <dir>      HTTPS certificate directory (cert.pem, key.pem, ca.pem)
   --config <file>      Proxy settings (default: .crabex/config.json)
   --no-apps-auth-relay Disable Apps credential reuse (enabled by default)
@@ -69,6 +72,10 @@ Options:
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log(version);
+    return;
+  }
   if (args.includes("--help") || args.includes("-h")) {
     process.stdout.write(HELP);
     return;

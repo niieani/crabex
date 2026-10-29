@@ -1,6 +1,6 @@
 {
   "name": "crabex-workspace",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "license": "MIT",
   "workspaces": [
@@ -12,9 +12,13 @@
     "dev:proxy": "bun packages/proxy/src/cli.ts proxy",
     "dev:ui": "vp -C packages/ui dev",
     "build": "vp run -r build",
-    "test": "bunx --bun vp test"
+    "test": "bunx --bun vp test",
+    "release:package": "bun scripts/release-package.ts",
+    "release:smoke": "bun scripts/release-smoke.ts",
+    "homebrew:formula": "bun scripts/homebrew-formula.ts"
   },
   "devDependencies": {
+    "@types/bun": "^1.3.14",
     "typescript": "~6.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.2.9",
     "vite-plus": "0.2.9"

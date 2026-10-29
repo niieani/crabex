@@ -47,6 +47,34 @@ Only explicitly selected variables plus HOME and PATH are configured. Existing s
 
 Uninstall does not rewrite Codex endpoint settings. Point Codex at a working endpoint before removing a service it depends on.
 
+## Updating
+
+The background service runs its own copy of the CLI, UI, and Bun. Updating an npm
+or Homebrew package alone does not change that running copy. Install the updated
+build into the service using the command for your distribution:
+
+```sh
+# npm / bunx
+bunx crabex@latest service install
+
+# Homebrew: select the package command even if the service launcher is on PATH
+brew upgrade crabex
+"$(brew --prefix crabex)/bin/crabex" service install
+
+# Source checkout
+vp install
+vp run build
+bun packages/proxy/dist/cli.mjs service install
+```
+
+Existing service arguments, selected environment values, and HTTPS setup are
+preserved unless explicitly overridden. `service restart` only restarts the
+already installed build; use `service install` to update it. The independent
+worker checks readiness and rolls back to the previous release on failure.
+Inspect the worker result log printed by the command, then run `crabex service
+status` to confirm the new release is active. Install returns before that worker
+finishes, so its initial acknowledgement alone does not confirm success.
+
 ## Upgrading from agent-context-trimmer
 
 A service installed under the former name (`com.agent-context-trimmer.proxy`) is
