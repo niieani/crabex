@@ -1,3 +1,9 @@
+import {
+  bundleServeMode,
+  localBundleWithWorkaround,
+  resolveBrowserWorkaround,
+  type BrowserWorkaroundSource,
+} from "../config/browser-workaround.ts";
 import { mergeConfigBundles } from "../config/config-bundle-merge.ts";
 import { validateConfigBundleFragments } from "../config/config-bundle-store.ts";
 import { createHash } from "node:crypto";
@@ -43,6 +49,7 @@ export function createLocalApi(options: {
   transformations: TransformationStore;
   modelRoutes: ModelRouteStore;
   configBundle: ConfigBundleStore;
+  browserWorkaround?: BrowserWorkaroundSource;
   codexConfig: CodexConfigManager;
   proxyConfig?: ProxyConfigStore;
   tlsStatus?: () => Promise<TlsStatus>;
@@ -195,16 +202,23 @@ export function createLocalApi(options: {
         if (url.pathname === `${API_PREFIX}/config-bundle/effective` && request.method === "GET") {
           const override = options.configBundle.get();
           const observed = options.upstreamCache.get().configBundle;
-          const mode = override.mode ?? "replace";
+          const mode =
+            override.enabled || override.workarounds?.cua_repl_browser_access
+              ? bundleServeMode(override)
+              : (override.mode ?? "replace");
+          const workaround = await resolveBrowserWorkaround(override, options.browserWorkaround);
+          const local = localBundleWithWorkaround(override, workaround);
           return json({
             mode,
+            workaround,
             enabled: override.enabled,
             upstreamObservedAt: observed?.fetchedAt ?? null,
-            bundle: !override.enabled
-              ? (observed?.body ?? null)
-              : mode === "merge"
-                ? mergeConfigBundles(observed?.body, override.bundle)
-                : override.bundle,
+            bundle:
+              !override.enabled && !override.workarounds?.cua_repl_browser_access
+                ? (observed?.body ?? null)
+                : mode === "merge"
+                  ? mergeConfigBundles(observed?.body, local)
+                  : local,
           });
         }
         if (url.pathname === `${API_PREFIX}/config-bundle` && request.method === "GET") {

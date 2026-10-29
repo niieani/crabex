@@ -1,4 +1,8 @@
 #!/usr/bin/env bun
+import {
+  codexHomeForWorkaround,
+  createBrowserWorkaroundSource,
+} from "./config/browser-workaround.ts";
 
 import { dirname } from "node:path";
 
@@ -115,7 +119,11 @@ async function main(): Promise<void> {
   const liveRequests = new LiveRequestStore();
   const host = options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host;
   const proxyOrigin = `${options.tlsDirectory ? "https" : "http"}://${host === "::1" ? "[::1]" : host}:${options.port}`;
+  const browserWorkaround = createBrowserWorkaroundSource(
+    codexHomeForWorkaround(options.codexConfigPath),
+  );
   const proxy = await startReverseProxy({
+    browserWorkaround,
     anthropicKey: await openAnthropicKey(`${options.modelRoutesPath}.anthropic-key`),
     webUi: createWebUi(await findUiDirectory(import.meta.dirname)),
     host: options.host,
@@ -144,6 +152,7 @@ async function main(): Promise<void> {
     liveRequests,
     project: options.project,
     localApi: createLocalApi({
+      browserWorkaround,
       proxyConfig,
       tlsStatus: () => tlsStatus(options.tlsDirectory),
       appsAuthRelayOverride: options.appsAuthRelay,

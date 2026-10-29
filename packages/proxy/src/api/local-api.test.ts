@@ -1,3 +1,5 @@
+import { generateBrowserWorkaround } from "../config/browser-workaround.ts";
+import browserManifest from "../config/fixtures/browser-plugin.mcp.json";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -935,6 +937,7 @@ describe("config bundle editing", () => {
       );
       expect(await response?.json()).toEqual({
         enabled: override.enabled,
+        workaround: { status: "disabled" },
         mode: override.mode ?? "replace",
         upstreamObservedAt: "2026-01-01T00:00:00Z",
         bundle: !override.enabled
@@ -956,5 +959,43 @@ describe("config bundle editing", () => {
       new Request("http://localhost/__crabex/api/config-bundle/effective"),
     );
     expect(await response?.json()).toMatchObject({ bundle: null, upstreamObservedAt: null });
+  });
+});
+
+it("previews the standalone workaround with cached organisation policy", async () => {
+  const sources = stubSources({
+    bundle: {
+      version: 1,
+      enabled: false,
+      mode: "replace",
+      bundle: { config_toml: { enterprise_managed: [{ id: "ignored", name: "", contents: "" }] } },
+      workarounds: { cua_repl_browser_access: true },
+    },
+  });
+  const workaround = generateBrowserWorkaround(browserManifest, "26.1023.50603");
+  const remote = { id: "remote", name: "", contents: "" };
+  const api = createLocalApi({
+    snapshots: { list: async () => [], preview: async () => undefined },
+    transformations: { get: () => ({ version: 1, transformations: [] }), replace: async () => {} },
+    ...sources,
+    browserWorkaround: async () => workaround,
+    upstreamCache: {
+      get: () => ({
+        configBundle: { fetchedAt: "now", body: { config_toml: { enterprise_managed: [remote] } } },
+      }),
+      observe: async () => {
+        throw new Error("preview must not observe");
+      },
+    },
+  });
+  const response = await api.handle(
+    new Request("http://localhost/__crabex/api/config-bundle/effective"),
+  );
+  expect(await response?.json()).toEqual({
+    mode: "merge",
+    enabled: false,
+    upstreamObservedAt: "now",
+    workaround,
+    bundle: { config_toml: { enterprise_managed: [workaround.fragment, remote] } },
   });
 });

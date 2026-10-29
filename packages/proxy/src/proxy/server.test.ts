@@ -1,3 +1,8 @@
+import {
+  generateBrowserWorkaround,
+  type BrowserWorkaroundSource,
+} from "../config/browser-workaround.ts";
+import browserManifest from "../config/fixtures/browser-plugin.mcp.json";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -1447,6 +1452,59 @@ describe("subscription reverse proxy", () => {
 });
 
 describe("model routing and config bundle override", () => {
+  it.each(["standalone", "merge", "replace"] as const)(
+    "serves generated browser policy with highest precedence (%s)",
+    async (mode) => {
+      const upstream = {
+        config_toml: { enterprise_managed: [{ id: "remote", name: "Remote", contents: "" }] },
+      };
+      const chatgpt = await startHttpServer((_request, response) =>
+        response.end(JSON.stringify(upstream)),
+      );
+      const generated = generateBrowserWorkaround(browserManifest, "1.0");
+      const user = { id: "user", name: "User", contents: "" };
+      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+        bundleOverride: {
+          version: 1,
+          enabled: mode !== "standalone",
+          mode: mode === "merge" ? "merge" : "replace",
+          workarounds: { cua_repl_browser_access: true },
+          bundle: { config_toml: { enterprise_managed: [user] } },
+        },
+        browserWorkaround: async () => generated,
+      });
+      const response = await fetch(`${proxy.origin}/wham/config/bundle`);
+      expect(await response.json()).toEqual({
+        config_toml: {
+          enterprise_managed: [
+            generated.fragment,
+            ...(mode === "standalone" ? [] : [user]),
+            ...(mode === "replace" ? [] : upstream.config_toml.enterprise_managed),
+          ],
+        },
+      });
+    },
+  );
+  it.each(["br", "gzip"])(
+    "merges a compressed %s bundle and records its observation",
+    async (encoding) => {
+      const body = { config_toml: { managed_layers: { baseline: [] } } };
+      const chatgpt = await startHttpServer((_request, response) => {
+        response.setHeader("content-encoding", encoding);
+        const bytes = Buffer.from(JSON.stringify(body));
+        response.end(encoding === "br" ? brotliCompressSync(bytes) : gzipSync(bytes));
+      });
+      const cache = new MemoryUpstreamCache();
+      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+        bundleOverride: { version: 1, enabled: true, mode: "merge", bundle: {} },
+        upstreamCache: cache,
+      });
+      const response = await fetch(`${proxy.origin}/wham/config/bundle`);
+      expect(await response.json()).toEqual(body);
+      expect(cache.state.configBundle?.body).toEqual(body);
+    },
+  );
+
   it.each([200, 401, 403, 500, "invalid", "down"] as const)(
     "merges using upstream or fallback (%s)",
     async (status) => {
@@ -4284,6 +4342,7 @@ async function startRoutingProxy(
     fixturePins?: string[];
     fixtureModels?: ModelDefinition[];
     bundleOverride?: ConfigBundleOverride;
+    browserWorkaround?: BrowserWorkaroundSource;
     upstreamCache?: MemoryUpstreamCache;
     transformations?: Transformation[];
     liveRequests?: LiveRequestStore;
@@ -4305,6 +4364,7 @@ async function startRoutingProxy(
       }),
     },
     ...(options.fixtureModels === undefined ? {} : { fixtureModels: options.fixtureModels }),
+    browserWorkaround: options.browserWorkaround,
     configBundleSource: {
       get: () => options.bundleOverride ?? { version: 1, enabled: false, bundle: null },
     },

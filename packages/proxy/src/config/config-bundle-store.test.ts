@@ -8,6 +8,7 @@ import {
   EMPTY_CONFIG_BUNDLE_OVERRIDE,
   openConfigBundleStore,
   parseConfigBundleOverride,
+  validateConfigBundleFragments,
 } from "./config-bundle-store.ts";
 
 describe("config bundle store", () => {
@@ -50,4 +51,31 @@ it("supports optional modes without migrating legacy overrides", () => {
   for (const mode of ["merge", "replace"])
     expect(parseConfigBundleOverride({ ...legacy, mode })).toEqual({ ...legacy, mode });
   expect(() => parseConfigBundleOverride({ ...legacy, mode: "other" })).toThrow("mode");
+});
+
+it("persists the independent browser workaround and validates its boolean", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "crabex-bundle-workaround-"));
+  const path = join(directory, "bundle.json");
+  const store = await openConfigBundleStore(path);
+  const override = {
+    version: 1 as const,
+    enabled: false,
+    bundle: null,
+    workarounds: { cua_repl_browser_access: true },
+  };
+  await store.replace(override);
+  expect((await openConfigBundleStore(path)).get()).toEqual(override);
+  expect(() =>
+    parseConfigBundleOverride({ ...override, workarounds: { cua_repl_browser_access: "yes" } }),
+  ).toThrow("boolean");
+});
+
+it("validates spec TOML with the same parser as the UI, including escaped control characters", () => {
+  expect(() =>
+    validateConfigBundleFragments({
+      config_toml: {
+        enterprise_managed: [{ id: "escapes", name: "Escapes", contents: 'text = "\\t\\u0000"' }],
+      },
+    }),
+  ).not.toThrow();
 });

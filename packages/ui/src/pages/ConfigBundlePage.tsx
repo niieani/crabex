@@ -38,6 +38,7 @@ export function ConfigBundlePage() {
     queryFn: getRoutingTelemetry,
     refetchInterval: 5000,
   });
+  const [browserAccess, setBrowserAccess] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [mode, setMode] = useState<"merge" | "replace">("merge");
   const [bundle, setBundle] = useState<unknown>(null);
@@ -47,6 +48,7 @@ export function ConfigBundlePage() {
   useEffect(() => {
     if (!query.data) return;
     setEnabled(query.data.enabled);
+    setBrowserAccess(query.data.workarounds?.cua_repl_browser_access ?? false);
     // An absent bundle is a new override; legacy overrides retain replace semantics.
     setMode(query.data.mode ?? (query.data.bundle == null ? "merge" : "replace"));
     setBundle(query.data.bundle);
@@ -119,6 +121,48 @@ export function ConfigBundlePage() {
           >
             <span />
           </button>
+        </div>
+        <div className="mb-6 rounded-lg border border-line p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="section-label">Temporary workaround</p>
+              <p className="mt-1 text-sm">Browser use outside the ChatGPT app</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-label="Browser use outside the ChatGPT app"
+              aria-checked={browserAccess}
+              className={`toggle-switch ${browserAccess ? "on" : ""}`}
+              onClick={() => setBrowserAccess(!browserAccess)}
+            >
+              <span />
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-muted">
+            Since unified-computer-use 26.1023.50603, the plugin’s cua_repl preloads
+            require-browser-access.mjs, which only the ChatGPT app can satisfy, so Codex CLI /
+            app-server hosts like T3 Code fail with “The browser access host is unavailable”.
+          </p>
+          <p className="mt-2 text-xs text-muted">
+            Temporary workaround for{" "}
+            <a
+              className="text-accent underline"
+              href="https://github.com/openai/codex/issues/57641"
+              target="_blank"
+              rel="noreferrer"
+            >
+              openai/codex#57641
+            </a>
+            ; turn it off once upstream fixes it. Save to apply. Works independently of the general
+            override.
+          </p>
+          <p className="mt-2 text-xs text-muted">
+            Saved workaround: {effective.data?.workaround?.status ?? "disabled"}
+            {effective.data?.workaround?.version
+              ? ` for version ${effective.data.workaround.version}`
+              : ""}
+          </p>
         </div>
         <div className="flex gap-2" role="group" aria-label="Bundle mode">
           {(["replace", "merge"] as const).map((value) => (
@@ -267,7 +311,15 @@ export function ConfigBundlePage() {
           <button
             className={button}
             disabled={save.isPending || !!error}
-            onClick={() => save.mutate({ version: 1, enabled, mode, bundle: draft })}
+            onClick={() =>
+              save.mutate({
+                version: 1,
+                enabled,
+                mode,
+                bundle: draft,
+                workarounds: { ...query.data.workarounds, cua_repl_browser_access: browserAccess },
+              })
+            }
           >
             Save override
           </button>
@@ -307,6 +359,7 @@ export function ConfigBundlePage() {
               <BundlePreview
                 bundle={effective.data.bundle}
                 local={query.data.enabled ? query.data.bundle : {}}
+                workaroundId={effective.data.workaround?.fragment?.id}
               />
             )
           )}
@@ -316,7 +369,15 @@ export function ConfigBundlePage() {
   );
 }
 
-function BundlePreview({ bundle, local }: { bundle: unknown; local?: unknown }) {
+function BundlePreview({
+  bundle,
+  local,
+  workaroundId,
+}: {
+  bundle: unknown;
+  local?: unknown;
+  workaroundId?: string;
+}) {
   return (
     <div>
       {sections.map((section) => {
@@ -344,10 +405,12 @@ function BundlePreview({ bundle, local }: { bundle: unknown; local?: unknown }) 
                         {fragment.id} · {fragment.name}{" "}
                         {local !== undefined && (
                           <span className="rounded border border-line px-1 text-muted">
-                            {group.label === "enterprise_managed" &&
-                            fragments(local, section).some((item) => item.id === fragment.id)
-                              ? "local"
-                              : "upstream"}
+                            {group.label === "enterprise_managed" && fragment.id === workaroundId
+                              ? "workaround"
+                              : group.label === "enterprise_managed" &&
+                                  fragments(local, section).some((item) => item.id === fragment.id)
+                                ? "local"
+                                : "upstream"}
                           </span>
                         )}
                       </p>

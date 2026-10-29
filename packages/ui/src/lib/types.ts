@@ -329,6 +329,7 @@ export interface UpstreamCacheState {
 }
 
 export interface ConfigBundleOverride {
+  workarounds?: { cua_repl_browser_access?: boolean };
   mode?: "replace" | "merge";
   version: 1;
   enabled: boolean;
@@ -367,6 +368,11 @@ export interface ProxyConfigState {
 }
 
 export interface EffectiveConfigBundle {
+  workaround?: {
+    status: string;
+    version?: string;
+    fragment?: { id: string; name: string; contents: string };
+  };
   mode: "replace" | "merge";
   enabled: boolean;
   upstreamObservedAt: string | null;

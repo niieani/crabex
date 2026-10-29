@@ -4,9 +4,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { ConfigBundlePage } from "./ConfigBundlePage.tsx";
-import { putConfigBundle } from "../lib/api.ts";
+import { putConfigBundle, getEffectiveConfigBundle } from "../lib/api.ts";
 
 const original = {
+  workarounds: { cua_repl_browser_access: false },
   version: 1 as const,
   enabled: true,
   mode: "replace" as const,
@@ -41,12 +42,12 @@ vi.mock("../lib/api.ts", () => ({
       },
     },
   }),
-  getEffectiveConfigBundle: async () => ({
+  getEffectiveConfigBundle: vi.fn(async () => ({
     enabled: true,
     mode: "replace",
     bundle: original.bundle,
     upstreamObservedAt: null,
-  }),
+  })),
   getRoutingTelemetry: async () => ({ telemetry: [] }),
   putConfigBundle: vi.fn(async (override) => override),
   deleteConfigBundle: vi.fn(),
@@ -140,4 +141,39 @@ it("shows labelled managed layers read-only", async () => {
   expect(
     screen.getByLabelText("config_toml managed_layers.system_overlay observed 1 TOML").textContent,
   ).toBe("overlay = true");
+});
+
+it("saves the browser workaround independently and marks generated preview fragments", async () => {
+  vi.mocked(getEffectiveConfigBundle).mockResolvedValueOnce({
+    enabled: false,
+    mode: "merge",
+    upstreamObservedAt: null,
+    workaround: {
+      status: "active",
+      version: "26.1023.50603",
+      fragment: {
+        id: "crabex-workaround-cua-repl-browser-access",
+        name: "Workaround",
+        contents: "",
+      },
+    },
+    bundle: {
+      config_toml: {
+        enterprise_managed: [
+          { id: "crabex-workaround-cua-repl-browser-access", name: "Workaround", contents: "" },
+        ],
+      },
+    },
+  });
+  await setup();
+  expect(screen.getByText("workaround")).toBeTruthy();
+  expect(screen.getByText("Saved workaround: active for version 26.1023.50603")).toBeTruthy();
+  fireEvent.click(screen.getByRole("switch", { name: "Enable configuration override" }));
+  fireEvent.click(screen.getByRole("switch", { name: "Browser use outside the ChatGPT app" }));
+  fireEvent.click(screen.getByText("Save override"));
+  await waitFor(() => expect(putConfigBundle).toHaveBeenCalled());
+  expect(vi.mocked(putConfigBundle).mock.calls[0]?.[0]).toMatchObject({
+    enabled: false,
+    workarounds: { cua_repl_browser_access: true },
+  });
 });

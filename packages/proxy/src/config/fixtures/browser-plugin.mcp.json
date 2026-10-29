@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "cua_repl": {
+      "command": "/opt/example/node",
+      "args": [
+        "--import",
+        "file:///opt/example/plugins/require-browser-access.mjs",
+        "--import",
+        "/opt/example/keep.mjs",
+        "/opt/example/cua-repl.mjs"
+      ],
+      "cwd": null,
+      "enabled": true,
+      "omit_tools_from": ["code_mode", "deferred"],
+      "startup_timeout_sec": 120,
+      "enabled_tools": ["js", "js_reset", "turn_ended"],
+      "env_vars": ["BROWSER_USE_ACCESS_EXECUTOR_ID"],
+      "tools": { "js": { "output_token_limit": 25000 } },
+      "env": { "EXAMPLE": "quoted \"value\"\nsecond line", "CODEX_HOME": "/opt/example/codex" }
+    }
+  }
+}

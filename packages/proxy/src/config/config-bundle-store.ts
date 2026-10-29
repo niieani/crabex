@@ -1,3 +1,4 @@
+import { parse as parseToml } from "smol-toml";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -6,6 +7,7 @@ export interface ConfigBundleOverride {
   version: 1;
   enabled: boolean;
   mode?: "replace" | "merge";
+  workarounds?: { cua_repl_browser_access?: boolean };
   bundle: unknown;
 }
 
@@ -37,6 +39,14 @@ export function parseConfigBundleOverride(value: unknown): ConfigBundleOverride 
   }
   if (override.mode !== undefined && override.mode !== "replace" && override.mode !== "merge") {
     throw new Error("unsupported config bundle mode");
+  }
+  if (
+    override.workarounds !== undefined &&
+    (!isRecord(override.workarounds) ||
+      (override.workarounds.cua_repl_browser_access !== undefined &&
+        typeof override.workarounds.cua_repl_browser_access !== "boolean"))
+  ) {
+    throw new Error("browser access workaround must be a boolean");
   }
   if (override.enabled && !isRecord(override.bundle)) {
     throw new Error("enabled config bundle override requires a JSON object bundle");
@@ -108,7 +118,7 @@ export function validateConfigBundleFragments(bundle: unknown): void {
       if (ids.has(item.id)) throw new Error(`${label}: duplicate id`);
       ids.add(item.id);
       try {
-        Bun.TOML.parse(item.contents);
+        parseToml(item.contents);
       } catch (error) {
         throw new Error(`${label}: ${error instanceof Error ? error.message : String(error)}`);
       }

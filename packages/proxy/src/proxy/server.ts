@@ -1,3 +1,9 @@
+import {
+  bundleServeMode,
+  localBundleWithWorkaround,
+  resolveBrowserWorkaround,
+  type BrowserWorkaroundSource,
+} from "../config/browser-workaround.ts";
 import { mergeConfigBundles } from "../config/config-bundle-merge.ts";
 import { anthropicFetch } from "./anthropic/adapter.ts";
 import {
@@ -118,6 +124,7 @@ export interface ReverseProxyOptions {
   transformationSource?: TransformationSource;
   modelRouteSource?: ModelRouteSource;
   configBundleSource?: ConfigBundleSource;
+  browserWorkaround?: BrowserWorkaroundSource;
   upstreamCache?: UpstreamCacheStore;
   /** Baked-in model catalog; defaults to the packaged fixture. */
   fixtureModels?: ModelDefinition[];
@@ -299,13 +306,23 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
       }
       const requestPath = new URL(request.url).pathname;
       const bundleOverride = configBundleSource?.get();
-      if (bundleOverride?.enabled === true && isConfigBundleRequest(requestPath)) {
+      if (
+        bundleOverride &&
+        (bundleOverride.enabled || bundleOverride.workarounds?.cua_repl_browser_access) &&
+        isConfigBundleRequest(requestPath)
+      ) {
+        const workaround = await resolveBrowserWorkaround(
+          bundleOverride,
+          options.browserWorkaround,
+        );
+        const localBundle = localBundleWithWorkaround(bundleOverride, workaround);
+        const mode = bundleServeMode(bundleOverride);
         try {
           await recorder.record("http", "client_to_upstream", "", "utf8", {
             harness: classifyHarness(request.headers),
             project: options.project,
             routing: {
-              action: bundleOverride.mode === "merge" ? "bundle-merge" : "bundle-override",
+              action: mode === "merge" ? "bundle-merge" : "bundle-override",
             },
           });
         } catch {
@@ -314,7 +331,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
             headers: { "content-type": "text/plain; charset=utf-8" },
           });
         }
-        if (bundleOverride.mode === "merge") {
+        if (mode === "merge") {
           let base = upstreamCache?.get().configBundle?.body;
           try {
             const response = await fetch(targetUrl(upstreamOrigin, request.url), {
@@ -331,10 +348,10 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           } catch {
             console.warn("config bundle upstream merge observation failed; using cached bundle");
           }
-          return Response.json(mergeConfigBundles(base, bundleOverride.bundle));
+          return Response.json(mergeConfigBundles(base, localBundle));
         }
         observeBundleUpstream(request);
-        return Response.json(bundleOverride.bundle);
+        return Response.json(localBundle);
       }
       if (isWebSocketUpgrade(request)) {
         return upgradeWebSocket(
