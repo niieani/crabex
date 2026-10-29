@@ -54,7 +54,7 @@ export interface CaptureRoutingAttempt {
 }
 
 export interface CaptureRouting {
-  action: "routed" | "bundle-override" | "models-advertised";
+  action: "routed" | "bundle-merge" | "bundle-override" | "models-advertised";
   routeSlugs?: string[];
   omittedToolTypes?: string[];
   upstream?: string;
@@ -329,6 +329,7 @@ export interface UpstreamCacheState {
 }
 
 export interface ConfigBundleOverride {
+  mode?: "replace" | "merge";
   version: 1;
   enabled: boolean;
   bundle: unknown;
@@ -363,4 +364,11 @@ export interface ProxyConfigState {
     instructions?: string;
     prefer_native_spawn_models: boolean;
   };
+}
+
+export interface EffectiveConfigBundle {
+  mode: "replace" | "merge";
+  enabled: boolean;
+  upstreamObservedAt: string | null;
+  bundle: unknown;
 }

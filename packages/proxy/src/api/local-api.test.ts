@@ -865,3 +865,96 @@ describe("local context API", () => {
     expect(invalid?.status).toBe(400);
   });
 });
+
+describe("config bundle editing", () => {
+  function apiFor(bundle: ConfigBundleOverride, upstream?: unknown) {
+    const sources = stubSources({ bundle });
+    return createLocalApi({
+      snapshots: { list: async () => [], preview: async () => undefined },
+      transformations: {
+        get: () => ({ version: 1, transformations: [] }),
+        replace: async () => {},
+      },
+      ...sources,
+      upstreamCache: {
+        get: () =>
+          upstream === undefined
+            ? {}
+            : { configBundle: { fetchedAt: "2026-01-01T00:00:00Z", body: upstream } },
+        observe: async () => {
+          throw new Error("preview must never fetch");
+        },
+      },
+    });
+  }
+  it.each(["config_toml", "requirements_toml"])(
+    "rejects invalid fragments in %s with actionable 400s",
+    async (section) => {
+      const api = apiFor({ version: 1, enabled: false, bundle: null });
+      const good = { id: "policy", name: "Policy", contents: "enabled = true" };
+      for (const [fragments, message] of [
+        [[{ ...good, contents: "invalid = [" }], "policy"],
+        [[good, good], "duplicate id"],
+        [[{ ...good, id: "" }], "non-empty"],
+        [[{ ...good, name: 1 }], "strings"],
+      ] as const) {
+        const response = await api.handle(
+          new Request("http://localhost/__crabex/api/config-bundle", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              version: 1,
+              enabled: true,
+              mode: "merge",
+              bundle: { [section]: { enterprise_managed: fragments } },
+            }),
+          }),
+        );
+        expect(response?.status).toBe(400);
+        const body = (await response?.json()) as { error: string };
+        expect(body.error).toContain(section);
+        expect(body.error).toContain(message);
+      }
+    },
+  );
+  it("previews disabled, legacy replace and merge without upstream calls", async () => {
+    const upstream = {
+      config_toml: { enterprise_managed: [{ id: "remote", name: "Remote", contents: "" }] },
+      extra: true,
+    };
+    const bundle = {
+      config_toml: { enterprise_managed: [{ id: "local", name: "Local", contents: "" }] },
+    };
+    for (const override of [
+      { version: 1 as const, enabled: false, bundle },
+      { version: 1 as const, enabled: true, bundle },
+      { version: 1 as const, enabled: true, mode: "merge" as const, bundle },
+    ]) {
+      const response = await apiFor(override, upstream).handle(
+        new Request("http://localhost/__crabex/api/config-bundle/effective"),
+      );
+      expect(await response?.json()).toEqual({
+        enabled: override.enabled,
+        mode: override.mode ?? "replace",
+        upstreamObservedAt: "2026-01-01T00:00:00Z",
+        bundle: !override.enabled
+          ? upstream
+          : override.mode === "merge"
+            ? {
+                ...upstream,
+                config_toml: {
+                  enterprise_managed: [
+                    ...bundle.config_toml.enterprise_managed,
+                    ...upstream.config_toml.enterprise_managed,
+                  ],
+                },
+              }
+            : bundle,
+      });
+    }
+    const response = await apiFor({ version: 1, enabled: false, bundle: null }).handle(
+      new Request("http://localhost/__crabex/api/config-bundle/effective"),
+    );
+    expect(await response?.json()).toMatchObject({ bundle: null, upstreamObservedAt: null });
+  });
+});

@@ -183,3 +183,10 @@ export interface TlsStatus {
 export async function getTlsStatus(): Promise<TlsStatus> {
   return (await (await request(`${API}/tls-status`)).json()) as TlsStatus;
 }
+
+export async function getEffectiveConfigBundle(): Promise<
+  import("./types.ts").EffectiveConfigBundle
+> {
+  const response = await request(`${API}/config-bundle/effective`);
+  return (await response.json()) as import("./types.ts").EffectiveConfigBundle;
+}

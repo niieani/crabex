@@ -1,3 +1,5 @@
+import { mergeConfigBundles } from "../config/config-bundle-merge.ts";
+import { validateConfigBundleFragments } from "../config/config-bundle-store.ts";
 import { createHash } from "node:crypto";
 import type { TlsStatus } from "../service/tls.ts";
 import type { TransformationStore } from "../config/transformation-store.ts";
@@ -190,11 +192,27 @@ export function createLocalApi(options: {
             ),
           });
         }
+        if (url.pathname === `${API_PREFIX}/config-bundle/effective` && request.method === "GET") {
+          const override = options.configBundle.get();
+          const observed = options.upstreamCache.get().configBundle;
+          const mode = override.mode ?? "replace";
+          return json({
+            mode,
+            enabled: override.enabled,
+            upstreamObservedAt: observed?.fetchedAt ?? null,
+            bundle: !override.enabled
+              ? (observed?.body ?? null)
+              : mode === "merge"
+                ? mergeConfigBundles(observed?.body, override.bundle)
+                : override.bundle,
+          });
+        }
         if (url.pathname === `${API_PREFIX}/config-bundle` && request.method === "GET") {
           return json(options.configBundle.get());
         }
         if (url.pathname === `${API_PREFIX}/config-bundle` && request.method === "PUT") {
           const override = parseConfigBundleOverride(await request.json());
+          validateConfigBundleFragments(override.bundle);
           await options.configBundle.replace(override);
           return json(override);
         }

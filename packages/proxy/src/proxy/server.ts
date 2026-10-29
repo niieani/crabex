@@ -1,3 +1,4 @@
+import { mergeConfigBundles } from "../config/config-bundle-merge.ts";
 import { anthropicFetch } from "./anthropic/adapter.ts";
 import {
   brokerFailureSummary,
@@ -303,13 +304,34 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
           await recorder.record("http", "client_to_upstream", "", "utf8", {
             harness: classifyHarness(request.headers),
             project: options.project,
-            routing: { action: "bundle-override" },
+            routing: {
+              action: bundleOverride.mode === "merge" ? "bundle-merge" : "bundle-override",
+            },
           });
         } catch {
           return new Response("capture failed", {
             status: 500,
             headers: { "content-type": "text/plain; charset=utf-8" },
           });
+        }
+        if (bundleOverride.mode === "merge") {
+          let base = upstreamCache?.get().configBundle?.body;
+          try {
+            const response = await fetch(targetUrl(upstreamOrigin, request.url), {
+              decompress: false,
+              method: request.method,
+              headers: forwardedHeaders(request.headers, cookies.header()),
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (!response.ok) throw new Error("upstream bundle request failed");
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            const encoding = response.headers.get("content-encoding")?.toLowerCase() ?? "identity";
+            base = JSON.parse(new TextDecoder().decode(await decodeBody(bytes, encoding)));
+            await upstreamCache?.observe("configBundle", base);
+          } catch {
+            console.warn("config bundle upstream merge observation failed; using cached bundle");
+          }
+          return Response.json(mergeConfigBundles(base, bundleOverride.bundle));
         }
         observeBundleUpstream(request);
         return Response.json(bundleOverride.bundle);

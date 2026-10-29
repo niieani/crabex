@@ -1447,6 +1447,57 @@ describe("subscription reverse proxy", () => {
 });
 
 describe("model routing and config bundle override", () => {
+  it.each([200, 401, 403, 500, "invalid", "down"] as const)(
+    "merges using upstream or fallback (%s)",
+    async (status) => {
+      const remote = {
+        config_toml: { enterprise_managed: [{ id: "remote", name: "Remote", contents: "" }] },
+        extra: true,
+      };
+      const local = {
+        config_toml: { enterprise_managed: [{ id: "local", name: "Local", contents: "" }] },
+      };
+      const chatgpt = await startHttpServer((request, response) => {
+        expect(request.headers.authorization).toBe("Bearer test-token");
+        expect(request.headers.cookie).toContain("test=cookie");
+        response.statusCode = typeof status === "number" ? status : 200;
+        response.end(status === "invalid" ? "invalid json" : JSON.stringify(remote));
+      });
+      const cache = new MemoryUpstreamCache();
+      if (status !== "down" && status !== 200) await cache.observe("configBundle", remote);
+      const sink = new MemoryCaptureSink();
+      const proxy = await startRoutingProxy(
+        status === "down" ? "http://127.0.0.1:1" : chatgpt.origin,
+        sink,
+        {
+          upstreamCache: cache,
+          bundleOverride: { version: 1, enabled: true, mode: "merge", bundle: local },
+        },
+      );
+      const response = await fetch(`${proxy.origin}/backend-api/wham/config/bundle`, {
+        headers: { authorization: "Bearer test-token", cookie: "test=cookie" },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(
+        status === "down"
+          ? local
+          : {
+              ...remote,
+              config_toml: {
+                enterprise_managed: [
+                  ...local.config_toml.enterprise_managed,
+                  ...remote.config_toml.enterprise_managed,
+                ],
+              },
+            },
+      );
+      expect(sink.events).toContainEqual(
+        expect.objectContaining({ routing: { action: "bundle-merge" } }),
+      );
+      if (status === 200) expect(cache.state.configBundle?.body).toEqual(remote);
+    },
+  );
+
   it("serves an enabled config bundle override without hitting upstream", async () => {
     let upstreamRequests = 0;
     const upstream = await startHttpServer((_request, response) => {

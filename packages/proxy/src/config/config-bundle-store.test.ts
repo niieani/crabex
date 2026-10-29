@@ -43,3 +43,11 @@ describe("config bundle store", () => {
     await expect(openConfigBundleStore(path)).rejects.toThrow("unsupported config bundle override");
   });
 });
+
+it("supports optional modes without migrating legacy overrides", () => {
+  const legacy = { version: 1, enabled: true, bundle: {} };
+  expect(parseConfigBundleOverride(legacy)).toEqual(legacy);
+  for (const mode of ["merge", "replace"])
+    expect(parseConfigBundleOverride({ ...legacy, mode })).toEqual({ ...legacy, mode });
+  expect(() => parseConfigBundleOverride({ ...legacy, mode: "other" })).toThrow("mode");
+});
