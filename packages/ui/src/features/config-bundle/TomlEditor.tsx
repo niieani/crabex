@@ -1,11 +1,21 @@
 import { useEffect, useRef } from "react";
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
-import { StreamLanguage, syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { indentWithTab } from "@codemirror/commands";
 import { linter } from "@codemirror/lint";
 import { parse, TomlError } from "smol-toml";
+
+// Legacy TOML mode tokens, coloured from the app palette for the dark canvas.
+const tomlHighlight = HighlightStyle.define([
+  { tag: tags.propertyName, color: "var(--color-ink)" },
+  { tag: tags.string, color: "var(--color-accent)" },
+  { tag: [tags.atom, tags.bool, tags.number], color: "var(--color-warning)" },
+  { tag: tags.bracket, color: "var(--color-violet)" },
+  { tag: tags.comment, color: "var(--color-muted)", fontStyle: "italic" },
+]);
 
 export function tomlError(contents: string): string | undefined {
   try {
@@ -40,7 +50,7 @@ export function TomlEditor({
         extensions: [
           lineNumbers(),
           StreamLanguage.define(toml),
-          syntaxHighlighting(defaultHighlightStyle),
+          syntaxHighlighting(tomlHighlight),
           keymap.of([indentWithTab]),
           EditorState.readOnly.of(readOnly),
           EditorView.editable.of(!readOnly),
@@ -76,8 +86,12 @@ export function TomlEditor({
                 color: "var(--color-content, #ddd)",
                 fontSize: "12px",
               },
-              ".cm-scroller": { overflow: "auto", maxHeight: "360px", fontFamily: "monospace" },
-              ".cm-content": { minHeight: "100px" },
+              ".cm-scroller": {
+                overflow: "auto",
+                maxHeight: "360px",
+                fontFamily: "var(--font-mono)",
+              },
+              ".cm-content": { minHeight: readOnly ? "0" : "4.5rem" },
               ".cm-gutters": { backgroundColor: "transparent", color: "#808895", border: "none" },
               ".cm-cursor": { borderLeftColor: "#ddd" },
             },

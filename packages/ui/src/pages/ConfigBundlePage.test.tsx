@@ -143,7 +143,7 @@ it("shows labelled managed layers read-only", async () => {
   ).toBe("overlay = true");
 });
 
-it("saves the browser workaround independently and marks generated preview fragments", async () => {
+it("saves the browser workaround immediately and independently and marks generated preview fragments", async () => {
   vi.mocked(getEffectiveConfigBundle).mockResolvedValueOnce({
     enabled: false,
     mode: "merge",
@@ -167,13 +167,13 @@ it("saves the browser workaround independently and marks generated preview fragm
   });
   await setup();
   expect(screen.getByText("workaround")).toBeTruthy();
-  expect(screen.getByText("Saved workaround: active for version 26.1023.50603")).toBeTruthy();
-  fireEvent.click(screen.getByRole("switch", { name: "Enable configuration override" }));
+  expect(await screen.findByText("Status: active for version 26.1023.50603")).toBeTruthy();
+  // An unsaved override draft must not leak into the workaround save.
+  fireEvent.click(screen.getByRole("switch", { name: "Serve local policy" }));
   fireEvent.click(screen.getByRole("switch", { name: "Browser use outside the ChatGPT app" }));
-  fireEvent.click(screen.getByText("Save override"));
   await waitFor(() => expect(putConfigBundle).toHaveBeenCalled());
-  expect(vi.mocked(putConfigBundle).mock.calls[0]?.[0]).toMatchObject({
-    enabled: false,
+  expect(vi.mocked(putConfigBundle).mock.calls[0]?.[0]).toEqual({
+    ...original,
     workarounds: { cua_repl_browser_access: true },
   });
 });

@@ -103,48 +103,50 @@ export function ConfigBundlePage() {
     telemetry.data?.telemetry.filter(
       (entry) => entry.action === "bundle-override" || entry.action === "bundle-merge",
     ) ?? [];
+  const workaround = effective.data?.workaround;
+  function saveWorkaround(next: boolean) {
+    if (!query.data) return;
+    setBrowserAccess(next);
+    save.mutate({
+      ...query.data,
+      workarounds: { ...query.data.workarounds, cua_repl_browser_access: next },
+    });
+  }
   return (
     <div className="h-full overflow-y-auto">
       <section className="mx-auto max-w-3xl p-6 lg:p-8">
-        <div className="mb-6 flex items-end justify-between gap-4">
-          <div>
-            <p className="section-label">Managed policy</p>
-            <h1 className="mt-2 text-2xl font-semibold">Advanced</h1>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-label="Enable configuration override"
-            aria-checked={enabled}
-            onClick={() => setEnabled(!enabled)}
-            className={`toggle-switch ${enabled ? "on" : ""}`}
-          >
-            <span />
-          </button>
-        </div>
-        <div className="mb-6 rounded-lg border border-line p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="section-label">Temporary workaround</p>
-              <p className="mt-1 text-sm">Browser use outside the ChatGPT app</p>
-            </div>
+        <p className="section-label">Advanced</p>
+        <h1 className="mt-2 text-2xl font-semibold">Managed config bundle</h1>
+        <p className="mt-2 text-sm leading-6 text-muted">
+          On business, enterprise and edu ChatGPT plans, Codex loads a managed config bundle from
+          ChatGPT. It sits between <code>/etc/codex</code> and your{" "}
+          <code>~/.codex/config.toml</code>. Running Codex processes refresh it about every 15
+          minutes; restart Codex to apply changes immediately. Policy enforced outside this bundle,
+          such as device management, is not affected.
+        </p>
+        {save.isError && (
+          <p role="alert" className="mt-4 rounded-lg bg-danger-dim px-3 py-2 text-xs text-danger">
+            {save.error.message}
+          </p>
+        )}
+
+        <div className="mt-6 rounded-lg border border-line p-4">
+          <p className="section-label">Workarounds</p>
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <p className="text-sm font-medium">Browser use outside the ChatGPT app</p>
             <button
               type="button"
               role="switch"
               aria-label="Browser use outside the ChatGPT app"
               aria-checked={browserAccess}
+              disabled={save.isPending}
               className={`toggle-switch ${browserAccess ? "on" : ""}`}
-              onClick={() => setBrowserAccess(!browserAccess)}
+              onClick={() => saveWorkaround(!browserAccess)}
             >
               <span />
             </button>
           </div>
-          <p className="mt-2 text-xs text-muted">
-            Since unified-computer-use 26.1023.50603, the plugin’s cua_repl preloads
-            require-browser-access.mjs, which only the ChatGPT app can satisfy, so Codex CLI /
-            app-server hosts like T3 Code fail with “The browser access host is unavailable”.
-          </p>
-          <p className="mt-2 text-xs text-muted">
+          <p className="mt-2 text-xs leading-5 text-muted">
             Temporary workaround for{" "}
             <a
               className="text-accent underline"
@@ -154,204 +156,38 @@ export function ConfigBundlePage() {
             >
               openai/codex#57641
             </a>
-            ; turn it off once upstream fixes it. Save to apply. Works independently of the general
-            override.
+            . Since unified-computer-use 26.1023.50603, the plugin’s cua_repl preloads
+            require-browser-access.mjs, which only the ChatGPT app can satisfy, so the Codex CLI and
+            app-server hosts like T3 Code fail with “The browser access host is unavailable”. When
+            on, crabex adds a cua_repl fragment without the preload, generated from the installed
+            plugin. Turn it off once upstream fixes the bug.
           </p>
           <p className="mt-2 text-xs text-muted">
-            Saved workaround: {effective.data?.workaround?.status ?? "disabled"}
-            {effective.data?.workaround?.version
-              ? ` for version ${effective.data.workaround.version}`
+            Status: {workaround?.status ?? "disabled"}
+            {workaround?.version ? ` for version ${workaround.version}` : ""}
+          </p>
+        </div>
+
+        <details className="mt-8">
+          <summary className="section-label cursor-pointer">
+            Organisation bundle (observed)
+            {upstream.data?.configBundle
+              ? ` · fetched ${new Date(upstream.data.configBundle.fetchedAt).toLocaleString()}`
               : ""}
-          </p>
-        </div>
-        <div className="flex gap-2" role="group" aria-label="Bundle mode">
-          {(["replace", "merge"] as const).map((value) => (
-            <button
-              key={value}
-              className={button}
-              aria-pressed={mode === value}
-              onClick={() => setMode(value)}
-            >
-              {value === "merge" ? "Merge into upstream" : "Replace upstream"}
-            </button>
-          ))}
-        </div>
-        <p className="mt-2 text-xs text-muted">
-          {mode === "merge"
-            ? "Your fragments take precedence over the organisation's; same id replaces theirs."
-            : "Codex sees only your bundle."}
-        </p>
-        <p className="mt-2 text-xs text-muted">
-          Codex only fetches the bundle for business/enterprise/edu ChatGPT plans. Running Codex
-          processes refresh it about every 15 minutes; restart Codex to apply changes immediately.
-        </p>
-        <div className="my-4 flex gap-2">
-          <button className={button} aria-pressed={!raw} onClick={() => switchTab(false)}>
-            Fragments
-          </button>
-          <button className={button} aria-pressed={raw} onClick={() => switchTab(true)}>
-            Raw JSON
-          </button>
-        </div>
-        {raw ? (
-          <label className="block">
-            Bundle JSON
-            <textarea
-              aria-label="Bundle JSON"
-              value={text}
-              onChange={(event) => {
-                setText(event.target.value);
-                setParseError("");
-              }}
-              className="input min-h-72 font-mono text-xs"
-              spellCheck={false}
-            />
-          </label>
-        ) : (
-          sections.map((section) => (
-            <div key={section} className="mt-6">
-              <h2 className="section-label">
-                {section === "config_toml" ? "config.toml" : "requirements.toml"} fragments
-              </h2>
-              {fragments(bundle, section).map((fragment, index, list) => {
-                const edit = (patch: Partial<Fragment>) =>
-                  replaceFragments(
-                    section,
-                    list.map((item, i) => (i === index ? { ...item, ...patch } : item)),
-                  );
-                const move = (offset: number) => {
-                  const next = [...list];
-                  [next[index], next[index + offset]] = [next[index + offset]!, next[index]!];
-                  replaceFragments(section, next);
-                };
-                return (
-                  <div key={index} className="mt-3 space-y-2 rounded-lg border border-line p-3">
-                    <p className="text-xs text-muted">
-                      {index === 0 ? "Highest precedence" : `Precedence ${index + 1}`}
-                    </p>
-                    <label className="block text-xs">
-                      ID
-                      <input
-                        aria-label={`${section} fragment ${index + 1} id`}
-                        className="input"
-                        value={fragment.id}
-                        onChange={(e) => edit({ id: e.target.value })}
-                      />
-                    </label>
-                    <label className="block text-xs">
-                      Name
-                      <input
-                        aria-label={`${section} fragment ${index + 1} name`}
-                        className="input"
-                        value={fragment.name}
-                        onChange={(e) => edit({ name: e.target.value })}
-                      />
-                    </label>
-                    <TomlEditor
-                      label={`${section} fragment ${index + 1} TOML`}
-                      value={fragment.contents}
-                      onChange={(contents) => edit({ contents })}
-                    />
-                    <div className="flex gap-2">
-                      <button className={button} disabled={index === 0} onClick={() => move(-1)}>
-                        Move up
-                      </button>
-                      <button
-                        className={button}
-                        disabled={index === list.length - 1}
-                        onClick={() => move(1)}
-                      >
-                        Move down
-                      </button>
-                      <button
-                        className={button}
-                        onClick={() =>
-                          replaceFragments(
-                            section,
-                            list.filter((_, i) => i !== index),
-                          )
-                        }
-                      >
-                        Delete fragment
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-              <button
-                className={button + " mt-3"}
-                onClick={() =>
-                  replaceFragments(section, [
-                    ...fragments(bundle, section),
-                    { id: crypto.randomUUID(), name: "", contents: "" },
-                  ])
-                }
-              >
-                Add {section === "config_toml" ? "config.toml" : "requirements.toml"} fragment
-              </button>
-            </div>
-          ))
-        )}
-        {error && (
-          <p role="alert" className="mt-3 text-xs text-danger">
-            {error}
-          </p>
-        )}
-        {save.isError && (
-          <p role="alert" className="mt-3 text-xs text-danger">
-            {save.error.message}
-          </p>
-        )}
-        {reset.isError && (
-          <p role="alert" className="mt-3 text-xs text-danger">
-            {reset.error.message}
-          </p>
-        )}
-        <div className="mt-4 flex gap-2">
-          <button
-            className={button}
-            disabled={save.isPending || !!error}
-            onClick={() =>
-              save.mutate({
-                version: 1,
-                enabled,
-                mode,
-                bundle: draft,
-                workarounds: { ...query.data.workarounds, cua_repl_browser_access: browserAccess },
-              })
-            }
-          >
-            Save override
-          </button>
-          <button className={button} disabled={reset.isPending} onClick={() => reset.mutate()}>
-            Reset to passthrough
-          </button>
-        </div>
-        {served.map((entry) => (
-          <p key={entry.action} className="mt-3 text-xs text-muted">
-            Served locally {entry.count}× · last {new Date(entry.lastSeenAt).toLocaleString()}
-          </p>
-        ))}
-        <div className="mt-8">
-          <h2 className="section-label">Observed upstream</h2>
+          </summary>
           {upstream.isError ? (
             <p role="alert">{upstream.error.message}</p>
           ) : upstream.data?.configBundle ? (
-            <>
-              <p className="mt-2 text-xs text-muted">
-                fetched {new Date(upstream.data.configBundle.fetchedAt).toLocaleString()}
-              </p>
-              <BundlePreview bundle={upstream.data.configBundle.body} />
-            </>
+            <BundlePreview bundle={upstream.data.configBundle.body} />
           ) : (
             <p className="mt-2 text-sm text-muted">
-              No upstream bundle observed yet. Merge refreshes it on each request; replace refreshes
-              it in the background at most once a minute.
+              Not observed yet. crabex records it the next time Codex requests the bundle.
             </p>
           )}
-        </div>
-        <details className="mt-8">
-          <summary className="section-label cursor-pointer">Effective bundle</summary>
+        </details>
+
+        <details className="mt-4">
+          <summary className="section-label cursor-pointer">What Codex receives</summary>
           {effective.isError ? (
             <p role="alert">{effective.error.message}</p>
           ) : (
@@ -359,10 +195,210 @@ export function ConfigBundlePage() {
               <BundlePreview
                 bundle={effective.data.bundle}
                 local={query.data.enabled ? query.data.bundle : {}}
-                workaroundId={effective.data.workaround?.fragment?.id}
+                workaroundId={workaround?.fragment?.id}
               />
             )
           )}
+        </details>
+
+        <details
+          className="mt-8 rounded-lg border border-danger/40 p-4"
+          open={query.data.enabled || undefined}
+        >
+          <summary className="cursor-pointer text-sm font-medium text-danger">
+            Override managed policy locally
+          </summary>
+          <p className="mt-3 text-xs leading-5 text-muted">
+            For testing policy changes before publishing them upstream. While on, every Codex on
+            this machine that goes through crabex gets your bundle instead of, or merged with, your
+            organisation’s.
+          </p>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <p className="text-sm">Serve local policy</p>
+            <button
+              type="button"
+              role="switch"
+              aria-label="Serve local policy"
+              aria-checked={enabled}
+              onClick={() => setEnabled(!enabled)}
+              className={`toggle-switch ${enabled ? "on" : ""}`}
+            >
+              <span />
+            </button>
+          </div>
+          <div className="mt-4 flex gap-2" role="group" aria-label="Bundle mode">
+            {(["replace", "merge"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={button}
+                aria-pressed={mode === value}
+                onClick={() => setMode(value)}
+              >
+                {value === "merge" ? "Merge into upstream" : "Replace upstream"}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-muted">
+            {mode === "merge"
+              ? "Your fragments take precedence over the organisation’s; the same id replaces theirs."
+              : "Codex sees only your fragments; the organisation’s bundle is hidden."}
+          </p>
+          <div className="my-4 flex gap-2">
+            <button
+              type="button"
+              className={button}
+              aria-pressed={!raw}
+              onClick={() => switchTab(false)}
+            >
+              Fragments
+            </button>
+            <button
+              type="button"
+              className={button}
+              aria-pressed={raw}
+              onClick={() => switchTab(true)}
+            >
+              Raw JSON
+            </button>
+          </div>
+          {raw ? (
+            <label className="block">
+              Bundle JSON
+              <textarea
+                aria-label="Bundle JSON"
+                value={text}
+                onChange={(event) => {
+                  setText(event.target.value);
+                  setParseError("");
+                }}
+                className="input min-h-72 font-mono text-xs"
+                spellCheck={false}
+              />
+            </label>
+          ) : (
+            sections.map((section) => (
+              <div key={section} className="mt-6">
+                <h2 className="section-label">
+                  {section === "config_toml" ? "config.toml" : "requirements.toml"} fragments
+                </h2>
+                {fragments(bundle, section).map((fragment, index, list) => {
+                  const edit = (patch: Partial<Fragment>) =>
+                    replaceFragments(
+                      section,
+                      list.map((item, i) => (i === index ? { ...item, ...patch } : item)),
+                    );
+                  const move = (offset: number) => {
+                    const next = [...list];
+                    [next[index], next[index + offset]] = [next[index + offset]!, next[index]!];
+                    replaceFragments(section, next);
+                  };
+                  return (
+                    <div key={index} className="mt-3 space-y-2 rounded-lg border border-line p-3">
+                      <p className="text-xs text-muted">
+                        {index === 0 ? "Highest precedence" : `Precedence ${index + 1}`}
+                      </p>
+                      <label className="block text-xs">
+                        ID
+                        <input
+                          aria-label={`${section} fragment ${index + 1} id`}
+                          className="input"
+                          value={fragment.id}
+                          onChange={(e) => edit({ id: e.target.value })}
+                        />
+                      </label>
+                      <label className="block text-xs">
+                        Name
+                        <input
+                          aria-label={`${section} fragment ${index + 1} name`}
+                          className="input"
+                          value={fragment.name}
+                          onChange={(e) => edit({ name: e.target.value })}
+                        />
+                      </label>
+                      <TomlEditor
+                        label={`${section} fragment ${index + 1} TOML`}
+                        value={fragment.contents}
+                        onChange={(contents) => edit({ contents })}
+                      />
+                      <div className="flex gap-2">
+                        <button className={button} disabled={index === 0} onClick={() => move(-1)}>
+                          Move up
+                        </button>
+                        <button
+                          className={button}
+                          disabled={index === list.length - 1}
+                          onClick={() => move(1)}
+                        >
+                          Move down
+                        </button>
+                        <button
+                          className={button}
+                          onClick={() =>
+                            replaceFragments(
+                              section,
+                              list.filter((_, i) => i !== index),
+                            )
+                          }
+                        >
+                          Delete fragment
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                <button
+                  className={button + " mt-3"}
+                  onClick={() =>
+                    replaceFragments(section, [
+                      ...fragments(bundle, section),
+                      { id: crypto.randomUUID(), name: "", contents: "" },
+                    ])
+                  }
+                >
+                  Add {section === "config_toml" ? "config.toml" : "requirements.toml"} fragment
+                </button>
+              </div>
+            ))
+          )}
+          {error && (
+            <p role="alert" className="mt-3 text-xs text-danger">
+              {error}
+            </p>
+          )}
+          {reset.isError && (
+            <p role="alert" className="mt-3 text-xs text-danger">
+              {reset.error.message}
+            </p>
+          )}
+          <div className="mt-4 flex gap-2">
+            <button
+              className={button}
+              disabled={save.isPending || !!error}
+              onClick={() =>
+                save.mutate({
+                  version: 1,
+                  enabled,
+                  mode,
+                  bundle: draft,
+                  workarounds: {
+                    ...query.data.workarounds,
+                    cua_repl_browser_access: browserAccess,
+                  },
+                })
+              }
+            >
+              Save override
+            </button>
+            <button className={button} disabled={reset.isPending} onClick={() => reset.mutate()}>
+              Reset to passthrough
+            </button>
+          </div>
+          {served.map((entry) => (
+            <p key={entry.action} className="mt-3 text-xs text-muted">
+              Served locally {entry.count}× · last {new Date(entry.lastSeenAt).toLocaleString()}
+            </p>
+          ))}
         </details>
       </section>
     </div>
