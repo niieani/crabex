@@ -1,3 +1,4 @@
+import { brotliDecompressSync } from "node:zlib";
 import type { ModelAdjustment, ModelRoute, ModelRouteSetData } from "./model-routes.ts";
 import { modelsFixture } from "./models-fixture.ts";
 
@@ -385,7 +386,8 @@ export async function decodeBody(body: Uint8Array, contentEncoding: string): Pro
   if (contentEncoding === "zstd") {
     return new Uint8Array(await Bun.zstdDecompress(body));
   }
-  if (contentEncoding === "br" || contentEncoding === "deflate" || contentEncoding === "gzip") {
+  if (contentEncoding === "br") return new Uint8Array(brotliDecompressSync(body));
+  if (contentEncoding === "deflate" || contentEncoding === "gzip") {
     const stream = new Blob([body.buffer as ArrayBuffer])
       .stream()
       .pipeThrough(

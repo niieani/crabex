@@ -259,10 +259,12 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     if (nowMs - lastBundleObservation < 60_000) return;
     lastBundleObservation = nowMs;
     void fetch(targetUrl(upstreamOrigin, request.url), {
+      decompress: false,
+      signal: AbortSignal.timeout(10_000),
       headers: forwardedHeaders(request.headers, cookies.header()),
     })
       .then(async (response) => {
-        if (!response.ok) return;
+        if (!response.ok) throw new Error("upstream status");
         const bytes = new Uint8Array(await response.arrayBuffer());
         const encoding = response.headers.get("content-encoding")?.toLowerCase() ?? "identity";
         const body: unknown = JSON.parse(
@@ -271,7 +273,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
         await upstreamCache.observe("configBundle", body);
       })
       .catch(() => {
-        // observation is best-effort
+        console.warn("config bundle upstream observation failed");
       });
   };
 

@@ -1,3 +1,4 @@
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -2087,6 +2088,26 @@ describe("model routing and config bundle override", () => {
       body: { requirements_toml: "managed = true" },
     });
   });
+
+  it.each(["br", "gzip"])(
+    "observes a %s compressed upstream bundle without double decoding",
+    async (encoding) => {
+      const body = { config_toml: { enterprise_managed: [] } };
+      const chatgpt = await startHttpServer((_request, response) => {
+        response.setHeader("content-type", "application/json");
+        response.setHeader("content-encoding", encoding);
+        const bytes = Buffer.from(JSON.stringify(body));
+        response.end(encoding === "br" ? brotliCompressSync(bytes) : gzipSync(bytes));
+      });
+      const cache = new MemoryUpstreamCache();
+      const proxy = await startRoutingProxy(chatgpt.origin, new MemoryCaptureSink(), {
+        bundleOverride: { version: 1, enabled: true, bundle: {} },
+        upstreamCache: cache,
+      });
+      expect((await fetch(`${proxy.origin}/wham/config/bundle`)).status).toBe(200);
+      await eventually(() => expect(cache.state.configBundle?.body).toEqual(body));
+    },
+  );
 
   it("observes the upstream bundle while answering with the override", async () => {
     const chatgpt = await startHttpServer((_request, response) => {
