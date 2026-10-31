@@ -8,8 +8,8 @@ import {
 import { dirname } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
-import { readTls, syncProxyStartupCodexCa, tlsStatus } from "./service/tls.ts";
-import { serviceCommand } from "./service/launch-agent.ts";
+import { MANAGED_SERVICE_ENV, readTls, syncProxyStartupCodexCa, tlsStatus } from "./service/tls.ts";
+import { committedDesktopCodexCa, serviceCommand } from "./service/launch-agent.ts";
 import { createLocalApi } from "./api/local-api.ts";
 import { createWebUi, findUiDirectory } from "./api/web-ui.ts";
 import { createCodexConfigManager, migrateCodexConfigFile } from "./config/codex-config.ts";
@@ -91,7 +91,12 @@ async function main(): Promise<void> {
   reportMigration(await migrateCodexConfigFile(options.codexConfigPath));
   if (options.codexCaBundlePath !== undefined) {
     try {
-      syncProxyStartupCodexCa({ path: options.codexCaBundlePath });
+      syncProxyStartupCodexCa(
+        { path: options.codexCaBundlePath },
+        process.env,
+        undefined,
+        process.env[MANAGED_SERVICE_ENV] === "1" ? await committedDesktopCodexCa() : undefined,
+      );
     } catch (error) {
       // A user may deliberately replace this value after installation. Keep the
       // proxy available and leave that explicit choice untouched.

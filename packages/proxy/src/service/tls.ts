@@ -204,14 +204,24 @@ export function syncPublishedCodexCa(
   }
 }
 
-/** The managed LaunchAgent's worker publishes after readiness; a standalone proxy may publish now. */
+/**
+ * The managed LaunchAgent's worker publishes after readiness; a standalone proxy may publish now.
+ * launchd forgets `launchctl setenv` values at logout and reboot, so a managed proxy restored
+ * by launchd republishes its bundle once that bundle is the committed installation's.
+ */
 export function syncProxyStartupCodexCa(
   managed: PublishedCodexCa,
   processEnvironment: Record<string, string | undefined> = process.env,
   environment: EnvironmentController = launchctlEnvironment(),
+  committed?: PublishedCodexCa,
 ): void {
-  if (processEnvironment[MANAGED_SERVICE_ENV] === "1") return;
-  syncPublishedCodexCa(managed, true, environment);
+  if (processEnvironment[MANAGED_SERVICE_ENV] !== "1") {
+    syncPublishedCodexCa(managed, true, environment);
+    return;
+  }
+  // An uncommitted candidate is still being verified by the worker, which publishes or rolls back.
+  if (committed === undefined || resolve(committed.path) !== resolve(managed.path)) return;
+  syncPublishedCodexCa(committed, true, environment);
 }
 
 /** Rollback restores the previous service, whereas uninstall restores the user's original value. */

@@ -108,7 +108,10 @@ not change the launchd environment. Each update stages a separate bundle without
 changing the roots used by the running installation. After readiness succeeds, the worker publishes the new
 bundle path. Rollback restores the previous service's bundle; uninstall restores
 the original user value. Both leave a concurrently changed value untouched.
-New terminals and apps inherit the current bundle path after publication. Existing shells keep
+launchd forgets that value at logout and reboot; when launchd starts the service again, the proxy
+republishes the committed installation's bundle (an update candidate still under verification
+leaves publication to the worker). New terminals and apps inherit the current bundle path after
+publication. Existing shells keep
 their earlier value; the installer retains the current bundle, the rollback bundle, any path still
 published in launchd, the three newest bundles, and every bundle modified within the last seven
 days. Older unreferenced bundles are removed after a successful install or restart. A user

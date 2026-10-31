@@ -167,6 +167,11 @@ function ctl(...args: string[]): string {
   return result.stdout;
 }
 
+/** The CA bundle record of the committed installation, read by the managed proxy at startup. */
+export async function committedDesktopCodexCa(): Promise<PublishedCodexCa | undefined> {
+  return (await state())?.desktopCodexCa;
+}
+
 async function state(path = STATE): Promise<ServiceState | undefined> {
   try {
     return JSON.parse(await readFile(path, "utf8")) as ServiceState;

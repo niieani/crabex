@@ -219,11 +219,40 @@ describe("managed local TLS", () => {
     };
     syncProxyStartupCodexCa({ path: newPath }, { CRABEX_MANAGED_SERVICE: "1" }, environment);
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe(oldPath);
+    // A candidate under verification is not yet the committed installation.
+    const managedService = { CRABEX_MANAGED_SERVICE: "1" };
+    syncProxyStartupCodexCa({ path: newPath }, managedService, environment, { path: oldPath });
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(oldPath);
     syncPublishedCodexCa({ path: newPath, previous: oldPath }, true, environment);
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe(newPath);
 
     values.set("CODEX_CA_CERTIFICATE", "/user-choice.pem");
     expect(() => syncProxyStartupCodexCa({ path: newPath }, {}, environment)).toThrow("changed");
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe("/user-choice.pem");
+  });
+
+  it("republishes the committed bundle when launchd restores a managed proxy after login", () => {
+    const path = "/installation/tls/codex-ca-bundles/current.pem";
+    const values = new Map<string, string>();
+    const environment = {
+      get: (name: string) => values.get(name),
+      set: (name: string, value: string) => values.set(name, value),
+      unset: (name: string) => values.delete(name),
+    };
+    const managedService = { CRABEX_MANAGED_SERVICE: "1" };
+    const committed = { path, previous: "/user-original.pem", source: "/enterprise.pem" };
+    syncProxyStartupCodexCa({ path }, managedService, environment, committed);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(path);
+
+    // The value the installation originally replaced is replaced again, as at install time.
+    values.set("CODEX_CA_CERTIFICATE", "/user-original.pem");
+    syncProxyStartupCodexCa({ path }, managedService, environment, committed);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(path);
+
+    values.set("CODEX_CA_CERTIFICATE", "/user-choice.pem");
+    expect(() => syncProxyStartupCodexCa({ path }, managedService, environment, committed)).toThrow(
+      "changed",
+    );
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe("/user-choice.pem");
   });
 
