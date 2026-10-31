@@ -1,7 +1,19 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID, X509Certificate, createPrivateKey, createPublicKey } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile, rm } from "node:fs/promises";
-import { basename, join, resolve, dirname, sep } from "node:path";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rename,
+  stat,
+  symlink,
+  writeFile,
+  rm,
+} from "node:fs/promises";
+import { basename, join, relative, resolve, dirname, sep } from "node:path";
 import { homedir } from "node:os";
 
 const DAY = 86_400_000;
@@ -43,6 +55,32 @@ export function configuredCustomCaBundle(environment: Record<string, string>): s
   return [environment.CODEX_CA_CERTIFICATE, environment.SSL_CERT_FILE].find(
     (value) => value !== undefined && value.trim() !== "",
   );
+}
+
+/** Codex reads this stable link; the installer repoints it at each committed bundle. */
+export function stableCodexCaPath(root: string): string {
+  return join(root, "codex-ca-bundle.pem");
+}
+
+/** A generated bundle is published through the stable link; any other path is published as is. */
+export function publishedCodexCaValue(path: string): string {
+  const directory = dirname(resolve(path));
+  return basename(directory) === "codex-ca-bundles" ? stableCodexCaPath(dirname(directory)) : path;
+}
+
+/** Atomically repoint the stable link, so readers never observe a missing bundle. */
+export async function linkStableCodexCa(bundle: string): Promise<void> {
+  const stable = publishedCodexCaValue(bundle);
+  if (stable === bundle) return;
+  const root = dirname(stable);
+  const temporary = join(root, `codex-ca-bundle-${randomUUID()}.tmp`);
+  await symlink(relative(root, resolve(bundle)), temporary);
+  try {
+    await rename(temporary, stable);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
 }
 
 export function isManagedCodexCaPath(root: string, path: string): boolean {
@@ -134,7 +172,13 @@ export async function pruneCodexCaBundles(
     throw error;
   }
   const protectedPaths = new Set<string>();
-  for (const path of [...referencedPaths, environment.get("CODEX_CA_CERTIFICATE")]) {
+  const stable = stableCodexCaPath(root);
+  try {
+    protectedPaths.add(resolve(root, await readlink(stable)));
+  } catch {
+    // No link has been published from this root yet.
+  }
+  for (const path of [...referencedPaths, stable, environment.get("CODEX_CA_CERTIFICATE")]) {
     if (!path) continue;
     protectedPaths.add(resolve(path));
     try {
@@ -197,10 +241,15 @@ export function syncPublishedCodexCa(
       !currentIsManaged
     )
       throw new Error("CODEX_CA_CERTIFICATE changed during service installation; left unchanged");
-    if (current !== managed.path) environment.set("CODEX_CA_CERTIFICATE", managed.path);
+    const published = publishedCodexCaValue(managed.path);
+    if (current !== published) environment.set("CODEX_CA_CERTIFICATE", published);
   } else if (current === managed.path || currentIsManaged) {
     if (managed.previous === undefined) environment.unset("CODEX_CA_CERTIFICATE");
-    else environment.set("CODEX_CA_CERTIFICATE", managed.previous);
+    else {
+      // A managed previous bundle is restored by repointing the link, which stays published.
+      const published = publishedCodexCaValue(managed.previous);
+      if (current !== published) environment.set("CODEX_CA_CERTIFICATE", published);
+    }
   }
 }
 
@@ -209,19 +258,21 @@ export function syncPublishedCodexCa(
  * launchd forgets `launchctl setenv` values at logout and reboot, so a managed proxy restored
  * by launchd republishes its bundle once that bundle is the committed installation's.
  */
-export function syncProxyStartupCodexCa(
+export async function syncProxyStartupCodexCa(
   managed: PublishedCodexCa,
   processEnvironment: Record<string, string | undefined> = process.env,
   environment: EnvironmentController = launchctlEnvironment(),
   committed?: PublishedCodexCa,
-): void {
-  if (processEnvironment[MANAGED_SERVICE_ENV] !== "1") {
-    syncPublishedCodexCa(managed, true, environment);
-    return;
-  }
+  link: (bundle: string) => Promise<void> = linkStableCodexCa,
+): Promise<void> {
+  const publish = async (record: PublishedCodexCa) => {
+    await link(record.path);
+    syncPublishedCodexCa(record, true, environment);
+  };
+  if (processEnvironment[MANAGED_SERVICE_ENV] !== "1") return publish(managed);
   // An uncommitted candidate is still being verified by the worker, which publishes or rolls back.
   if (committed === undefined || resolve(committed.path) !== resolve(managed.path)) return;
-  syncPublishedCodexCa(committed, true, environment);
+  return publish(committed);
 }
 
 /** Rollback restores the previous service, whereas uninstall restores the user's original value. */

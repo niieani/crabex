@@ -1,4 +1,15 @@
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +20,9 @@ import {
   originalCodexCaValue,
   resolveCustomCaSource,
   prepareCodexCaBundle,
+  linkStableCodexCa,
   pruneCodexCaBundles,
+  publishedCodexCaValue,
   prepareTls,
   readTls,
   syncPublishedCodexCa,
@@ -190,6 +203,7 @@ describe("managed local TLS", () => {
     const directory = join(root, "codex-ca-bundles");
     const oldPath = join(directory, "old.pem");
     const newPath = join(directory, "new.pem");
+    const stable = join(root, "codex-ca-bundle.pem");
     const values = new Map<string, string>([["CODEX_CA_CERTIFICATE", oldPath]]);
     const environment = {
       get: (name: string) => values.get(name),
@@ -197,63 +211,112 @@ describe("managed local TLS", () => {
       unset: (name: string) => values.delete(name),
     };
     expect(() => syncPublishedCodexCa({ path: newPath }, true, environment)).not.toThrow();
-    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(newPath);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(stable);
 
     values.set("CODEX_CA_CERTIFICATE", join(root, "codex-ca-bundle.pem"));
     syncPublishedCodexCa({ path: newPath }, true, environment);
-    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(newPath);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(stable);
 
     values.set("CODEX_CA_CERTIFICATE", "/user-changed.pem");
     expect(() => syncPublishedCodexCa({ path: newPath }, true, environment)).toThrow("changed");
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe("/user-changed.pem");
   });
 
-  it("leaves CA publication to the installer worker in a managed proxy process", () => {
+  it("leaves CA publication to the installer worker in a managed proxy process", async () => {
     const oldPath = "/installation/tls/codex-ca-bundles/old.pem";
     const newPath = "/installation/tls/codex-ca-bundles/new.pem";
+    const stable = "/installation/tls/codex-ca-bundle.pem";
     const values = new Map<string, string>([["CODEX_CA_CERTIFICATE", oldPath]]);
     const environment = {
       get: (name: string) => values.get(name),
       set: (name: string, value: string) => values.set(name, value),
       unset: (name: string) => values.delete(name),
     };
-    syncProxyStartupCodexCa({ path: newPath }, { CRABEX_MANAGED_SERVICE: "1" }, environment);
+    const linked: string[] = [];
+    const link = async (bundle: string) => void linked.push(bundle);
+    const managedService = { CRABEX_MANAGED_SERVICE: "1" };
+    await syncProxyStartupCodexCa({ path: newPath }, managedService, environment, undefined, link);
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe(oldPath);
     // A candidate under verification is not yet the committed installation.
-    const managedService = { CRABEX_MANAGED_SERVICE: "1" };
-    syncProxyStartupCodexCa({ path: newPath }, managedService, environment, { path: oldPath });
+    await syncProxyStartupCodexCa(
+      { path: newPath },
+      managedService,
+      environment,
+      { path: oldPath },
+      link,
+    );
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe(oldPath);
+    expect(linked).toEqual([]);
     syncPublishedCodexCa({ path: newPath, previous: oldPath }, true, environment);
-    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(newPath);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(stable);
 
     values.set("CODEX_CA_CERTIFICATE", "/user-choice.pem");
-    expect(() => syncProxyStartupCodexCa({ path: newPath }, {}, environment)).toThrow("changed");
+    await expect(
+      syncProxyStartupCodexCa({ path: newPath }, {}, environment, undefined, link),
+    ).rejects.toThrow("changed");
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe("/user-choice.pem");
   });
 
-  it("republishes the committed bundle when launchd restores a managed proxy after login", () => {
+  it("republishes the committed bundle when launchd restores a managed proxy after login", async () => {
     const path = "/installation/tls/codex-ca-bundles/current.pem";
+    const stable = "/installation/tls/codex-ca-bundle.pem";
     const values = new Map<string, string>();
     const environment = {
       get: (name: string) => values.get(name),
       set: (name: string, value: string) => values.set(name, value),
       unset: (name: string) => values.delete(name),
     };
+    const linked: string[] = [];
+    const link = async (bundle: string) => void linked.push(bundle);
     const managedService = { CRABEX_MANAGED_SERVICE: "1" };
     const committed = { path, previous: "/user-original.pem", source: "/enterprise.pem" };
-    syncProxyStartupCodexCa({ path }, managedService, environment, committed);
-    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(path);
+    await syncProxyStartupCodexCa({ path }, managedService, environment, committed, link);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(stable);
+    expect(linked).toEqual([path]);
 
     // The value the installation originally replaced is replaced again, as at install time.
     values.set("CODEX_CA_CERTIFICATE", "/user-original.pem");
-    syncProxyStartupCodexCa({ path }, managedService, environment, committed);
-    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(path);
+    await syncProxyStartupCodexCa({ path }, managedService, environment, committed, link);
+    expect(values.get("CODEX_CA_CERTIFICATE")).toBe(stable);
 
     values.set("CODEX_CA_CERTIFICATE", "/user-choice.pem");
-    expect(() => syncProxyStartupCodexCa({ path }, managedService, environment, committed)).toThrow(
-      "changed",
-    );
+    await expect(
+      syncProxyStartupCodexCa({ path }, managedService, environment, committed, link),
+    ).rejects.toThrow("changed");
     expect(values.get("CODEX_CA_CERTIFICATE")).toBe("/user-choice.pem");
+  });
+
+  it("repoints the stable link atomically and keeps its target from pruning", async () => {
+    const root = await mkdtemp(join(tmpdir(), "act-ca-link-"));
+    const directory = join(root, "codex-ca-bundles");
+    try {
+      await mkdir(directory);
+      const first = join(directory, "first.pem");
+      const second = join(directory, "second.pem");
+      await writeFile(first, "first");
+      await writeFile(second, "second");
+      const stable = join(root, "codex-ca-bundle.pem");
+      expect(publishedCodexCaValue(first)).toBe(stable);
+      expect(publishedCodexCaValue("/enterprise.pem")).toBe("/enterprise.pem");
+
+      await linkStableCodexCa(first);
+      expect(await readFile(stable, "utf8")).toBe("first");
+      await linkStableCodexCa(second);
+      expect(await readFile(stable, "utf8")).toBe("second");
+      expect(await readlink(stable)).toBe(join("codex-ca-bundles", "second.pem"));
+      expect((await readdir(root)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+
+      const old = new Date(Date.now() - 30 * 86_400_000);
+      for (let index = 0; index < 4; index++) {
+        const path = join(directory, `newer-${index}.pem`);
+        await writeFile(path, `${index}`);
+      }
+      await utimes(second, old, old);
+      await pruneCodexCaBundles(root, [], { get: () => undefined, set() {}, unset() {} });
+      expect(await readFile(stable, "utf8")).toBe("second");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("prunes old unreferenced bundles while keeping state, launchd, and the grace window", async () => {

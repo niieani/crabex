@@ -101,21 +101,37 @@ Some installations configure a custom CA bundle through `CODEX_CA_CERTIFICATE` o
 `SSL_CERT_FILE`. The installer detects that configuration without assuming a
 particular enterprise product or certificate path. When present, it creates a
 private bundle containing the configured roots plus the managed local CA, then
-publishes its path as `CODEX_CA_CERTIFICATE` in the current user's launchd
-environment. Codex gives that variable precedence, while the ChatGPT desktop app
-continues to use login-Keychain trust. With no custom CA bundle, the installer does
-not change the launchd environment. Each update stages a separate bundle without
-changing the roots used by the running installation. After readiness succeeds, the worker publishes the new
-bundle path. Rollback restores the previous service's bundle; uninstall restores
-the original user value. Both leave a concurrently changed value untouched.
-launchd forgets that value at logout and reboot; when launchd starts the service again, the proxy
-republishes the committed installation's bundle (an update candidate still under verification
-leaves publication to the worker). New terminals and apps inherit the current bundle path after
-publication. Existing shells keep
-their earlier value; the installer retains the current bundle, the rollback bundle, any path still
-published in launchd, the three newest bundles, and every bundle modified within the last seven
-days. Older unreferenced bundles are removed after a successful install or restart. A user
-override outside the managed bundle directory remains untouched.
+publishes it as `CODEX_CA_CERTIFICATE` in the current user's launchd environment.
+Codex gives that variable precedence, while the ChatGPT desktop app continues to use
+login-Keychain trust. With no custom CA bundle, the installer does not change the
+launchd environment.
+
+The published value is always the stable link
+`~/Library/Application Support/crabex/tls/codex-ca-bundle.pem`. Each update stages a
+separate bundle under `tls/codex-ca-bundles/` without changing the roots used by the
+running installation; after readiness succeeds, the worker atomically repoints the link
+at the new bundle. Rollback repoints it at the previous service's bundle; uninstall
+restores the original user value. Both leave a concurrently changed value untouched.
+Codex rereads the bundle whenever it builds an HTTP client, so running sessions and the
+Codex app-server daemon pick up updated roots without restarting.
+
+launchd forgets `CODEX_CA_CERTIFICATE` at logout and reboot. When launchd starts the
+service again, the proxy republishes the link for the committed installation (an update
+candidate still under verification leaves publication to the worker). A process started
+before that, such as a Codex app-server daemon launched from a terminal right after
+login, misses the value and fails `account/read` with `workspace routing discovery
+failed`. Because the path never changes, export it from your shell startup instead; the
+installer prints this line, but does not edit shell startup files:
+
+```sh
+export CODEX_CA_CERTIFICATE="$HOME/Library/Application Support/crabex/tls/codex-ca-bundle.pem"
+```
+
+Restart a daemon that already missed it with `codex app-server daemon restart` from a
+new terminal. The installer retains the linked bundle, the rollback bundle, any path
+still published in launchd, the three newest bundles, and every bundle modified within
+the last seven days. Older unreferenced bundles are removed after a successful install
+or restart. A user override outside the managed bundle directory remains untouched.
 
 The original external CA source path is recorded in service state. Reinstallation
 reads that source again, even when the installer inherits a managed

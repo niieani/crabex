@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   reportMigration(await migrateCodexConfigFile(options.codexConfigPath));
   if (options.codexCaBundlePath !== undefined) {
     try {
-      syncProxyStartupCodexCa(
+      await syncProxyStartupCodexCa(
         { path: options.codexCaBundlePath },
         process.env,
         undefined,

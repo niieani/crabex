@@ -25,6 +25,8 @@ import {
   removeTls,
   syncPublishedCodexCa,
   syncCodexCaTransition,
+  linkStableCodexCa,
+  publishedCodexCaValue,
   tlsStatus,
   type PublishedCodexCa,
 } from "./tls.ts";
@@ -356,6 +358,9 @@ async function worker(operationPath: string): Promise<void> {
       },
       persist: async (candidate) => {
         const managed = operation.next.desktopCodexCa;
+        // Repoint the stable link before publishing it, on commit and on rollback alike.
+        if (candidate.desktopCodexCa !== undefined)
+          await linkStableCodexCa(candidate.desktopCodexCa.path);
         if (managed !== undefined)
           syncCodexCaTransition(
             managed,
@@ -746,6 +751,17 @@ export async function serviceCommand(args: string[]): Promise<void> {
       ...(legacy ? { legacy: true } : {}),
     });
     console.log(`Installed command: ${launcher}`);
+    if (desktopCodexCa !== undefined) {
+      const published = publishedCodexCaValue(desktopCodexCa.path);
+      const shellPath = published.startsWith(`${homedir()}/`)
+        ? `$HOME${published.slice(homedir().length)}`
+        : published;
+      console.log(
+        `Codex CA bundle: ${published}\n` +
+          "launchd forgets CODEX_CA_CERTIFICATE at logout; for terminal sessions, add to ~/.zshenv:\n" +
+          `  export CODEX_CA_CERTIFICATE="${shellPath}"`,
+      );
+    }
     scheduled = true;
   } finally {
     if (!scheduled) await rm(LOCK, { recursive: true, force: true });
