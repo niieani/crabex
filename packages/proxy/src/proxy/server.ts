@@ -168,6 +168,8 @@ interface SocketData {
   anthropicKey: Uint8Array;
   proxyConfigSource?: Pick<ProxyConfigStore, "get">;
   bridgeAbort?: AbortController;
+  httpBridgeResponse?: boolean;
+  bridgeControlGeneration?: number;
   upstream?: WebSocket;
   recorder: EventRecorder;
   client?: Bun.ServerWebSocket<SocketData>;
@@ -405,16 +407,27 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
       },
       message(client, message) {
         const data = client.data;
-        if (data.bridgeAbort && typeof message === "string") {
+        if (
+          (data.bridgeAbort !== undefined ||
+            (data.bridge !== undefined && data.httpBridgeResponse !== false)) &&
+          typeof message === "string"
+        ) {
           try {
-            if (JSON.parse(message).type === "response.cancel") {
-              data.bridgeAbort.abort();
+            const type = JSON.parse(message).type;
+            if (type === "response.cancel" || type === "response.interrupt") {
+              // HTTP turns never create a native WebSocket to receive control events.
+              data.bridgeControlGeneration = (data.bridgeControlGeneration ?? 0) + 1;
+              data.bridgeAbort?.abort();
               return;
             }
           } catch {
             /* ordinary frame */
           }
         }
+        const incomingCreate = inspectResponseModel(message);
+        if (incomingCreate !== undefined)
+          data.httpBridgeResponse = matchBridgeRoute(data.bridge, message) !== undefined;
+        const controlGeneration = data.bridgeControlGeneration ?? 0;
         const encoding = typeof message === "string" ? "utf8" : "base64";
         data.clientToUpstream = data.clientToUpstream
           .then(async () => {
@@ -453,6 +466,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                   )
                 : undefined;
             const bridged = matchBridgeRoute(data.bridge, processed.value);
+            if (agentInspected !== undefined) data.httpBridgeResponse = bridged !== undefined;
             if (bridged !== undefined) {
               try {
                 await runBridgedCreate(
@@ -462,6 +476,7 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
                   message,
                   encoding,
                   processed,
+                  controlGeneration,
                   historySourceFamily,
                   targetFamily,
                   agentScope,
@@ -1403,6 +1418,7 @@ async function runBridgedCreate(
   rawMessage: string | ArrayBuffer | Uint8Array,
   encoding: "utf8" | "base64",
   processed: ReturnType<typeof processClientPayload>,
+  controlGeneration: number,
   sourceFamily?: string,
   targetFamily?: string,
   agentScope?: string,
@@ -1536,15 +1552,17 @@ async function runBridgedCreate(
   } = prepared;
   if (prepared.translated) captureEffectivePayload = JSON.stringify(translatedPayload);
   data.bridgeAbort = new AbortController();
+  const signal = data.bridgeAbort.signal;
+  if ((data.bridgeControlGeneration ?? 0) !== controlGeneration) data.bridgeAbort.abort();
   const result = await fetchWithFailover({
     route,
-    signal: data.bridgeAbort.signal,
+    signal,
     fetchImpl:
       route.api === "anthropic-messages"
         ? anthropicFetch(
             route,
             data.anthropicKey,
-            data.bridgeAbort.signal,
+            signal,
             false,
             brokerRoute === undefined
               ? undefined
@@ -1567,6 +1585,7 @@ async function runBridgedCreate(
       url: responseTargetUrl(route, bridge.search),
       init: {
         method: "POST",
+        signal,
         headers: {
           ...routedHeaders(bridge.baseHeaders, authorization),
           "content-type": "application/json",
@@ -1624,6 +1643,10 @@ async function runBridgedCreate(
       try {
         const type = JSON.parse(translatedEvent).type;
         failed ||= ["response.failed", "response.incomplete", "error"].includes(type);
+        if (
+          ["response.completed", "response.failed", "response.incomplete", "error"].includes(type)
+        )
+          data.bridgeAbort = undefined;
       } catch {
         /* upstream data is recorded verbatim */
       }
