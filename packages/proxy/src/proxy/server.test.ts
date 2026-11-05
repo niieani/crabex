@@ -2969,16 +2969,31 @@ describe("model routing and config bundle override", () => {
     }
   });
 
-  it.each(["response.interrupt", "response.cancel"])(
-    "keeps an HTTP-bridged socket usable after %s following completion",
-    async (controlType) => {
+  it.each(
+    ["response.completed", "response.failed", "response.incomplete", "error"].flatMap(
+      (terminalType) =>
+        ["response.interrupt", "response.cancel"].map((controlType) => ({
+          terminalType,
+          controlType,
+        })),
+    ),
+  )(
+    "keeps an HTTP-bridged socket usable after $controlType following $terminalType",
+    async ({ controlType, terminalType }) => {
       process.env.OPENAI_API_KEY = "test-gateway-key";
       try {
         const seen: string[] = [];
+        let previousResponse: ServerResponse | undefined;
         const gateway = await startHttpServer((request, response) => {
+          closeables.push(async () => {
+            response.destroy();
+          });
           let body = "";
           request.on("data", (chunk) => (body += chunk));
           request.on("end", () => {
+            // EOF cannot release the first turn until its continuation arrives.
+            previousResponse?.end();
+            previousResponse = response;
             const payload = JSON.parse(body) as Record<string, unknown>;
             seen.push(String(payload.model));
             expect(request.headers.authorization).toBe("Bearer test-gateway-key");
@@ -2988,13 +3003,22 @@ describe("model routing and config bundle override", () => {
             expect(payload.generate).toBeUndefined();
             expect(payload.access_programs).toBeUndefined();
             response.setHeader("content-type", "text/event-stream");
+            const terminal =
+              terminalType === "error"
+                ? { type: terminalType, error: { message: "Upstream error" } }
+                : {
+                    type: terminalType,
+                    response: {
+                      id: "resp_gw",
+                      model: payload.model,
+                      status: terminalType.slice("response.".length),
+                    },
+                  };
             response.write(
               `event: response.created\ndata: {"type":"response.created","response":{"id":"resp_gw","model":"${String(payload.model)}","status":"in_progress"}}\n\n` +
                 `event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"audit-ok"}\n\n` +
-                `event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_gw","model":"${String(payload.model)}","status":"completed"}}\n\n`,
+                `event: ${terminalType}\ndata: ${JSON.stringify(terminal)}\n\n`,
             );
-            // Keep HTTP open after completion to catch late-control cancellation races.
-            setTimeout(() => response.end(), 30);
           });
         });
         const route = modelRouteFromConfig({
@@ -3066,20 +3090,22 @@ describe("model routing and config bundle override", () => {
         expect(created.response.id).toBe("");
         const delta = JSON.parse(await nextMessage(client)) as { type: string };
         expect(delta.type).toBe("response.output_text.delta");
-        const completed = JSON.parse(await nextMessage(client)) as {
+        const terminal = JSON.parse(await nextMessage(client)) as {
           type: string;
           response: { id: string; model: string };
         };
-        expect(completed.type).toBe("response.completed");
-        expect(completed.response.model).toBe("gpt-6-astra");
-        expect(completed.response.id).toBe("");
+        expect(terminal.type).toBe(terminalType);
+        if (terminalType !== "error") {
+          expect(terminal.response.model).toBe("gpt-6-astra");
+          expect(terminal.response.id).toBe("");
+        }
 
         // Codex interrupts the previous turn before starting its continuation.
         client.send(JSON.stringify({ type: controlType }));
         client.send(JSON.stringify({ type: "response.create", model: "gpt-6-astra", input: [] }));
         expect(JSON.parse(await nextMessage(client)).type).toBe("response.created");
         expect(JSON.parse(await nextMessage(client)).type).toBe("response.output_text.delta");
-        expect(JSON.parse(await nextMessage(client)).type).toBe("response.completed");
+        expect(JSON.parse(await nextMessage(client)).type).toBe(terminalType);
         expect(nativeFrames).toEqual([]);
         expect(seen).toEqual(["openai.gpt-6-astra-flex", "openai.gpt-6-astra-flex"]);
         client.send(JSON.stringify({ type: "response.create", model: "native-model", input: [] }));

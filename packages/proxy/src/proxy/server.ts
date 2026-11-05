@@ -1409,7 +1409,7 @@ function routedAgentModels(routes: readonly ModelRoute[]): { slug: string; guida
  * Fulfills one response.create against an HTTP-only upstream: failover runs
  * first, the request event is recorded with the attempt trail, then the SSE
  * stream is forwarded to the client as WebSocket messages. Awaiting the whole
- * stream keeps client messages processed in order.
+ * response keeps client messages processed in order, without waiting for HTTP EOF.
  */
 async function runBridgedCreate(
   data: SocketData,
@@ -1551,8 +1551,9 @@ async function runBridgedCreate(
     translatedPayload,
   } = prepared;
   if (prepared.translated) captureEffectivePayload = JSON.stringify(translatedPayload);
-  data.bridgeAbort = new AbortController();
-  const signal = data.bridgeAbort.signal;
+  const controller = new AbortController();
+  data.bridgeAbort = controller;
+  const signal = controller.signal;
   if ((data.bridgeControlGeneration ?? 0) !== controlGeneration) data.bridgeAbort.abort();
   const result = await fetchWithFailover({
     route,
@@ -1624,7 +1625,7 @@ async function runBridgedCreate(
     status: result.response.status,
   });
   let failed = false;
-  for await (const eventData of parseSseEvents(result.response.body)) {
+  events: for await (const eventData of parseSseEvents(result.response.body)) {
     for (const toolEvent of toolBridge?.event(eventData) ?? [eventData]) {
       let translatedEvent: string;
       try {
@@ -1640,13 +1641,17 @@ async function runBridgedCreate(
         data.bridgeAbort = undefined;
         return;
       }
+      let terminal = false;
       try {
         const type = JSON.parse(translatedEvent).type;
         failed ||= ["response.failed", "response.incomplete", "error"].includes(type);
-        if (
-          ["response.completed", "response.failed", "response.incomplete", "error"].includes(type)
-        )
-          data.bridgeAbort = undefined;
+        terminal = [
+          "response.completed",
+          "response.failed",
+          "response.incomplete",
+          "error",
+        ].includes(type);
+        if (terminal) data.bridgeAbort = undefined;
       } catch {
         /* upstream data is recorded verbatim */
       }
@@ -1667,6 +1672,11 @@ async function runBridgedCreate(
         }),
         origin,
       );
+      if (terminal) {
+        // Abort pending HTTP reads before closing the SSE iterator.
+        controller.abort();
+        break events;
+      }
     }
   }
   data.bridgeAbort = undefined;
