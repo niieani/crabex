@@ -17,6 +17,8 @@ vi.mock("../../lib/api.ts", () => ({
 const off: SharedLoginState = {
   enabled: false,
   listen: "127.0.0.1:8766",
+  refresh: true,
+  renewal: {},
   running: false,
   tls: false,
   login: { state: "ready", path: "/home/me/.codex/auth.json", detail: "ChatGPT login available" },
@@ -53,6 +55,27 @@ describe("SharedLoginCard", () => {
     await waitFor(() =>
       expect(vi.mocked(putSharedLogin).mock.calls[0]?.[0]).toEqual({ enabled: true }),
     );
+  });
+
+  it("keeps the login fresh by default, and can stop", async () => {
+    vi.mocked(getSharedLogin).mockResolvedValue({ ...off, enabled: true, running: true });
+    renderCard();
+    const toggle = await screen.findByRole("switch", { name: "Renew the login" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(vi.mocked(putSharedLogin).mock.calls[0]?.[0]).toEqual({ refresh: false }),
+    );
+  });
+
+  it("shows why the last renewal failed", async () => {
+    vi.mocked(getSharedLogin).mockResolvedValue({
+      ...off,
+      enabled: true,
+      renewal: { lastFailedAt: "2030-01-01T00:00:00.000Z", error: "codex app-server exited (1)" },
+    });
+    renderCard();
+    expect(await screen.findByText(/codex app-server exited \(1\)/)).toBeTruthy();
   });
 
   it("switches listening to all interfaces and warns about plain HTTP", async () => {

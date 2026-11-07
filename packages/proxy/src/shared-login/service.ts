@@ -3,10 +3,14 @@ import type { ProxyConfigStore } from "../config/proxy-config-store.ts";
 import type { ClientKeyStore } from "./client-keys.ts";
 import { startSharedLoginListener, type SharedLoginListener } from "./listener.ts";
 import type { LoginSource } from "./login.ts";
+import { CHECK_INTERVAL_MS, type LoginRefresher, type RefresherState } from "./login-refresher.ts";
 
 export interface SharedLoginStatus {
   enabled: boolean;
   listen: string;
+  /** Whether Codex renews the login near expiry while Shared Login is on. */
+  refresh: boolean;
+  renewal: RefresherState;
   /** Set when the command line fixes the value; the UI cannot edit it until restart. */
   enabledOverride?: boolean;
   listenOverride?: string;
@@ -22,7 +26,7 @@ export interface SharedLoginService {
   readonly login: LoginSource;
   status(): SharedLoginStatus;
   /** Validates and saves settings, then applies them to the listener. */
-  update(settings: { enabled?: boolean; listen?: string }): Promise<void>;
+  update(settings: { enabled?: boolean; listen?: string; refresh?: boolean }): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -30,6 +34,8 @@ export interface SharedLoginServiceOptions {
   config: ProxyConfigStore;
   keys: ClientKeyStore;
   login: LoginSource;
+  refresher: LoginRefresher;
+  refreshIntervalMs?: number;
   upstreamOrigin: string;
   tls?: { cert: string; key: string };
   enabledOverride?: boolean;
@@ -40,7 +46,9 @@ export interface SharedLoginServiceOptions {
 export async function startSharedLoginService(
   options: SharedLoginServiceOptions,
 ): Promise<SharedLoginService> {
-  const { config, keys, login, log } = options;
+  const { config, keys, login, refresher, log } = options;
+  const refreshIntervalMs = options.refreshIntervalMs ?? CHECK_INTERVAL_MS;
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let listener: SharedLoginListener | undefined;
   let running: { listen: string; origin: string } | undefined;
   let error: string | undefined;
@@ -51,7 +59,21 @@ export async function startSharedLoginService(
     return {
       enabled: options.enabledOverride ?? saved.enabled,
       listen: options.listenOverride ?? saved.listen,
+      refresh: saved.refresh,
     };
+  };
+
+  const applyRefresh = () => {
+    const { enabled, refresh } = desired();
+    if (enabled && refresh) {
+      if (refreshTimer !== undefined) return;
+      void refresher.check();
+      refreshTimer = setInterval(() => void refresher.check(), refreshIntervalMs);
+      refreshTimer.unref();
+    } else {
+      clearInterval(refreshTimer);
+      refreshTimer = undefined;
+    }
   };
 
   const stop = async () => {
@@ -61,6 +83,7 @@ export async function startSharedLoginService(
   };
 
   const apply = async () => {
+    applyRefresh();
     const { enabled, listen } = desired();
     if (enabled && running?.listen === listen) return;
     await stop();
@@ -101,10 +124,12 @@ export async function startSharedLoginService(
     keys,
     login,
     status() {
-      const { enabled, listen } = desired();
+      const { enabled, listen, refresh } = desired();
       return {
         enabled,
         listen,
+        refresh,
+        renewal: refresher.state(),
         enabledOverride: options.enabledOverride,
         listenOverride: options.listenOverride,
         running: running !== undefined,
@@ -136,6 +161,8 @@ export async function startSharedLoginService(
       await reconcile();
     },
     async close() {
+      clearInterval(refreshTimer);
+      refreshTimer = undefined;
       await enqueue(stop);
     },
   };

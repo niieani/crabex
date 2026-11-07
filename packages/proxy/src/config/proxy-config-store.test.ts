@@ -14,7 +14,7 @@ describe("proxy config", () => {
       local_policy_override: false,
       search_broker: { route: "gpt-6-luna" },
       routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
-      shared_login: { enabled: false, listen: "127.0.0.1:8766" },
+      shared_login: { enabled: false, listen: "127.0.0.1:8766", refresh: true },
     });
     const observed: boolean[] = [];
     const unsubscribe = store.subscribe(() => observed.push(store.get().appsAuthRelay));
@@ -26,7 +26,7 @@ describe("proxy config", () => {
       local_policy_override: false,
       search_broker: { route: "gpt-6-luna" },
       routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
-      shared_login: { enabled: false, listen: "127.0.0.1:8766" },
+      shared_login: { enabled: false, listen: "127.0.0.1:8766", refresh: true },
     });
     expect((await openProxyConfigStore(path)).get().appsAuthRelay).toBe(false);
     unsubscribe();
@@ -41,7 +41,7 @@ describe("proxy config", () => {
       local_policy_override: false,
       search_broker: { route: "gpt-6-luna" },
       routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
-      shared_login: { enabled: false, listen: "127.0.0.1:8766" },
+      shared_login: { enabled: false, listen: "127.0.0.1:8766", refresh: true },
     });
     expect(() => parseProxyConfig({ version: 1, search_broker: { route: "" } })).toThrow(
       "search_broker.route",
@@ -79,11 +79,18 @@ describe("proxy config", () => {
     expect(parseProxyConfig({ version: 1 }).shared_login).toEqual({
       enabled: false,
       listen: "127.0.0.1:8766",
+      refresh: true,
     });
     expect(
       parseProxyConfig({ version: 1, shared_login: { enabled: true, listen: "0.0.0.0:9000" } })
         .shared_login,
-    ).toEqual({ enabled: true, listen: "0.0.0.0:9000" });
+    ).toEqual({ enabled: true, listen: "0.0.0.0:9000", refresh: true });
+    expect(parseProxyConfig({ version: 1, shared_login: { refresh: false } }).shared_login).toEqual(
+      { enabled: false, listen: "127.0.0.1:8766", refresh: false },
+    );
+    expect(() => parseProxyConfig({ version: 1, shared_login: { refresh: 1 } })).toThrow(
+      /shared_login.refresh/,
+    );
     expect(() => parseProxyConfig({ version: 1, shared_login: { enabled: "yes" } })).toThrow(
       /shared_login.enabled/,
     );

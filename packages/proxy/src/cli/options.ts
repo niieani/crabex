@@ -29,6 +29,8 @@ export interface ProxyCliOptions {
   sharedLoginListen?: string;
   sharedLoginCodexHome?: string;
   clientKeysPath: string;
+  /** Codex executable that renews the shared login; resolved on PATH unless absolute. */
+  codexBin: string;
 }
 
 export function parseCliOptions(args: string[]): ProxyCliOptions {
@@ -53,6 +55,7 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     statsPath: ".crabex/stats.json",
     snapshotCachePath: ".crabex/snapshot-cache.json",
     clientKeysPath: ".crabex/client-keys.json",
+    codexBin: "codex",
   };
 
   for (let index = 1; index < args.length; index += 1) {
@@ -75,6 +78,10 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     } else if (argument === "--shared-login-codex-home") {
       if (value === undefined) throw new Error("missing value for --shared-login-codex-home");
       options.sharedLoginCodexHome = value;
+      index += 1;
+    } else if (argument === "--codex-bin") {
+      if (value === undefined) throw new Error("missing value for --codex-bin");
+      options.codexBin = value;
       index += 1;
     } else if (argument === "--client-keys") {
       if (value === undefined) throw new Error("missing value for --client-keys");

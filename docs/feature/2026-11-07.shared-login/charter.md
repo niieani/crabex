@@ -19,8 +19,9 @@ search on the subscription, while every other backend route is refused.
 - Separate listener; the UI and local API never appear on it. No captures, routes, or
   Transformations apply to its traffic, so client prompts are not stored or parsed by the catalog.
 - Path allowlist, not a denylist. Hosted `mcp`/connector tools in request bodies are refused.
-- Crabex only reads the login's `auth.json`. It never refreshes tokens in this work: refresh tokens
-  are single-use, so a second refresher can invalidate a login until the owner signs in again.
+- Crabex reads the login's `auth.json` and never handles the refresh token. Renewal is delegated
+  to `codex app-server` on the same Codex home, only in the login's last day, after rereading it
+  (refresh tokens are single-use). On by default while Shared Login is on; can be turned off.
 - Off by default, loopback listener by default.
 - Claude credentials are out of scope: Anthropic terms forbid intermediating them.
 
@@ -29,7 +30,9 @@ search on the subscription, while every other backend route is refused.
 In: Client Key store, listener (HTTP and WebSocket), allowlist, body policy, read-only login source,
 config and CLI switches, local API, UI card, docs.
 
-Out, tracked as follow-ups: token refresh through a Codex child process; image generation exposed
+Added later in this work: login renewal through `codex app-server`.
+
+Out, tracked as follow-ups: image generation exposed
 as an MCP tool; Linux service unit; deployment.
 
 ## Criteria

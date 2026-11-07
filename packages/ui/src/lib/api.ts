@@ -43,6 +43,7 @@ export async function getSharedLogin(): Promise<SharedLoginState> {
 export async function putSharedLogin(update: {
   enabled?: boolean;
   listen?: string;
+  refresh?: boolean;
 }): Promise<SharedLoginState> {
   const response = await request(`${API}/shared-login`, {
     method: "PUT",

@@ -394,6 +394,8 @@ export interface IssuedClientKey extends ClientKeySummary {
 export interface SharedLoginState {
   enabled: boolean;
   listen: string;
+  refresh: boolean;
+  renewal: { lastRenewedAt?: string; lastFailedAt?: string; error?: string };
   enabledOverride?: boolean;
   listenOverride?: string;
   running: boolean;

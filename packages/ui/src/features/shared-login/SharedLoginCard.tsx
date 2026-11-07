@@ -79,6 +79,11 @@ export function SharedLoginCard() {
           ) : null}
           <ListenerStatus state={state} />
           <LoginStatus login={state.login} />
+          <Renewal
+            state={state}
+            pending={save.isPending}
+            onToggle={() => save.mutate({ refresh: !state.refresh })}
+          />
           <ListenSettings
             state={state}
             pending={save.isPending}
@@ -110,6 +115,51 @@ function LoginStatus({ login }: { login: SharedLoginState["login"] }) {
           : ""}
       </p>
       <p className="mt-1 font-mono text-[10px] text-muted">{login.path}</p>
+    </div>
+  );
+}
+
+function Renewal({
+  state,
+  pending,
+  onToggle,
+}: {
+  state: SharedLoginState;
+  pending: boolean;
+  onToggle: () => void;
+}) {
+  const { lastRenewedAt, lastFailedAt, error } = state.renewal;
+  return (
+    <div className="mt-4 border-t border-line pt-4">
+      <div className="flex items-center justify-between gap-4">
+        <h3 className="text-xs font-semibold">Renew the login</h3>
+        <button
+          type="button"
+          role="switch"
+          aria-label="Renew the login"
+          aria-checked={state.refresh}
+          disabled={pending}
+          onClick={onToggle}
+          className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-50 ${state.refresh ? "bg-accent-dim text-accent" : "bg-canvas text-muted"}`}
+        >
+          {state.refresh ? "On" : "Off"}
+        </button>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-muted">
+        While Shared Login is on, Crabex asks Codex to renew this login in its last day before
+        expiry. Codex on this machine renews it sooner whenever you use it, and then Crabex has
+        nothing to do. Turn this off if something else keeps the login fresh.
+      </p>
+      {error !== undefined && lastFailedAt !== undefined ? (
+        <p className="mt-2 text-xs text-danger">
+          Renewal failed {new Date(lastFailedAt).toLocaleString()}: {error}
+        </p>
+      ) : null}
+      {lastRenewedAt !== undefined ? (
+        <p className="mt-2 text-xs text-muted">
+          Last renewed {new Date(lastRenewedAt).toLocaleString()}
+        </p>
+      ) : null}
     </div>
   );
 }

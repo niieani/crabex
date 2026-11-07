@@ -21,6 +21,21 @@ API, and that listener never serves them.
 3. The UI shows each key once, with the client setup. Only a hash is kept, in
    `.crabex/client-keys.json`.
 
+## Login renewal
+
+ChatGPT access tokens last about 10 days. Codex on the host renews the login whenever you use it
+and the last renewal is 8 days old. While Shared Login is on, Crabex covers idle hosts: every 5
+minutes it reads `auth.json`, and in the login's last day before expiry it runs
+`codex app-server` on the same Codex home and asks it to refresh the token. Codex performs the
+exchange and saves the result, so Crabex never handles the refresh token.
+
+Refresh tokens are single-use. Crabex rereads the login right before asking, so it does nothing
+once another Codex process has renewed it. Two processes could still refresh at the same moment
+while app-server starts, which is the same risk as two Codex windows sharing one login.
+
+Renewal is on by default. Turn it off under **Renew the login** if something else keeps the
+login fresh. A failed attempt is retried after an hour and shown in the UI.
+
 Changes apply without a restart. Revoking a key stops it at once and closes its open WebSockets.
 
 ## Set up a client
@@ -72,16 +87,16 @@ on the host.
 | `--shared-login-listen <host:port>`   | Listener address; locks the UI field                   |
 | `--shared-login-codex-home <dir>`     | Codex home holding the login to share                  |
 | `--client-keys <file>`                | Client Key hashes (default `.crabex/client-keys.json`) |
+| `--codex-bin <path>`                  | Codex that renews the login (default `codex` on PATH)  |
 
 Settings saved from the UI live in the proxy config as
-`"shared_login": { "enabled": false, "listen": "127.0.0.1:8766" }`.
+`"shared_login": { "enabled": false, "listen": "127.0.0.1:8766", "refresh": true }`.
 
 ## Limitations
 
-- **Token refresh:** Crabex only reads the login; it never refreshes it. ChatGPT refresh tokens
-  are single-use, so two processes refreshing one login can invalidate it until you sign in again.
-  Something that owns the login must keep it fresh, such as running Codex on the host now and
-  then. Once the access token expires, clients get a 503 and the UI shows the expiry.
+- **Unrenewable login:** if a renewal fails, typically because the refresh token is no longer
+  valid, clients get a 503 once the access token expires. The UI shows the failure; sign in to
+  Codex again in the shared Codex home.
 - **Plain HTTP:** the listener speaks plain HTTP unless Crabex has `--tls-dir`, and that
   certificate only covers `localhost`. Away from the host, use a private network or an SSH
   tunnel.

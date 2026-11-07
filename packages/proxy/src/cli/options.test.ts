@@ -22,6 +22,7 @@ describe("parseCliOptions", () => {
       statsPath: ".crabex/stats.json",
       snapshotCachePath: ".crabex/snapshot-cache.json",
       clientKeysPath: ".crabex/client-keys.json",
+      codexBin: "codex",
     });
   });
 
@@ -73,6 +74,7 @@ describe("parseCliOptions", () => {
       statsPath: "stats.local.json",
       snapshotCachePath: "snapshots.local.json",
       clientKeysPath: ".crabex/client-keys.json",
+      codexBin: "codex",
       project: "fixture-project",
     });
   });
@@ -113,6 +115,7 @@ describe("parseCliOptions", () => {
     expect(defaults.sharedLogin).toBeUndefined();
     expect(defaults.sharedLoginListen).toBeUndefined();
     expect(defaults.clientKeysPath).toBe(".crabex/client-keys.json");
+    expect(defaults.codexBin).toBe("codex");
 
     const options = parseCliOptions([
       "proxy",
@@ -123,12 +126,15 @@ describe("parseCliOptions", () => {
       "/srv/codex",
       "--client-keys",
       "/srv/keys.json",
+      "--codex-bin",
+      "/opt/codex/bin/codex",
     ]);
     expect(options).toMatchObject({
       sharedLogin: true,
       sharedLoginListen: "0.0.0.0:9000",
       sharedLoginCodexHome: "/srv/codex",
       clientKeysPath: "/srv/keys.json",
+      codexBin: "/opt/codex/bin/codex",
     });
     expect(parseCliOptions(["proxy", "--no-shared-login"]).sharedLogin).toBe(false);
     expect(() => parseCliOptions(["proxy", "--shared-login-listen", "nope"])).toThrow(

@@ -24,8 +24,8 @@ export class LoginUnavailableError extends Error {
 }
 
 /**
- * Reads a Codex login without ever refreshing it. Refresh tokens are single-use, so a second
- * process refreshing the same login can invalidate it until the owner signs in again.
+ * Reads a Codex login on every call, so a renewal by any Codex process is picked up at once.
+ * It never refreshes: renewal is left to Codex (see login-refresher.ts).
  */
 export function createCodexHomeLogin(codexHome: string, now: () => number = Date.now): LoginSource {
   const path = join(codexHome, "auth.json");

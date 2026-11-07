@@ -25,6 +25,7 @@ async function api() {
       status: async () => ({ state: "ready", path: "auth.json", detail: "ok" }),
       credential: async () => ({ accessToken: SECRET_TOKEN, accountId: "account" }),
     },
+    refresher: { check: async () => {}, state: () => ({}) },
     upstreamOrigin: "http://127.0.0.1:1",
     log: () => {},
   });
@@ -135,9 +136,19 @@ describe("Shared Login API", () => {
     expect(moved.enabled).toBe(true);
   });
 
+  it("turns login renewal off and on", async () => {
+    const handle = await api();
+    expect(await (await handle(write("PUT", { refresh: false })))?.json()).toMatchObject({
+      refresh: false,
+      renewal: {},
+    });
+    expect(await (await handle(new Request(BASE)))?.json()).toMatchObject({ refresh: false });
+  });
+
   it("rejects settings of the wrong type", async () => {
     const handle = await api();
     expect((await handle(write("PUT", { enabled: "yes" })))?.status).toBe(400);
+    expect((await handle(write("PUT", { refresh: "no" })))?.status).toBe(400);
     expect((await handle(write("PUT", [])))?.status).toBe(400);
   });
 });

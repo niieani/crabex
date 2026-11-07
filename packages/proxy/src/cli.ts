@@ -29,7 +29,9 @@ import { StatsStore } from "./recording/stats-store.ts";
 import { LiveRequestStore } from "./requests/live-request-store.ts";
 import { createSharedLoginApi } from "./shared-login/api.ts";
 import { openClientKeyStore } from "./shared-login/client-keys.ts";
+import { createAppServerRenewal } from "./shared-login/app-server-renewal.ts";
 import { createCodexHomeLogin } from "./shared-login/login.ts";
+import { createLoginRefresher } from "./shared-login/login-refresher.ts";
 import { startSharedLoginService } from "./shared-login/service.ts";
 
 const HELP = `Crabex - any model, living in Codex's shell
@@ -81,6 +83,8 @@ Options:
                         Codex home holding the login to share (default: the --codex-config
                         directory)
   --client-keys <file>  Client Key hashes (default: .crabex/client-keys.json)
+  --codex-bin <path>    Codex executable that renews the shared login near expiry
+                        (default: codex on PATH)
 `;
 
 async function main(): Promise<void> {
@@ -150,15 +154,23 @@ async function main(): Promise<void> {
   const host = options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host;
   const proxyOrigin = `${options.tlsDirectory ? "https" : "http"}://${host === "::1" ? "[::1]" : host}:${options.port}`;
   const tls = options.tlsDirectory ? await readTls(options.tlsDirectory) : undefined;
+  const sharedLoginHome = options.sharedLoginCodexHome ?? dirname(options.codexConfigPath);
+  const sharedLoginLog = (line: string) => process.stderr.write(`[shared-login] ${line}\n`);
+  const sharedLoginSource = createCodexHomeLogin(sharedLoginHome);
   const sharedLogin = await startSharedLoginService({
     config: proxyConfig,
     keys: await openClientKeyStore(options.clientKeysPath),
-    login: createCodexHomeLogin(options.sharedLoginCodexHome ?? dirname(options.codexConfigPath)),
+    login: sharedLoginSource,
+    refresher: createLoginRefresher({
+      login: sharedLoginSource,
+      renew: createAppServerRenewal({ codexBin: options.codexBin, codexHome: sharedLoginHome }),
+      log: sharedLoginLog,
+    }),
     upstreamOrigin: options.upstreamOrigin,
     tls,
     enabledOverride: options.sharedLogin,
     listenOverride: options.sharedLoginListen,
-    log: (line) => process.stderr.write(`[shared-login] ${line}\n`),
+    log: sharedLoginLog,
   });
   const browserWorkaround = createBrowserWorkaroundSource(
     codexHomeForWorkaround(options.codexConfigPath),

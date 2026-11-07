@@ -41,13 +41,15 @@ export function createSharedLoginApi(service: SharedLoginService) {
         if (request.method === "PUT") {
           const update: unknown = await request.json();
           if (typeof update !== "object" || update === null || Array.isArray(update))
-            throw new Error("expected an object with enabled and/or listen");
-          const { enabled, listen } = update as Record<string, unknown>;
+            throw new Error("expected an object with enabled, listen and/or refresh");
+          const { enabled, listen, refresh } = update as Record<string, unknown>;
           if (enabled !== undefined && typeof enabled !== "boolean")
             throw new Error("enabled must be boolean");
+          if (refresh !== undefined && typeof refresh !== "boolean")
+            throw new Error("refresh must be boolean");
           if (listen !== undefined && typeof listen !== "string")
             throw new Error("listen must be host:port");
-          await service.update({ enabled, listen });
+          await service.update({ enabled, listen, refresh });
         } else if (request.method !== "GET") {
           return json({ error: "method not allowed" }, 405);
         }

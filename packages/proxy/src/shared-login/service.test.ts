@@ -1,12 +1,14 @@
 import { mkdtemp } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { openProxyConfigStore } from "../config/proxy-config-store.ts";
 import { openClientKeyStore } from "./client-keys.ts";
 import type { LoginSource } from "./login.ts";
+import type { LoginRefresher } from "./login-refresher.ts";
 import {
   startSharedLoginService,
   type SharedLoginService,
@@ -17,6 +19,18 @@ const login: LoginSource = {
   status: async () => ({ state: "ready", path: "auth.json", detail: "" }),
   credential: async () => ({ accessToken: "token", accountId: "account" }),
 };
+
+/** Counts checks, so tests see when the service keeps the login fresh. */
+function countingRefresher(): LoginRefresher & { checks: number } {
+  const refresher = {
+    checks: 0,
+    check: async () => {
+      refresher.checks += 1;
+    },
+    state: () => ({ lastRenewedAt: "2030-01-01T00:00:00.000Z" }),
+  };
+  return refresher;
+}
 
 const closeables: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -31,6 +45,8 @@ async function service(
     config: await openProxyConfigStore(join(directory, "config.json")),
     keys: await openClientKeyStore(join(directory, "client-keys.json")),
     login,
+    refresher: countingRefresher(),
+    refreshIntervalMs: 20,
     upstreamOrigin: "http://127.0.0.1:1",
     log: () => {},
     ...overrides,
@@ -115,5 +131,30 @@ describe("Shared Login service", () => {
       listen: `127.0.0.1:${port}`,
       running: true,
     });
+  });
+
+  it("keeps the login fresh while Shared Login is on, unless refresh is turned off", async () => {
+    const refresher = countingRefresher();
+    const shared = await service({ refresher });
+    await sleep(60);
+    expect(refresher.checks).toBe(0);
+    expect(shared.status()).toMatchObject({ refresh: true });
+
+    await shared.update({ enabled: true, listen: `127.0.0.1:${await freePort()}` });
+    await sleep(60);
+    expect(refresher.checks).toBeGreaterThanOrEqual(2);
+    expect(shared.status().renewal).toEqual({ lastRenewedAt: "2030-01-01T00:00:00.000Z" });
+
+    await shared.update({ refresh: false });
+    const stopped = refresher.checks;
+    await sleep(60);
+    expect(refresher.checks).toBe(stopped);
+    expect(shared.status()).toMatchObject({ refresh: false, enabled: true });
+
+    await shared.update({ refresh: true });
+    await shared.update({ enabled: false });
+    const disabled = refresher.checks;
+    await sleep(60);
+    expect(refresher.checks).toBe(disabled);
   });
 });

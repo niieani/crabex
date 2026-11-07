@@ -64,10 +64,24 @@ sent, and `application/json` on writes. Holds even when the main listener is on 
 - A corrupt `client-keys.json` fails startup even with the mode off: an explicit failure over
   silently discarding issued keys.
 
+## Login renewal
+
+- Shares the host's Codex home rather than a dedicated login. Codex already coordinates the
+  processes that share a home: it rereads `auth.json` before refreshing and saves under
+  `auth.lock` with compare-and-save. The leftover race (two exchanges in the same instant) is the
+  one two Codex windows already have.
+- Trigger: app-server `account/read` with `refreshToken: true`, which is a forced refresh. A fresh
+  app-server always exchanges, so Crabex gates it: renew only within 24 h of expiry (Codex's own
+  scheduled refresh is at 8 of 10 days), after rereading the login.
+- `account/read` swallows refresh failures and can fail after a successful refresh (workspace
+  routing). The login on disk is the verdict, not the app-server response.
+- Verified with real Codex 0.167.0 against a mock `CODEX_REFRESH_TOKEN_URL_OVERRIDE` in a
+  throwaway home: one `/oauth/token` exchange with the stored refresh token, new tokens saved,
+  the next check does nothing; a `refresh_token_reused` answer leaves the login unchanged and is
+  reported.
+
 ## Follow-ups
 
-- Refresh via `codex app-server` on a dedicated login; test first with
-  `CODEX_REFRESH_TOKEN_URL_OVERRIDE`.
 - Image MCP: Codex's tool calls `images/generations` and `images/edits`, hidden on API-key auth by
   `image_generation_available`. Probe the upstream route first.
 - Linux service unit.
