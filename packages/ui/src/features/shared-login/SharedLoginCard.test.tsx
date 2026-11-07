@@ -130,8 +130,9 @@ describe("SharedLoginCard", () => {
 
     const setup = await screen.findByTestId("client-setup");
     expect(setup.textContent).toContain("crabex_secret");
-    expect(setup.textContent).toContain('openai_base_url = "http://192.0.2.10:8766/v1"');
-    expect(setup.textContent).toContain("codex login --with-api-key");
+    expect(setup.textContent).toContain('base_url = "http://192.0.2.10:8766/v1"');
+    expect(setup.textContent).toContain('model_catalog_url = "http://192.0.2.10:8766/v1/models"');
+    expect(setup.textContent).toContain('"x-openai-actor-authorization"');
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText(/crabex_secret/)).toBeNull();

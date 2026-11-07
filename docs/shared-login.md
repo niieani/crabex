@@ -21,6 +21,8 @@ API, and that listener never serves them.
 3. The UI shows each key once, with the client setup. Only a hash is kept, in
    `.crabex/client-keys.json`.
 
+Changes apply without a restart. Revoking a key stops it at once and closes its open WebSockets.
+
 ## Login renewal
 
 ChatGPT access tokens last about 10 days. Codex on the host renews the login whenever you use it
@@ -36,39 +38,63 @@ while app-server starts, which is the same risk as two Codex windows sharing one
 Renewal is on by default. Turn it off under **Renew the login** if something else keeps the
 login fresh. A failed attempt is retried after an hour and shown in the UI.
 
-Changes apply without a restart. Revoking a key stops it at once and closes its open WebSockets.
-
 ## Set up a client
 
-Add this to the client's `~/.codex/config.toml`:
-
-```toml
-openai_base_url = "http://<host>:8766/v1"
-```
-
-Then sign in with the Client Key:
+Save the Client Key on the client, readable only by you:
 
 ```sh
-printf %s '<client key>' | codex login --with-api-key
+(umask 077 && mkdir -p ~/.config/crabex && printf %s '<client key>' > ~/.config/crabex/client-key)
 ```
 
-The client uses Codex's built-in OpenAI provider with API-key authentication. Because it has no
-ChatGPT login, Codex offers it no Apps or connectors (`app/list` is empty), and Codex hides its
-image generation tool.
+Then add this to the client's `~/.codex/config.toml`:
+
+```toml
+model_provider = "crabex"
+
+[model_providers.crabex]
+name = "Crabex Shared Login"
+base_url = "http://<host>:8766/v1"
+model_catalog_url = "http://<host>:8766/v1/models"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = true
+http_headers = { "x-openai-actor-authorization" = "crabex-shared-login" }
+
+[model_providers.crabex.auth]
+command = "sh"
+args = ["-c", "cat ~/.config/crabex/client-key"]
+```
+
+The UI shows both, filled in, when it issues a key.
+
+The client has no ChatGPT login, so Codex offers it no Apps or connectors (`app/list` is empty).
+It still gets Codex's own tools, web search and image generation:
+
+- `model_catalog_url` makes Codex load the model list through Shared Login, as the built-in
+  provider does.
+- `x-openai-actor-authorization` is how Codex decides that a custom provider can generate images.
+  Codex only checks that the header is set. Crabex never forwards it upstream.
+- Generated images are saved on the client, under `$CODEX_HOME/generated_images/`. Edits send
+  the client's local image files inline.
 
 ## What a key can reach
 
-| Client request                                     | Upstream                          |
-| -------------------------------------------------- | --------------------------------- |
-| `POST /v1/responses` and WebSocket `/v1/responses` | `/backend-api/codex/responses`    |
-| `POST /v1/alpha/search` (web search)               | `/backend-api/codex/alpha/search` |
-| `GET /v1/models`                                   | `/backend-api/codex/models`       |
+| Client request                                     | Upstream                                |
+| -------------------------------------------------- | --------------------------------------- |
+| `POST /v1/responses` and WebSocket `/v1/responses` | `/backend-api/codex/responses`          |
+| `POST /v1/alpha/search` (web search)               | `/backend-api/codex/alpha/search`       |
+| `GET /v1/models`                                   | `/backend-api/codex/models`             |
+| `POST /v1/images/generations` (image tool)         | `/backend-api/codex/images/generations` |
+| `POST /v1/images/edits` (image tool)               | `/backend-api/codex/images/edits`       |
 
 Everything else gets 403. Crabex also checks each request body and WebSocket frame:
 
 - Request fields, tool types and tool fields must be ones Codex sends. Tool types are `function`,
   `namespace`, `tool_search`, `web_search` and `custom`. Hosted MCP and connector tools are
   refused, as are MCP input items.
+- Image requests may carry only the fields Codex's image tool sends. Edits take 1 to 5 inline
+  image data URLs. File references are refused, because they name files in the host's ChatGPT
+  account.
 - WebSocket frames must be `response.create`. Binary frames are refused.
 - Bodies must be uncompressed, valid UTF-8 JSON. Crabex forwards its checked parse, so upstream
   never reads a different version of the body.

@@ -80,8 +80,23 @@ sent, and `application/json` on writes. Holds even when the main listener is on 
   the next check does nothing; a `refresh_token_reused` answer leaves the login unchanged and is
   reported.
 
+## Image generation
+
+- Not an MCP: Codex's image tool is a client-side extension that posts JSON to
+  `{provider base_url}/images/generations` and `/images/edits` with the provider's credentials.
+  Routing those through Shared Login keeps the native behavior (images saved and shown on the
+  client, edits of local files sent inline); an MCP on the host could not read client files.
+- Codex shows the tool for a custom provider with `requires_openai_auth = false` and a non-empty
+  `x-openai-actor-authorization` header (`image_generation_available` in `spec_plan.rs`). The
+  built-in provider with an API key never gets it. The header is not on the forward allowlist.
+- Upstream: `chatgpt.com/backend-api/codex/images/{generations,edits}` answer the ChatGPT login
+  (400 on a missing field, 404 on an unknown image path).
+- `file_id` image references are refused: they would name files in the host's ChatGPT account.
+- The client setup moved to a custom provider: `model_catalog_url` restores the model list, the
+  key is read from a 0600 file by the provider's `auth.command`.
+- Verified live on the Mac with Codex 0.167.0 and the owner's login: a generation and an edit of
+  a local file, both 200 through Shared Login, saved under the client's `generated_images`.
+
 ## Follow-ups
 
-- Image MCP: Codex's tool calls `images/generations` and `images/edits`, hidden on API-key auth by
-  `image_generation_available`. Probe the upstream route first.
 - Linux service unit.

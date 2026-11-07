@@ -30,10 +30,10 @@ search on the subscription, while every other backend route is refused.
 In: Client Key store, listener (HTTP and WebSocket), allowlist, body policy, read-only login source,
 config and CLI switches, local API, UI card, docs.
 
-Added later in this work: login renewal through `codex app-server`.
+Added later in this work: login renewal through `codex app-server`; image generation through
+Codex's own image tool.
 
-Out, tracked as follow-ups: image generation exposed
-as an MCP tool; Linux service unit; deployment.
+Out, tracked as follow-ups: Linux service unit; deployment.
 
 ## Criteria
 

@@ -7,6 +7,8 @@ const HTTP_ROUTES: ReadonlyMap<string, readonly string[]> = new Map([
   ["POST /responses", []],
   ["POST /alpha/search", []],
   ["GET /models", ["client_version"]],
+  ["POST /images/generations", []],
+  ["POST /images/edits", []],
 ]);
 const WEBSOCKET_ROUTES: ReadonlyMap<string, readonly string[]> = new Map([["/responses", []]]);
 
@@ -58,6 +60,22 @@ const SEARCH_FIELDS: ReadonlySet<string> = new Set([
   "settings",
   "max_output_tokens",
 ]);
+/** Fields of Codex's image tool requests (`ImageGenerationRequest`, `GifOptions`). */
+const IMAGE_GENERATION_FIELDS: ReadonlySet<string> = new Set([
+  "prompt",
+  "model",
+  "n",
+  "quality",
+  "size",
+  "background",
+  "output_format",
+  "frame_count",
+  "frame_duration_ms",
+]);
+const IMAGE_EDIT_FIELDS: ReadonlySet<string> = new Set([...IMAGE_GENERATION_FIELDS, "images"]);
+/** Codex's image tool sends at most 5 images, each inline. */
+const MAX_EDIT_IMAGES = 5;
+const INLINE_IMAGE = /^data:image\/[a-z0-9.+-]+;base64,/i;
 /** The only WebSocket request Codex sends (`ResponsesWsRequest`). */
 const ALLOWED_FRAME_TYPE = "response.create";
 
@@ -101,8 +119,47 @@ export function inspectRequestBody(
   } catch {
     return { refused: "payload must be valid UTF-8" };
   }
-  const fields = upstreamPath.endsWith("/alpha/search") ? SEARCH_FIELDS : RESPONSES_FIELDS;
-  return inspect(text, false, fields);
+  const route = upstreamPath.slice(UPSTREAM_BASE.length);
+  if (route === "/images/generations" || route === "/images/edits")
+    return inspectImageRequest(text, route === "/images/edits");
+  return inspect(text, false, route === "/alpha/search" ? SEARCH_FIELDS : RESPONSES_FIELDS);
+}
+
+/**
+ * Image requests carry a prompt and, for edits, inline images. File references are refused:
+ * they name files in the host's ChatGPT account, which a client must not reach.
+ */
+function inspectImageRequest(text: string, edit: boolean): PayloadVerdict {
+  const payload = parseObject(text);
+  if (payload === undefined) return { refused: "payload must be a JSON object" };
+  const fields = edit ? IMAGE_EDIT_FIELDS : IMAGE_GENERATION_FIELDS;
+  const unknown = Object.keys(payload).find((field) => !fields.has(field));
+  if (unknown !== undefined) return { refused: `field ${quote(unknown)} is not accepted` };
+  if (typeof payload.prompt !== "string") return { refused: "prompt must be a string" };
+  if (edit) {
+    const { images } = payload;
+    if (!Array.isArray(images) || images.length === 0 || images.length > MAX_EDIT_IMAGES)
+      return { refused: `images must list 1 to ${MAX_EDIT_IMAGES} images` };
+    for (const image of images) {
+      if (
+        !isRecord(image) ||
+        Object.keys(image).length !== 1 ||
+        typeof image.image_url !== "string" ||
+        !INLINE_IMAGE.test(image.image_url)
+      )
+        return { refused: "images must be inline data URLs; file references are not available" };
+    }
+  }
+  return { forward: JSON.stringify(payload) };
+}
+
+function parseObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const payload: unknown = JSON.parse(text);
+    return isRecord(payload) ? payload : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Checks a WebSocket frame and returns the exact text to forward. */
@@ -111,13 +168,8 @@ export function inspectFrame(text: string): PayloadVerdict {
 }
 
 function inspect(text: string, frame: boolean, fields: ReadonlySet<string>): PayloadVerdict {
-  let payload: unknown;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    return { refused: "payload must be a JSON object" };
-  }
-  if (!isRecord(payload)) return { refused: "payload must be a JSON object" };
+  const payload = parseObject(text);
+  if (payload === undefined) return { refused: "payload must be a JSON object" };
   if (frame && payload.type !== ALLOWED_FRAME_TYPE)
     return { refused: `only ${ALLOWED_FRAME_TYPE} frames are accepted` };
   if (!frame && "type" in payload) return { refused: 'field "type" is not accepted' };

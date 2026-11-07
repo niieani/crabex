@@ -163,6 +163,32 @@ describe("Shared Login listener over HTTP", () => {
     expect(request?.headers["openai-organization"]).toBeUndefined();
   });
 
+  it("relays an image edit for Codex's image tool, without the provider's actor header", async () => {
+    const origin = await start();
+    const edit = JSON.stringify({
+      prompt: "add a hat",
+      model: "gpt-image-2",
+      images: [{ image_url: "data:image/png;base64,iVBORw0KGgo=" }],
+    });
+    const response = await fetch(`${origin}/v1/images/edits`, {
+      method: "POST",
+      headers: {
+        ...authorized,
+        "content-type": "application/json",
+        "x-codex-image-turn-id": "turn-1",
+        "x-openai-actor-authorization": "crabex-shared-login",
+      },
+      body: edit,
+    });
+    expect(response.status).toBe(200);
+    const [request] = seen;
+    expect(request?.url).toBe("/backend-api/codex/images/edits");
+    expect(request?.body).toBe(edit);
+    expect(request?.headers.authorization).toBe(`Bearer ${ACCESS_TOKEN}`);
+    expect(request?.headers["x-codex-image-turn-id"]).toBe("turn-1");
+    expect(request?.headers["x-openai-actor-authorization"]).toBeUndefined();
+  });
+
   it("forwards the checked body and only declared query parameters", async () => {
     const origin = await start();
     const duplicate = '{"model":"m","tools":[{"type":"mcp"}],"tools":[]}';
@@ -190,7 +216,7 @@ describe("Shared Login listener over HTTP", () => {
   it.each([
     ["GET", "/backend-api/ps/mcp"],
     ["POST", "/backend-api/codex/responses"],
-    ["POST", "/v1/images/generations"],
+    ["POST", "/v1/images/variations"],
     ["GET", "/"],
     ["GET", "/__crabex/api/proxy-config"],
     ["GET", "/setup"],

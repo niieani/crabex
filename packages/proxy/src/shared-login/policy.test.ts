@@ -5,6 +5,9 @@ import { inspectFrame, inspectRequestBody, upstreamTarget } from "./policy.ts";
 const none = new URLSearchParams();
 const RESPONSES = "/backend-api/codex/responses";
 const SEARCH = "/backend-api/codex/alpha/search";
+const GENERATIONS = "/backend-api/codex/images/generations";
+const EDITS = "/backend-api/codex/images/edits";
+const PNG = "data:image/png;base64,iVBORw0KGgo=";
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 
 describe("Shared Login routes", () => {
@@ -13,6 +16,8 @@ describe("Shared Login routes", () => {
     ["GET", "/v1/responses", true, "/backend-api/codex/responses"],
     ["POST", "/v1/alpha/search", false, "/backend-api/codex/alpha/search"],
     ["GET", "/v1/models", false, "/backend-api/codex/models"],
+    ["POST", "/v1/images/generations", false, GENERATIONS],
+    ["POST", "/v1/images/edits", false, EDITS],
   ])("allows %s %s", (method, path, webSocket, expected) => {
     expect(upstreamTarget(method, path, none, webSocket)).toBe(expected);
   });
@@ -25,7 +30,9 @@ describe("Shared Login routes", () => {
     ["POST", "/v1/Responses", false],
     ["GET", "/v1/responses", false],
     ["POST", "/v1/responses", true],
-    ["POST", "/v1/images/generations", false],
+    ["GET", "/v1/images/generations", false],
+    ["POST", "/v1/images/variations", false],
+    ["POST", "/v1/images/generations", true],
     ["POST", "/v1/responses/compact", false],
     ["GET", "/__crabex/api/proxy-config", false],
     ["GET", "/", false],
@@ -135,5 +142,40 @@ describe("Shared Login body policy", () => {
     expect(
       inspectFrame(JSON.stringify({ type: "response.create", tools: [{ type: "mcp" }] })),
     ).toEqual({ refused: expect.any(String) });
+  });
+});
+
+describe("Shared Login image policy", () => {
+  const generation = {
+    prompt: "a red fox",
+    model: "gpt-image-2",
+    background: "opaque",
+    quality: "auto",
+    size: "auto",
+  };
+
+  it("forwards the generation and edit requests Codex's image tool sends", () => {
+    const gif = { ...generation, output_format: "gif", frame_count: 4, frame_duration_ms: 200 };
+    expect(inspectRequestBody(bytes(gif), GENERATIONS)).toEqual({ forward: JSON.stringify(gif) });
+    const edit = { ...generation, images: [{ image_url: PNG }, { image_url: PNG }] };
+    expect(inspectRequestBody(bytes(edit), EDITS)).toEqual({ forward: JSON.stringify(edit) });
+  });
+
+  it.each([
+    ["an unknown field", GENERATIONS, { ...generation, user: "someone" }],
+    ["images on a generation", GENERATIONS, { ...generation, images: [{ image_url: PNG }] }],
+    ["a missing prompt", GENERATIONS, { model: "gpt-image-2" }],
+    ["an edit without images", EDITS, generation],
+    ["a ChatGPT file reference", EDITS, { ...generation, images: [{ file_id: "file-abc" }] }],
+    ["a remote image URL", EDITS, { ...generation, images: [{ image_url: "https://x/y.png" }] }],
+    ["a non-image data URL", EDITS, { ...generation, images: [{ image_url: "data:text/html,x" }] }],
+    [
+      "extra fields on an image",
+      EDITS,
+      { ...generation, images: [{ image_url: PNG, file_id: "file-abc" }] },
+    ],
+    ["more than five images", EDITS, { ...generation, images: Array(6).fill({ image_url: PNG }) }],
+  ])("refuses %s", (_label, path, body) => {
+    expect(inspectRequestBody(bytes(body), path)).toEqual({ refused: expect.any(String) });
   });
 });

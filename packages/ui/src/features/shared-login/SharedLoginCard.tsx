@@ -309,6 +309,33 @@ function ClientKeys({ state }: { state: SharedLoginState }) {
   );
 }
 
+const CLIENT_KEY_FILE = "~/.config/crabex/client-key";
+
+function clientKeyCommand(secret: string): string {
+  return `(umask 077 && mkdir -p ~/.config/crabex && printf %s '${secret}' > ${CLIENT_KEY_FILE})`;
+}
+
+/**
+ * A custom provider rather than `openai_base_url`: Codex offers its image tool to a provider that
+ * sends `x-openai-actor-authorization`, which Crabex never forwards upstream.
+ */
+function clientConfig(baseUrl: string): string {
+  return `model_provider = "crabex"
+
+[model_providers.crabex]
+name = "Crabex Shared Login"
+base_url = "${baseUrl}"
+model_catalog_url = "${baseUrl}/models"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = true
+http_headers = { "x-openai-actor-authorization" = "crabex-shared-login" }
+
+[model_providers.crabex.auth]
+command = "sh"
+args = ["-c", "cat ${CLIENT_KEY_FILE}"]`;
+}
+
 function ClientSetup({
   state,
   issued,
@@ -324,10 +351,16 @@ function ClientSetup({
   return (
     <div className="mt-3 rounded border border-line bg-canvas p-3 text-xs">
       <p className="font-semibold">Save this key now. It will not be shown again.</p>
-      <p className="mt-2 text-muted">On the other machine, add to ~/.codex/config.toml:</p>
-      <pre data-testid="client-setup" className="mt-1 overflow-x-auto font-mono text-[11px]">
-        {`openai_base_url = "${scheme}://${visibleHost}:${port}/v1"\n\nprintf %s '${issued.secret}' | codex login --with-api-key`}
-      </pre>
+      <div data-testid="client-setup">
+        <p className="mt-2 text-muted">On the other machine, save the key:</p>
+        <pre className="mt-1 overflow-x-auto font-mono text-[11px]">
+          {clientKeyCommand(issued.secret)}
+        </pre>
+        <p className="mt-2 text-muted">Then add to ~/.codex/config.toml:</p>
+        <pre className="mt-1 overflow-x-auto font-mono text-[11px]">
+          {clientConfig(`${scheme}://${visibleHost}:${port}/v1`)}
+        </pre>
+      </div>
       <button
         type="button"
         onClick={onDismiss}
