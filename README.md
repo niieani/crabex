@@ -42,6 +42,7 @@ and lose what makes the harness good. Crabex takes the opposite approach:
 | 🔍  | **Context inspector**          | Captures every request chain and breaks it into context parts, sections, tools, and token estimates, per model, harness, and project. [Captures](docs/captures.md) · [Design](docs/context-inspector.md)                                              |
 | ✂️  | **Transformations**            | Rules that delete context parts, rewrite text, or disable tools before a request leaves your machine, with hit/miss telemetry and on-demand preview. [Inspector](docs/context-inspector.md)                                                           |
 | 🔌  | **Apps relay**                 | Keeps Slack, Drive, and other ChatGPT Apps working when Codex's ChatGPT base URL points at the proxy. [Apps relay](docs/apps-auth-relay.md)                                                                                                           |
+| 🔑  | **Shared Login**               | Off by default. Lets other Codex instances use this host's ChatGPT login through issued Client Keys on a separate allowlisted listener, so those machines hold no ChatGPT credential and cannot reach your Apps. [Shared Login](docs/shared-login.md) |
 | ⚙️  | **Config-bundle overrides**    | Answer Codex's remote config-bundle fetch with your own edited bundle, from the **Advanced** page.                                                                                                                                                    |
 | 📈  | **Live traffic and stats**     | Watch in-flight requests, routing attempts, fallbacks, cache use, and flex vs. standard serves.                                                                                                                                                       |
 | 🍎  | **macOS service**              | One command installs a LaunchAgent with its own runtime, local HTTPS with Keychain trust, safe restarts, and automatic rollback. [macOS service](docs/macos-service.md)                                                                               |
@@ -133,7 +134,8 @@ Keep private route configuration there rather than in a repository.
 | -------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `model-routes.json`                          | Routes, targets, tool policies, picker metadata                                             |
 | `transformations.json`                       | Context transformation rules                                                                |
-| `config.json`                                | Proxy settings (Apps relay, routed agents, search broker)                                   |
+| `config.json`                                | Proxy settings (Apps relay, routed agents, search broker, Shared Login)                     |
+| `client-keys.json`                           | Shared Login Client Key hashes                                                              |
 | `config-bundle.json`                         | Config-bundle override                                                                      |
 | `captures/`                                  | NDJSON request captures, kept for 7 days or 2 GiB ([retention](docs/captures.md#retention)) |
 | `stats.json`                                 | Route counters and a daily per-model token ledger, kept indefinitely                        |
@@ -158,6 +160,7 @@ crabex service tls status|renew|remove
 - [Captures and Probes](docs/captures.md): what is recorded and how to inspect it
 - [Context inspector design](docs/context-inspector.md) and [domain language](CONTEXT.md)
 - [Apps authentication relay](docs/apps-auth-relay.md): keeping ChatGPT Apps working
+- [Shared Login](docs/shared-login.md): lending this host's ChatGPT login to other Codex instances
 - [macOS service](docs/macos-service.md): LaunchAgent, HTTPS, updates
 - [Refreshing the model catalog](docs/refresh-model-catalog.md)
 - [Upgrading from agent-context-trimmer](docs/upgrading.md)
@@ -168,7 +171,8 @@ Crabex binds to loopback by default and is meant for a trusted, single-user
 machine. Captures stay on disk with owner-only permissions and never include
 headers. Your ChatGPT credentials are held in memory only; route tokens come from
 environment variables you name. See the [Apps relay limitations](docs/apps-auth-relay.md)
-before exposing the listener beyond localhost.
+before exposing the listener beyond localhost. [Shared Login](docs/shared-login.md) is the
+supported way to serve other machines; it is off by default.
 
 ## Development
 

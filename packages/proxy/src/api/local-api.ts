@@ -44,7 +44,8 @@ import type { LiveRequestStore } from "../requests/live-request-store.ts";
 const API_PREFIX = "/__crabex/api";
 
 export interface LocalApi {
-  handle(request: Request): Promise<Response | undefined>;
+  /** `peer` is the connection's remote address, for endpoints restricted to this machine. */
+  handle(request: Request, peer?: string): Promise<Response | undefined>;
 }
 
 export function createLocalApi(options: {
@@ -58,6 +59,7 @@ export function createLocalApi(options: {
   tlsStatus?: () => Promise<TlsStatus>;
   appsAuthRelayOverride?: boolean;
   allowAppsAuthRelay?: boolean;
+  sharedLogin?: (request: Request, peer: string | undefined) => Promise<Response | undefined>;
   upstreamCache: UpstreamCacheStore;
   breakers?: { openBreakers(): Record<string, string> };
   stats?: StatsStore;
@@ -66,9 +68,11 @@ export function createLocalApi(options: {
   // Without a proxy config file there is nothing to gate on (embedded and test use).
   const localPolicyAllowed = () => options.proxyConfig?.get().local_policy_override ?? true;
   return {
-    async handle(request) {
+    async handle(request, peer) {
       const url = new URL(request.url);
       if (!url.pathname.startsWith(API_PREFIX)) return undefined;
+      const sharedLoginResponse = await options.sharedLogin?.(request, peer);
+      if (sharedLoginResponse !== undefined) return sharedLoginResponse;
       try {
         if (url.pathname === `${API_PREFIX}/tls-status`) {
           if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
@@ -86,6 +90,8 @@ export function createLocalApi(options: {
               throw new Error(
                 "Apps authentication relay is overridden by the command line; restart without the override to edit it",
               );
+            if (Object.hasOwn(update, "shared_login"))
+              throw new Error("Shared Login settings are changed through /shared-login");
             if (Object.hasOwn(update, "local_policy_override"))
               throw new Error(
                 `local_policy_override can only be changed by editing ${options.proxyConfig.path}`,

@@ -27,6 +27,12 @@ traffic. Treat access to the listener, its data directory, and the user account
 running it as privileged access. Read the [Apps relay limitations](docs/apps-auth-relay.md)
 before exposing the listener beyond localhost.
 
+[Shared Login](docs/shared-login.md), off by default, is the one listener meant for other
+machines. It treats every Client Key holder as untrusted: an allowlist of backend paths, tool
+types, headers, and query parameters, with no access to the UI, local API, captures, or the
+login itself. Anyone holding a key can spend the host account's usage, so issue one key per
+client and revoke keys you no longer need.
+
 Request captures may contain prompts, source code, tool results, and other private
 content. Owner-only capture permissions and omitted headers do not make those
 files safe to publish. Keep route secrets in the configured environment

@@ -1,5 +1,7 @@
 import type {
+  IssuedClientKey,
   ProxyConfigState,
+  SharedLoginState,
   SnapshotSummary,
   CodexConfigState,
   ConfigBundleOverride,
@@ -32,6 +34,39 @@ export async function patchProxyConfig(
     body: JSON.stringify({ version: 1, ...update }),
   });
   return (await response.json()) as ProxyConfigState;
+}
+
+export async function getSharedLogin(): Promise<SharedLoginState> {
+  return (await (await request(`${API}/shared-login`)).json()) as SharedLoginState;
+}
+
+export async function putSharedLogin(update: {
+  enabled?: boolean;
+  listen?: string;
+  refresh?: boolean;
+}): Promise<SharedLoginState> {
+  const response = await request(`${API}/shared-login`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  return (await response.json()) as SharedLoginState;
+}
+
+export async function issueClientKey(name: string): Promise<IssuedClientKey> {
+  const response = await request(`${API}/shared-login/keys`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return ((await response.json()) as { key: IssuedClientKey }).key;
+}
+
+export async function revokeClientKey(id: string): Promise<SharedLoginState> {
+  const response = await request(`${API}/shared-login/keys/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  return (await response.json()) as SharedLoginState;
 }
 
 export async function getSnapshots(): Promise<ContextSnapshot[]> {

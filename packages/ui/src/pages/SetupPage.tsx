@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState } from "../features/catalog/ContextInspector.tsx";
+import { SharedLoginCard } from "../features/shared-login/SharedLoginCard.tsx";
 import {
   getCodexConfig,
   putCodexConfig,
@@ -66,6 +67,7 @@ export function SetupPage() {
         )}
         <TlsCard />
         <AppsAuthRelayCard />
+        <SharedLoginCard />
       </section>
     </div>
   );
