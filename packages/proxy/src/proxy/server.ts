@@ -290,7 +290,10 @@ export async function startReverseProxy(options: ReverseProxyOptions): Promise<R
     tls: options.tls,
     port: options.port ?? 8765,
     async fetch(request, bunServer) {
-      const localResponse = await options.localApi?.handle(request);
+      const localResponse = await options.localApi?.handle(
+        request,
+        bunServer.requestIP(request)?.address,
+      );
       if (localResponse !== undefined) return localResponse;
       const webResponse = await options.webUi?.(request);
       if (webResponse !== undefined) return webResponse;

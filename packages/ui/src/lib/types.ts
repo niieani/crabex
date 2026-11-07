@@ -379,3 +379,32 @@ export interface EffectiveConfigBundle {
   upstreamObservedAt: string | null;
   bundle: unknown;
 }
+
+export interface ClientKeySummary {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
+export interface IssuedClientKey extends ClientKeySummary {
+  secret: string;
+}
+
+export interface SharedLoginState {
+  enabled: boolean;
+  listen: string;
+  enabledOverride?: boolean;
+  listenOverride?: string;
+  running: boolean;
+  origin?: string;
+  error?: string;
+  tls: boolean;
+  login: {
+    state: "ready" | "missing" | "invalid" | "expired";
+    path: string;
+    expiresAt?: string;
+    detail: string;
+  };
+  keys: ClientKeySummary[];
+}

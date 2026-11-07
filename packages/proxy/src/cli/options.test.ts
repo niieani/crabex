@@ -21,6 +21,7 @@ describe("parseCliOptions", () => {
       upstreamCachePath: ".crabex/upstream-cache.json",
       statsPath: ".crabex/stats.json",
       snapshotCachePath: ".crabex/snapshot-cache.json",
+      clientKeysPath: ".crabex/client-keys.json",
     });
   });
 
@@ -71,6 +72,7 @@ describe("parseCliOptions", () => {
       upstreamCachePath: "upstream.local.json",
       statsPath: "stats.local.json",
       snapshotCachePath: "snapshots.local.json",
+      clientKeysPath: ".crabex/client-keys.json",
       project: "fixture-project",
     });
   });
@@ -104,5 +106,36 @@ describe("parseCliOptions", () => {
     expect(
       parseCliOptions(["proxy", "--tls-dir", "tls", "--codex-ca-bundle", "combined.pem"]),
     ).toMatchObject({ tlsDirectory: "tls", codexCaBundlePath: "combined.pem" });
+  });
+
+  it("leaves Shared Login to the config file unless a flag overrides it", () => {
+    const defaults = parseCliOptions(["proxy"]);
+    expect(defaults.sharedLogin).toBeUndefined();
+    expect(defaults.sharedLoginListen).toBeUndefined();
+    expect(defaults.clientKeysPath).toBe(".crabex/client-keys.json");
+
+    const options = parseCliOptions([
+      "proxy",
+      "--shared-login",
+      "--shared-login-listen",
+      "0.0.0.0:9000",
+      "--shared-login-codex-home",
+      "/srv/codex",
+      "--client-keys",
+      "/srv/keys.json",
+    ]);
+    expect(options).toMatchObject({
+      sharedLogin: true,
+      sharedLoginListen: "0.0.0.0:9000",
+      sharedLoginCodexHome: "/srv/codex",
+      clientKeysPath: "/srv/keys.json",
+    });
+    expect(parseCliOptions(["proxy", "--no-shared-login"]).sharedLogin).toBe(false);
+    expect(() => parseCliOptions(["proxy", "--shared-login-listen", "nope"])).toThrow(
+      "--shared-login-listen",
+    );
+    expect(() => parseCliOptions(["proxy", "--listen", "nope"])).toThrow("--listen");
+    expect(parseCliOptions(["proxy", "--listen", "127.0.0.1:80"]).port).toBe(80);
+    expect(parseCliOptions(["proxy", "--listen", "127.0.0.1:0"]).port).toBe(0);
   });
 });

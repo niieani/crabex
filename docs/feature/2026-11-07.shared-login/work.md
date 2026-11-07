@@ -1,0 +1,73 @@
+# Shared Login design
+
+Spike evidence: a throwaway allowlisted proxy ran a key-only Codex on the subscription. Only
+`/responses` (WebSocket or POST) and `/alpha/search` were used. Model catalog came from the client's
+bundled list.
+
+## Modules (`packages/proxy/src/shared-login/`)
+
+- `policy.ts`: pure. `upstreamPath(method, pathname, webSocket)`, `refusedPayloadReason(text)`.
+- `client-keys.ts`: `ClientKeyStore`. SHA-256 of secret at rest, mode 0600.
+- `login.ts`: `LoginSource` seam. `createCodexHomeLogin(dir)` reads `auth.json` per request, so a
+  refresh by whichever process owns the login is picked up. Refresh later plugs in here.
+- `listener.ts`: `Bun.serve` for HTTP and WebSocket. Depends on the above through interfaces.
+- `service.ts`: reconciles config to a running listener; holds bind errors for the UI.
+- `api.ts`: local API routes under `/__crabex/api/shared-login`.
+
+## Client routes
+
+| Client                                          | Upstream                          |
+| ----------------------------------------------- | --------------------------------- |
+| `POST /v1/responses`, WebSocket `/v1/responses` | `/backend-api/codex/responses`    |
+| `POST /v1/alpha/search`                         | `/backend-api/codex/alpha/search` |
+| `GET /v1/models`                                | `/backend-api/codex/models`       |
+
+Everything else: 403. Check order: key, route, body, login.
+
+## Body policy
+
+Allowlists throughout, after review found denylist bypasses:
+
+- Top-level fields per route (Codex `ResponseCreateWsRequest`/`ResponsesApiRequest`,
+  `SearchRequest`); tool fields per type (`ToolSpec`, `ResponsesApiTool`, `FreeformTool`).
+  `/responses/compact` dropped: current Codex has no compact endpoint and compaction works without it.
+- Tool types (`tools`, nested `tools`, `input[*].tools` on `tool_search_output`, `tool_choice`):
+  `function`, `namespace`, `tool_search`, `web_search`, `custom` (Codex `ToolSpec`). Depth limit 8.
+- `input` items whose type starts with `mcp` are refused. Message text stays opaque.
+- WebSocket: `response.create` frames only (Codex `ResponsesWsRequest`); binary refused.
+- Bodies: no `content-encoding`, fatal UTF-8 decode, JSON object. The checked parse is
+  re-serialized and forwarded, so duplicate keys or bad bytes cannot differ upstream.
+- Headers: allowlist of what Codex sends (`x-codex-*` prefix plus named ones). Query: per-route
+  allowlist (`client_version` on `/models`).
+- Responses: 3xx becomes 502; `location` and `set-cookie` withheld.
+- Errors: clients get fixed messages; detail (owner paths) goes to the log only. `development: false`.
+
+## Config and CLI
+
+`shared_login: { enabled: false, listen: "127.0.0.1:8766" }` in the proxy config.
+`--shared-login`, `--no-shared-login`, `--shared-login-listen`, `--shared-login-codex-home`,
+`--client-keys`. Overrides lock the matching UI control, like the Apps relay.
+
+## Local API safety
+
+Minting a key hands out the login, so `/shared-login` answers only to a loopback peer (from Bun's
+`requestIP`, passed through `LocalApi.handle`) with a loopback `Host`, a matching `Origin` when
+sent, and `application/json` on writes. Holds even when the main listener is on all interfaces.
+
+## Lifecycle notes
+
+- WebSocket: connect upstream first, then upgrade, so refusals reach the client as HTTP statuses.
+- Revocation closes the key's open sockets via `ClientKeyStore.onRevoke`; frames re-check too.
+- Settings updates merge inside the service queue; only fields present are applied.
+- Bun keeps counting a closed WebSocket until its closing handshake ends, and `stop(true)` waits on
+  that count. `close()` waits up to 1 s for it, then bounds `stop`.
+- A corrupt `client-keys.json` fails startup even with the mode off: an explicit failure over
+  silently discarding issued keys.
+
+## Follow-ups
+
+- Refresh via `codex app-server` on a dedicated login; test first with
+  `CODEX_REFRESH_TOKEN_URL_OVERRIDE`.
+- Image MCP: Codex's tool calls `images/generations` and `images/edits`, hidden on API-key auth by
+  `image_generation_available`. Probe the upstream route first.
+- Linux service unit.
