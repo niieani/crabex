@@ -56,6 +56,62 @@ async function converted(response: Response, payload: Json = base) {
 }
 
 describe("Anthropic protocol", () => {
+  it("preserves unsolicited Desktop agent context without inventing tool calls", () => {
+    const context = [
+      { name: "codex_apps_open_page", output: '{"page_id":null}' },
+      {
+        name: "codex_apps_selected_page_part_1_of_1",
+        output: 'Companion Page snapshot part 1 of 1:\n{"page_id":null,"document_view":null}',
+      },
+    ];
+    const prepared = prepareAnthropic(
+      {
+        ...base,
+        input: [
+          ...context.map((item) => ({
+            type: "function_call_output",
+            namespace: "agent",
+            ...item,
+          })),
+          ...base.input,
+        ],
+      },
+      route,
+      key,
+    );
+    expect(prepared.body.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "agent.codex_apps_open_page:\n" },
+          { type: "text", text: context[0]!.output },
+          { type: "text", text: "agent.codex_apps_selected_page_part_1_of_1:\n" },
+          { type: "text", text: context[1]!.output },
+          { type: "text", text: "hello", cache_control: { type: "ephemeral" } },
+        ],
+      },
+    ]);
+  });
+
+  it("still rejects ordinary tool outputs with missing or invalid call IDs", () => {
+    for (const item of [
+      { type: "function_call_output", name: "read_file", output: "text" },
+      { type: "function_call_output", namespace: "agent", output: "text" },
+      {
+        type: "function_call_output",
+        namespace: "agent",
+        name: "codex_apps_open_page",
+        call_id: "",
+        output: "text",
+      },
+      { type: "custom_tool_call_output", namespace: "agent", name: "exec", output: "text" },
+    ]) {
+      expect(() => prepareAnthropic({ ...base, input: [item] }, route, key)).toThrow(
+        "Tool call is missing its call_id",
+      );
+    }
+  });
+
   it("returns plaintext markers for encrypted collaboration message calls", async () => {
     const prepared = prepareAnthropic(
       {
