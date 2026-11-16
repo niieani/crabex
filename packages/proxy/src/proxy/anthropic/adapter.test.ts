@@ -666,6 +666,35 @@ describe("Anthropic protocol", () => {
     );
     expect(overloaded.at(-1).response.error.code).toBe("anthropic_overloaded");
   });
+  it("replays tool outputs without a call_id as user text", () => {
+    const prepared = prepareAnthropic(
+      {
+        ...base,
+        input: [
+          ...base.input,
+          {
+            type: "function_call_output",
+            id: "fco_1",
+            name: "codex_apps_open_page",
+            namespace: "agent",
+            output: '{"page_id":null}',
+          },
+        ],
+      },
+      route,
+      key,
+    );
+    expect(prepared.body.messages).toMatchObject([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "hello" },
+          { type: "text", text: "codex_apps_open_page output:" },
+          { type: "text", text: '{"page_id":null}' },
+        ],
+      },
+    ]);
+  });
   it("rejects broken tool history, unresolved continuations, and unsupported hosted tools", () => {
     expect(() =>
       prepareAnthropic({ ...base, previous_response_id: "resp_unknown" }, route, key),

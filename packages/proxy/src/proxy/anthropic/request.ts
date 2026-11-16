@@ -205,6 +205,15 @@ export function prepareAnthropic(
         break;
       case "function_call_output":
       case "custom_tool_call_output":
+        // Desktop injects context results (e.g. companion page) without a call;
+        // Anthropic needs a tool_use to pair with, so replay them as user text.
+        if (typeof item.call_id !== "string" || !item.call_id) {
+          push("user", [
+            { type: "text", text: `${text(item.name, "tool")} output:` },
+            ...content(item.output ?? ""),
+          ]);
+          break;
+        }
         push("user", [
           {
             type: "tool_result",
