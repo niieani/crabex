@@ -1,3 +1,4 @@
+import { inheritServiceCaEnvironment } from "./environment.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -609,11 +610,14 @@ export async function serviceCommand(args: string[]): Promise<void> {
     const separator = rest.indexOf("--");
     const flags = separator < 0 ? rest : rest.slice(0, separator);
     const proxyArgs = separator < 0 ? [] : rest.slice(separator + 1);
-    const environment = {
-      HOME: homedir(),
-      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-      ...base?.environment,
-    };
+    const environment = inheritServiceCaEnvironment(
+      {
+        HOME: homedir(),
+        PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+        ...base?.environment,
+      },
+      process.env,
+    );
     let https = false;
     for (let index = 0; index < flags.length; index += 2) {
       if (flags[index] === "--https") {

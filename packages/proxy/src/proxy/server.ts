@@ -1,3 +1,4 @@
+import { deviceCheckCookies } from "./devicecheck-cookies.ts";
 import {
   bundleServeMode,
   localBundleWithWorkaround,
@@ -933,7 +934,10 @@ async function proxyHttpRequest(
       return new Response(errorBody, {
         status: response.status,
         statusText: response.statusText,
-        headers: downstreamHeaders(response.headers),
+        headers: downstreamHeaders(
+          response.headers,
+          routedRequest === undefined ? target : undefined,
+        ),
       });
     }
 
@@ -1042,7 +1046,7 @@ async function proxyHttpRequest(
     const downstreamResponseHeaders =
       translatedStream || translatedJson || translatedNativeStream || translatedNativeJson
         ? translatedHeaders(response.headers)
-        : downstreamHeaders(response.headers);
+        : downstreamHeaders(response.headers, routedRequest === undefined ? target : undefined);
     if (translatedNativeStream && !downstreamResponseHeaders.has("content-type"))
       downstreamResponseHeaders.set("content-type", "text/event-stream");
     const downstream = new Response(downstreamBody, {
@@ -1732,9 +1736,10 @@ function forwardedWebSocketHeaders(
   return headers;
 }
 
-function downstreamHeaders(incoming: Headers): Headers {
+function downstreamHeaders(incoming: Headers, target?: URL): Headers {
   const headers = new Headers(incoming);
   for (const name of [...HOP_BY_HOP_HEADERS, "set-cookie"]) headers.delete(name);
+  for (const cookie of deviceCheckCookies(incoming, target)) headers.append("set-cookie", cookie);
   return headers;
 }
 
