@@ -769,8 +769,10 @@ export async function serviceCommand(args: string[]): Promise<void> {
         : published;
       console.log(
         `Codex CA bundle: ${published}\n` +
-          "launchd forgets CODEX_CA_CERTIFICATE at logout; for terminal sessions, add to ~/.zshenv:\n" +
-          `  export CODEX_CA_CERTIFICATE="${shellPath}"`,
+          "launchd forgets CODEX_CA_CERTIFICATE at logout; for terminal sessions, add to ~/.zshenv\n" +
+          "(the guard skips the export after `service tls remove` deletes the bundle):\n" +
+          `  [[ -e "${shellPath}" ]] &&\n` +
+          `    export CODEX_CA_CERTIFICATE="${shellPath}"`,
       );
     }
     scheduled = true;

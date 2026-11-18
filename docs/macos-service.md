@@ -142,11 +142,15 @@ candidate still under verification leaves publication to the worker). A process 
 before that, such as a Codex app-server daemon launched from a terminal right after
 login, misses the value and fails `account/read` with `workspace routing discovery
 failed`. Because the path never changes, export it from your shell startup instead; the
-installer prints this line, but does not edit shell startup files:
+installer prints these lines, but does not edit shell startup files:
 
 ```sh
-export CODEX_CA_CERTIFICATE="$HOME/Library/Application Support/crabex/tls/codex-ca-bundle.pem"
+[[ -e "$HOME/Library/Application Support/crabex/tls/codex-ca-bundle.pem" ]] &&
+  export CODEX_CA_CERTIFICATE="$HOME/Library/Application Support/crabex/tls/codex-ca-bundle.pem"
 ```
+
+The existence check matters: `service tls remove` deletes the bundle, and Codex cannot build
+its HTTP clients when `CODEX_CA_CERTIFICATE` names a missing file.
 
 Restart a daemon that already missed it with `codex app-server daemon restart` from a
 new terminal. The installer retains the linked bundle, the rollback bundle, any path
