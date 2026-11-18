@@ -205,6 +205,20 @@ export function prepareAnthropic(
         break;
       case "function_call_output":
       case "custom_tool_call_output":
+        // Desktop injects unsolicited agent context without a preceding tool call.
+        if (
+          item.type === "function_call_output" &&
+          item.namespace === "agent" &&
+          typeof item.name === "string" &&
+          item.name.length > 0 &&
+          item.call_id === undefined
+        ) {
+          push("user", [
+            { type: "text", text: `agent.${item.name}:\n` },
+            ...content(item.output ?? ""),
+          ]);
+          break;
+        }
         push("user", [
           {
             type: "tool_result",
