@@ -48,12 +48,23 @@ describe("LaunchAgent service", () => {
 
   it("escapes plist arguments and environment while keeping runtime paths explicit", () => {
     const plist = launchAgentPlist(
-      { ...next, release: "/a & b", environment: { TOKEN: '<secret>&"' } },
+      {
+        ...next,
+        release: "/a & b",
+        environment: { TOKEN: '<secret>&"', SSL_CERT_FILE: "/explicit.pem" },
+        inheritedCaEnvironment: {
+          SSL_CERT_FILE: "/previous.pem",
+          NODE_EXTRA_CA_CERTS: "/shell/extra.pem",
+        },
+      },
       "/root",
       "/logs",
     );
     expect(plist).toContain("/a &amp; b/bun");
     expect(plist).toContain("&lt;secret&gt;&amp;&quot;");
+    expect(plist).toContain("<key>NODE_EXTRA_CA_CERTS</key><string>/shell/extra.pem</string>");
+    expect(plist).toContain("<key>SSL_CERT_FILE</key><string>/explicit.pem</string>");
+    expect(plist).not.toContain("/previous.pem");
     expect(plist).toContain("<key>KeepAlive</key><true/>");
     expect(plist).toContain("<key>Umask</key><integer>63</integer>");
     expect(plist).toContain("<key>CRABEX_MANAGED_SERVICE</key><string>1</string>");

@@ -6,22 +6,22 @@ describe("device-check response cookies", () => {
   it("relays only the device cookie and preserves security and expiry attributes", () => {
     const headers = new Headers();
     headers.append("set-cookie", "__cf_bm=private; Path=/; Secure; HttpOnly");
-    headers.append("set-cookie", "session=private; Domain=.chatgpt.com; Secure");
+    headers.append("set-cookie", "session=private; Domain=.example.com; Secure");
     headers.append(
       "set-cookie",
-      "_devicecheck=test; Domain=.chatgpt.com; Path=/; Secure; HttpOnly; SameSite=None; Expires=Wed, 18 Nov 2026 00:00:00 GMT",
+      "_devicecheck=test; Domain=.example.com; Path=/; Secure; HttpOnly; SameSite=None; Expires=Wed, 18 Nov 2026 00:00:00 GMT",
     );
     expect(deviceCheckCookies(headers, target)).toEqual([
       "_devicecheck=test; Path=/; Secure; HttpOnly; SameSite=None; Expires=Wed, 18 Nov 2026 00:00:00 GMT",
     ]);
-    expect(headers.getSetCookie()[2]).toContain("Domain=.chatgpt.com");
+    expect(headers.getSetCookie()[2]).toContain("Domain=.example.com");
   });
   it("preserves host-only cookies and cookie deletion", () => {
     const headers = new Headers();
     headers.append("set-cookie", "_devicecheck=test; Path=/; Secure; HttpOnly");
     headers.append(
       "set-cookie",
-      "_devicecheck=; domain=chatgpt.com; Path=/; Max-Age=0; Secure; HttpOnly",
+      "_devicecheck=; domain=example.com; Path=/; Max-Age=0; Secure; HttpOnly",
     );
     expect(deviceCheckCookies(headers, target)).toEqual([
       "_devicecheck=test; Path=/; Secure; HttpOnly",

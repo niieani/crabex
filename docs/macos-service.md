@@ -45,7 +45,8 @@ bun packages/proxy/dist/cli.mjs service install --env MY_PROVIDER_TOKEN
 
 In addition to HOME and PATH, nonempty `SSL_CERT_FILE` and
 `NODE_EXTRA_CA_CERTS` values from the installing shell are preserved automatically
-when the service has no saved value for that variable. This keeps upstream TLS
+when the service has no saved value for that variable. Relative CA paths are resolved
+from the directory where you run the installer. This keeps upstream TLS
 verification working with custom or enterprise certificate authorities after
 launchd starts the service. Other variables require explicit `--env NAME` selection. Existing selected values survive updates; repeat `--env NAME` to refresh a value. Values are stored locally in files restricted to the user, including the plist and operation records. ChatGPT bearer tokens are not copied from Codex: the Apps relay still learns those from live authenticated Codex traffic. Existing Codex config path selection is preserved as an absolute path.
 

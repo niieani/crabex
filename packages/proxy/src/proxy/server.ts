@@ -699,6 +699,7 @@ async function proxyHttpRequest(
       const route = inspected === undefined ? undefined : modelRouteFor(routes, inspected.model);
       return inspected === undefined || route === undefined ? undefined : { inspected, route };
     })();
+    const passthroughTarget = routedRequest === undefined ? target : undefined;
     const inspectedAgent = isResponsesRequest(request.method, requestUrl.pathname)
       ? inspectResponseModel(processed.value)
       : undefined;
@@ -934,10 +935,7 @@ async function proxyHttpRequest(
       return new Response(errorBody, {
         status: response.status,
         statusText: response.statusText,
-        headers: downstreamHeaders(
-          response.headers,
-          routedRequest === undefined ? target : undefined,
-        ),
+        headers: downstreamHeaders(response.headers, passthroughTarget),
       });
     }
 
@@ -1046,7 +1044,7 @@ async function proxyHttpRequest(
     const downstreamResponseHeaders =
       translatedStream || translatedJson || translatedNativeStream || translatedNativeJson
         ? translatedHeaders(response.headers)
-        : downstreamHeaders(response.headers, routedRequest === undefined ? target : undefined);
+        : downstreamHeaders(response.headers, passthroughTarget);
     if (translatedNativeStream && !downstreamResponseHeaders.has("content-type"))
       downstreamResponseHeaders.set("content-type", "text/event-stream");
     const downstream = new Response(downstreamBody, {

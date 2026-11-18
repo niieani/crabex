@@ -1434,7 +1434,7 @@ describe("subscription reverse proxy", () => {
         const headers = new Headers({ "content-type": "application/json" });
         headers.append(
           "set-cookie",
-          "_devicecheck=example; Domain=.chatgpt.com; Path=/; Secure; HttpOnly; SameSite=None",
+          "_devicecheck=example; Domain=.example.com; Path=/; Secure; HttpOnly; SameSite=None",
         );
         headers.append("set-cookie", "session=private; Secure");
         return new Response("{}", { status, headers });
