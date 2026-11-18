@@ -1,4 +1,5 @@
 import { defaultCodexConfigPath } from "../config/codex-config.ts";
+import { parseListen } from "../config/listen-address.ts";
 
 const MIB = 1024 * 1024;
 
@@ -24,6 +25,12 @@ export interface ProxyCliOptions {
   project?: string;
   tlsDirectory?: string;
   codexCaBundlePath?: string;
+  sharedLogin?: boolean;
+  sharedLoginListen?: string;
+  sharedLoginCodexHome?: string;
+  clientKeysPath: string;
+  /** Codex executable that renews the shared login; resolved on PATH unless absolute. */
+  codexBin: string;
 }
 
 export function parseCliOptions(args: string[]): ProxyCliOptions {
@@ -47,6 +54,8 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
     upstreamCachePath: ".crabex/upstream-cache.json",
     statsPath: ".crabex/stats.json",
     snapshotCachePath: ".crabex/snapshot-cache.json",
+    clientKeysPath: ".crabex/client-keys.json",
+    codexBin: "codex",
   };
 
   for (let index = 1; index < args.length; index += 1) {
@@ -57,6 +66,27 @@ export function parseCliOptions(args: string[]): ProxyCliOptions {
       options.appsAuthRelay = true;
     } else if (argument === "--no-apps-auth-relay") {
       options.appsAuthRelay = false;
+    } else if (argument === "--shared-login") {
+      options.sharedLogin = true;
+    } else if (argument === "--no-shared-login") {
+      options.sharedLogin = false;
+    } else if (argument === "--shared-login-listen") {
+      if (value === undefined) throw new Error("missing value for --shared-login-listen");
+      parseListen(value, "--shared-login-listen");
+      options.sharedLoginListen = value;
+      index += 1;
+    } else if (argument === "--shared-login-codex-home") {
+      if (value === undefined) throw new Error("missing value for --shared-login-codex-home");
+      options.sharedLoginCodexHome = value;
+      index += 1;
+    } else if (argument === "--codex-bin") {
+      if (value === undefined) throw new Error("missing value for --codex-bin");
+      options.codexBin = value;
+      index += 1;
+    } else if (argument === "--client-keys") {
+      if (value === undefined) throw new Error("missing value for --client-keys");
+      options.clientKeysPath = value;
+      index += 1;
     } else if (argument === "--tls-dir") {
       if (value === undefined) throw new Error("missing value for --tls-dir");
       options.tlsDirectory = value;
@@ -138,25 +168,4 @@ function positiveNumber(argument: string, value: string | undefined): number {
   if (!Number.isFinite(number) || number <= 0)
     throw new Error(`invalid ${argument} value: ${value}`);
   return number;
-}
-
-function parseListen(value: string): { host: string; port: number } {
-  let parsed: URL;
-  try {
-    parsed = new URL(`http://${value}`);
-  } catch {
-    throw new Error(`invalid --listen value: ${value}`);
-  }
-  const port = Number(parsed.port);
-  if (
-    parsed.pathname !== "/" ||
-    parsed.username !== "" ||
-    parsed.password !== "" ||
-    !Number.isInteger(port) ||
-    port < 0 ||
-    port > 65535
-  ) {
-    throw new Error(`invalid --listen value: ${value}`);
-  }
-  return { host: parsed.hostname.replace(/^\[|\]$/g, ""), port };
 }

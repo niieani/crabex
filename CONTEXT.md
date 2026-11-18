@@ -75,3 +75,11 @@ _Avoid_: error body, failed response
 **Upstream Origin**:
 The concrete peer that produced an upstream-to-client event: a routed gateway HTTP/WebSocket URL, or the ChatGPT HTTP/WebSocket URL the request would otherwise have used.
 _Avoid_: upstream, destination
+
+**Shared Login**:
+An optional mode in which this Crabex lends its ChatGPT login to other Codex instances through a separate, allowlisted listener. See `docs/shared-login.md`.
+_Avoid_: gateway (that names routed upstreams), relay
+
+**Client Key**:
+A secret issued by Shared Login that a client Codex uses as its API key. Only its hash is stored.
+_Avoid_: token, API key (ambiguous with OpenAI keys)

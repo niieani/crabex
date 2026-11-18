@@ -27,6 +27,12 @@ import { FileCaptureRepository } from "./recording/capture-repository.ts";
 import { openRotatingCaptureSink } from "./recording/ndjson-capture-sink.ts";
 import { StatsStore } from "./recording/stats-store.ts";
 import { LiveRequestStore } from "./requests/live-request-store.ts";
+import { createSharedLoginApi } from "./shared-login/api.ts";
+import { openClientKeyStore } from "./shared-login/client-keys.ts";
+import { createAppServerRenewal } from "./shared-login/app-server-renewal.ts";
+import { createCodexHomeLogin } from "./shared-login/login.ts";
+import { createLoginRefresher } from "./shared-login/login-refresher.ts";
+import { startSharedLoginService } from "./shared-login/service.ts";
 
 const HELP = `Crabex - any model, living in Codex's shell
 
@@ -68,6 +74,17 @@ Options:
                         Context snapshot disk cache
                         (default: .crabex/snapshot-cache.json)
   --project <key>       Optional project scope for captures and transformations
+  --shared-login        Lend this instance's ChatGPT login to other Codex instances through
+                        issued Client Keys, on a separate listener (off by default)
+  --no-shared-login     Override config to keep Shared Login off
+  --shared-login-listen <host:port>
+                        Shared Login listener (default: 127.0.0.1:8766)
+  --shared-login-codex-home <dir>
+                        Codex home holding the login to share (default: the --codex-config
+                        directory)
+  --client-keys <file>  Client Key hashes (default: .crabex/client-keys.json)
+  --codex-bin <path>    Codex executable that renews the shared login near expiry
+                        (default: codex on PATH)
 `;
 
 async function main(): Promise<void> {
@@ -136,6 +153,25 @@ async function main(): Promise<void> {
   const liveRequests = new LiveRequestStore();
   const host = options.host === "0.0.0.0" || options.host === "::" ? "127.0.0.1" : options.host;
   const proxyOrigin = `${options.tlsDirectory ? "https" : "http"}://${host === "::1" ? "[::1]" : host}:${options.port}`;
+  const tls = options.tlsDirectory ? await readTls(options.tlsDirectory) : undefined;
+  const sharedLoginHome = options.sharedLoginCodexHome ?? dirname(options.codexConfigPath);
+  const sharedLoginLog = (line: string) => process.stderr.write(`[shared-login] ${line}\n`);
+  const sharedLoginSource = createCodexHomeLogin(sharedLoginHome);
+  const sharedLogin = await startSharedLoginService({
+    config: proxyConfig,
+    keys: await openClientKeyStore(options.clientKeysPath),
+    login: sharedLoginSource,
+    refresher: createLoginRefresher({
+      login: sharedLoginSource,
+      renew: createAppServerRenewal({ codexBin: options.codexBin, codexHome: sharedLoginHome }),
+      log: sharedLoginLog,
+    }),
+    upstreamOrigin: options.upstreamOrigin,
+    tls,
+    enabledOverride: options.sharedLogin,
+    listenOverride: options.sharedLoginListen,
+    log: sharedLoginLog,
+  });
   const browserWorkaround = createBrowserWorkaroundSource(
     codexHomeForWorkaround(options.codexConfigPath),
   );
@@ -144,7 +180,7 @@ async function main(): Promise<void> {
     anthropicKey: await openAnthropicKey(`${options.modelRoutesPath}.anthropic-key`),
     webUi: createWebUi(await findUiDirectory(import.meta.dirname)),
     host: options.host,
-    tls: options.tlsDirectory ? await readTls(options.tlsDirectory) : undefined,
+    tls,
     appsAuthRelay: options.appsAuthRelay,
     proxyConfigSource: proxyConfig,
     port: options.port,
@@ -177,6 +213,7 @@ async function main(): Promise<void> {
       tlsStatus: () => tlsStatus(options.tlsDirectory),
       appsAuthRelayOverride: options.appsAuthRelay,
       allowAppsAuthRelay: ["127.0.0.1", "::1", "localhost"].includes(options.host),
+      sharedLogin: createSharedLoginApi(sharedLogin),
       snapshots: snapshotRepository,
       transformations: transformationStore,
       modelRoutes: modelRouteStore,
@@ -196,6 +233,7 @@ async function main(): Promise<void> {
     `Crabex UI & proxy: ${proxy.origin}\ncapturing to ${options.capturesDirectory} (kept ${options.captureRetentionDays} days, up to ${Math.round(options.captureMaxBytes / 1024 / 1024)} MiB)\n`,
   );
   await waitForShutdownSignal();
+  await sharedLogin.close();
   await proxy.close();
   await captureSink.close();
   await statsStore.flush();
