@@ -1426,6 +1426,40 @@ describe("subscription reverse proxy", () => {
     expect(upstreamRequests).toBe(0);
   });
 
+  it.each([200, 403])("relays the device-check cookie on a %s response", async (status) => {
+    const originalFetch = globalThis.fetch;
+    const upstreamFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      if (url.startsWith("https://chatgpt.com/")) {
+        const headers = new Headers({ "content-type": "application/json" });
+        headers.append(
+          "set-cookie",
+          "_devicecheck=example; Domain=.example.com; Path=/; Secure; HttpOnly; SameSite=None",
+        );
+        headers.append("set-cookie", "session=private; Secure");
+        return new Response("{}", { status, headers });
+      }
+      return originalFetch(input, init);
+    });
+    try {
+      const proxy = await startProxy("https://chatgpt.com", new MemoryCaptureSink());
+      const response = await originalFetch(`${proxy.origin}/backend-api/devicecheck`, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(response.status).toBe(status);
+      expect(response.headers.getSetCookie()).toEqual([
+        "_devicecheck=example; Path=/; Secure; HttpOnly; SameSite=None",
+      ]);
+      await response.text();
+      const unrelated = await originalFetch(`${proxy.origin}/backend-api/me`);
+      expect(unrelated.headers.getSetCookie()).toEqual([]);
+      await unrelated.text();
+    } finally {
+      upstreamFetch.mockRestore();
+    }
+  });
+
   it("retains only Cloudflare infrastructure cookies for upstream requests", async () => {
     const seenCookies: Array<string | undefined> = [];
     const upstream = await startHttpServer((request, response) => {

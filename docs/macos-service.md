@@ -43,7 +43,28 @@ LaunchAgents do not inherit your interactive shell setup. Pass environment varia
 bun packages/proxy/dist/cli.mjs service install --env MY_PROVIDER_TOKEN
 ```
 
-Only explicitly selected variables plus HOME and PATH are configured. Existing selected values survive updates; repeat `--env NAME` to refresh a value. Values are stored locally in files restricted to the user, including the plist and operation records. ChatGPT bearer tokens are not copied from Codex: the Apps relay still learns those from live authenticated Codex traffic. Existing Codex config path selection is preserved as an absolute path.
+In addition to HOME and PATH, nonempty `SSL_CERT_FILE` and
+`NODE_EXTRA_CA_CERTS` values from the installing shell are preserved automatically
+when the service has no saved value for that variable. Relative CA paths are resolved
+from the directory where you run the installer. This keeps upstream TLS
+verification working with custom or enterprise certificate authorities after
+launchd starts the service. Other variables require explicit `--env NAME` selection. Existing selected values survive updates; repeat `--env NAME` to refresh a value. Values are stored locally in files restricted to the user, including the plist and operation records. ChatGPT bearer tokens are not copied from Codex: the Apps relay still learns those from live authenticated Codex traffic. Existing Codex config path selection is preserved as an absolute path.
+
+To refresh certificate paths in an existing service explicitly:
+
+```sh
+crabex service install --env SSL_CERT_FILE --env NODE_EXTRA_CA_CERTS
+```
+
+Set only the variables your environment uses. These paths configure the proxy's
+upstream trust, independently of the local HTTPS certificate trusted by ChatGPT.
+Certificate verification remains enabled.
+
+ChatGPT desktop device registration also needs the upstream `_devicecheck`
+cookie. The proxy relays only that cookie from
+`https://chatgpt.com/backend-api/devicecheck`, removes its upstream Domain so it
+is scoped to the local proxy host, and retains its security and expiry attributes.
+Other upstream response cookies continue to be filtered.
 
 Uninstall does not rewrite Codex endpoint settings. Point Codex at a working endpoint before removing a service it depends on.
 
