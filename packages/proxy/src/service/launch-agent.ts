@@ -35,6 +35,8 @@ import { DATA_DIRECTORY, LEGACY_NAME } from "../config/legacy-migration.ts";
 import { parseCliOptions } from "../cli/options.ts";
 import { findUiDirectory } from "../api/web-ui.ts";
 
+import { inheritServiceCaEnvironment, serviceEnvironmentValue } from "./environment.ts";
+
 const LABEL = "com.crabex.proxy";
 const ROOT = join(homedir(), "Library/Application Support/crabex");
 const PLIST = join(homedir(), "Library/LaunchAgents", `${LABEL}.plist`);
@@ -56,6 +58,7 @@ interface ServiceState {
   release: string;
   args: string[];
   environment: Record<string, string>;
+  inheritedCaEnvironment?: Record<string, string>;
   origin: string;
   desktopCodexCa?: PublishedCodexCa;
 }
@@ -75,6 +78,7 @@ export function launchAgentPlist(state: ServiceState, root = ROOT, logs = LOGS):
 <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>
 <key>WorkingDirectory</key><string>${xml(root)}</string>
 <key>EnvironmentVariables</key><dict>${Object.entries({
+    ...state.inheritedCaEnvironment,
     ...state.environment,
     [MANAGED_SERVICE_ENV]: "1",
   })
@@ -609,6 +613,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
     const separator = rest.indexOf("--");
     const flags = separator < 0 ? rest : rest.slice(0, separator);
     const proxyArgs = separator < 0 ? [] : rest.slice(separator + 1);
+    const cwd = process.cwd();
     const environment = {
       HOME: homedir(),
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -627,11 +632,16 @@ export async function serviceCommand(args: string[]): Promise<void> {
       }
       const value = process.env[name];
       if (value === undefined) throw new Error(`Environment variable ${name} is not set`);
-      Object.assign(environment, { [name]: value });
+      Object.assign(environment, { [name]: serviceEnvironmentValue(name, value, cwd) });
     }
+    const inheritedCaEnvironment = inheritServiceCaEnvironment(
+      environment,
+      base?.inheritedCaEnvironment,
+      process.env,
+      cwd,
+    );
     const data = join(ROOT, "data");
-    let launchArgs =
-      base && separator < 0 ? base.args : installArguments(proxyArgs, process.cwd(), data);
+    let launchArgs = base && separator < 0 ? base.args : installArguments(proxyArgs, cwd, data);
     if (proxyArgs.includes("--tls-dir"))
       throw new Error(
         "Use service install --https for managed certificates, or proxy --tls-dir for custom certificates",
@@ -743,6 +753,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
         release,
         args: launchArgs,
         environment,
+        ...(Object.keys(inheritedCaEnvironment).length === 0 ? {} : { inheritedCaEnvironment }),
         origin,
         ...(desktopCodexCa === undefined ? {} : { desktopCodexCa }),
       },
