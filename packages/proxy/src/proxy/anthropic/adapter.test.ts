@@ -97,13 +97,13 @@ describe("Anthropic protocol", () => {
     for (const item of [
       { type: "function_call_output", name: "read_file", output: "text" },
       { type: "function_call_output", namespace: "agent", output: "text" },
-      {
+      ...["", 123, null].map((call_id) => ({
         type: "function_call_output",
         namespace: "agent",
         name: "codex_apps_open_page",
-        call_id: "",
+        call_id,
         output: "text",
-      },
+      })),
       { type: "custom_tool_call_output", namespace: "agent", name: "exec", output: "text" },
     ]) {
       expect(() => prepareAnthropic({ ...base, input: [item] }, route, key)).toThrow(
