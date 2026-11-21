@@ -9,7 +9,7 @@ import { dirname } from "node:path";
 
 import { parseCliOptions } from "./cli/options.ts";
 import { MANAGED_SERVICE_ENV, readTls, syncProxyStartupCodexCa, tlsStatus } from "./service/tls.ts";
-import { committedDesktopCodexCa, serviceCommand } from "./service/launch-agent.ts";
+import { committedDesktopCodexCa, serviceCommand } from "./service/command.ts";
 import { createLocalApi } from "./api/local-api.ts";
 import { createWebUi, findUiDirectory } from "./api/web-ui.ts";
 import { createCodexConfigManager, migrateCodexConfigFile } from "./config/codex-config.ts";
@@ -36,7 +36,8 @@ Usage:
   crabex service uninstall|status|restart|logs
   crabex service tls status|renew|remove
 
-Service commands install a macOS LaunchAgent that starts at login. Install/update
+Service commands install a background service: a LaunchAgent on macOS, a systemd
+user service on Linux (requires lingering; --https is macOS-only). Install/update
 and restart use an independent worker; inspect service status/logs for completion.
 
 Options:
