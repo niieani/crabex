@@ -44,7 +44,7 @@ and lose what makes the harness good. Crabex takes the opposite approach:
 | 🔌  | **Apps relay**                 | Keeps Slack, Drive, and other ChatGPT Apps working when Codex's ChatGPT base URL points at the proxy. [Apps relay](docs/apps-auth-relay.md)                                                                                                           |
 | ⚙️  | **Config-bundle overrides**    | Answer Codex's remote config-bundle fetch with your own edited bundle, from the **Advanced** page.                                                                                                                                                    |
 | 📈  | **Live traffic and stats**     | Watch in-flight requests, routing attempts, fallbacks, cache use, and flex vs. standard serves.                                                                                                                                                       |
-| 🍎  | **macOS service**              | One command installs a LaunchAgent with its own runtime, local HTTPS with Keychain trust, safe restarts, and automatic rollback. [macOS service](docs/macos-service.md)                                                                               |
+| 🔄  | **Background service**         | One command installs a LaunchAgent (macOS) or systemd user service (Linux) with its own runtime, safe restarts, and automatic rollback; on macOS also local HTTPS with Keychain trust. [Background service](docs/service.md)                          |
 
 Everything is configured from the web UI served on the proxy's own port, or
 from plain JSON files under `.crabex/`.
@@ -121,7 +121,7 @@ bunx crabex@latest service install --https
 ```
 
 With Homebrew, use `crabex service install --https`. After updating the package,
-refresh the service's independent copy using the [service update instructions](docs/macos-service.md#updating).
+refresh the service's independent copy using the [service update instructions](docs/service.md#updating).
 
 ## Configuration
 
@@ -158,7 +158,7 @@ crabex service tls status|renew|remove
 - [Captures and Probes](docs/captures.md): what is recorded and how to inspect it
 - [Context inspector design](docs/context-inspector.md) and [domain language](CONTEXT.md)
 - [Apps authentication relay](docs/apps-auth-relay.md): keeping ChatGPT Apps working
-- [macOS service](docs/macos-service.md): LaunchAgent, HTTPS, updates
+- [Background service](docs/service.md): LaunchAgent, systemd, HTTPS, updates
 - [Refreshing the model catalog](docs/refresh-model-catalog.md)
 - [Upgrading from agent-context-trimmer](docs/upgrading.md)
 
