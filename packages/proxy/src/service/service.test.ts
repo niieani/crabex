@@ -38,6 +38,21 @@ describe("service installation", () => {
     expect(args).toContain("127.0.0.1:9000");
   });
 
+  it("pins the Codex binary found on the installer's PATH, which the service lacks", () => {
+    const which = (name: string) => (name === "codex" ? "/home/u/.local/bin/codex" : null);
+    const pinned = installArguments([], "/checkout", "/data", which);
+    expect(pinned.slice(pinned.indexOf("--codex-bin"))).toEqual([
+      "--codex-bin",
+      "/home/u/.local/bin/codex",
+    ]);
+    const explicit = installArguments(["--codex-bin", "bin/codex"], "/checkout", "/data", which);
+    expect(explicit.slice(explicit.lastIndexOf("--codex-bin"))).toEqual([
+      "--codex-bin",
+      "/checkout/bin/codex",
+    ]);
+    expect(installArguments([], "/checkout", "/data", () => null)).not.toContain("--codex-bin");
+  });
+
   it("rejects a non-loopback service listener", () => {
     expect(() => installArguments(["--listen", "0.0.0.0:8765"], "/checkout", "/data")).toThrow(
       "loopback",

@@ -61,7 +61,16 @@ export function serviceEnvironment(state: ServiceState): [string, string][] {
   });
 }
 
-export function installArguments(args: string[], cwd: string, data: string): string[] {
+/**
+ * Absolute proxy arguments for the service. The service gets a minimal PATH, so the Codex
+ * binary that renews a Shared Login is pinned to the one the installer's PATH finds.
+ */
+export function installArguments(
+  args: string[],
+  cwd: string,
+  data: string,
+  which: (command: string) => string | null = (command) => Bun.which(command),
+): string[] {
   const parsed = parseCliOptions(["proxy", ...args]);
   if (!["127.0.0.1", "localhost", "::1"].includes(parsed.host)) {
     throw new Error("Service installation requires a loopback listener");
@@ -87,6 +96,10 @@ export function installArguments(args: string[], cwd: string, data: string): str
         : resolve(cwd, path);
     result.push(flag, absolute);
   }
+  const codex = parsed.codexBin.includes("/")
+    ? resolve(cwd, parsed.codexBin)
+    : which(parsed.codexBin);
+  if (codex !== null) result.push("--codex-bin", codex);
   return result;
 }
 
