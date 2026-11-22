@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { parseListen } from "./listen-address.ts";
+
 export interface ProxyConfig {
   version: 1;
   appsAuthRelay: boolean;
@@ -13,7 +15,18 @@ export interface ProxyConfig {
     instructions?: string;
     prefer_native_spawn_models: boolean;
   };
+  /**
+   * Lends this instance's ChatGPT login to other Codex instances. Off unless opted into.
+   * `refresh` has Codex renew the login when it nears expiry while Shared Login is on.
+   */
+  shared_login: { enabled: boolean; listen: string; refresh: boolean };
 }
+
+const DEFAULT_SHARED_LOGIN: ProxyConfig["shared_login"] = {
+  enabled: false,
+  listen: "127.0.0.1:8766",
+  refresh: true,
+};
 
 export const MAX_ROUTED_AGENT_INSTRUCTIONS = 1200;
 
@@ -68,6 +81,7 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
     );
   return {
     version: 1,
+    shared_login: parseSharedLogin(config.shared_login),
     appsAuthRelay: config.appsAuthRelay ?? true,
     local_policy_override: (config.local_policy_override as boolean | undefined) ?? false,
     search_broker: {
@@ -81,6 +95,25 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
   };
 }
 
+function parseSharedLogin(value: unknown): ProxyConfig["shared_login"] {
+  if (value === undefined) return { ...DEFAULT_SHARED_LOGIN };
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("invalid proxy config: shared_login must be an object");
+  const { enabled, listen, refresh } = value as Record<string, unknown>;
+  if (enabled !== undefined && typeof enabled !== "boolean")
+    throw new Error("invalid proxy config: shared_login.enabled must be boolean");
+  if (refresh !== undefined && typeof refresh !== "boolean")
+    throw new Error("invalid proxy config: shared_login.refresh must be boolean");
+  if (listen !== undefined && typeof listen !== "string")
+    throw new Error("invalid proxy config: shared_login.listen must be host:port");
+  if (typeof listen === "string") parseListen(listen, "shared_login.listen");
+  return {
+    enabled: enabled ?? DEFAULT_SHARED_LOGIN.enabled,
+    listen: listen ?? DEFAULT_SHARED_LOGIN.listen,
+    refresh: refresh ?? DEFAULT_SHARED_LOGIN.refresh,
+  };
+}
+
 export async function openProxyConfigStore(path: string): Promise<ProxyConfigStore> {
   let config: ProxyConfig = {
     version: 1,
@@ -88,6 +121,7 @@ export async function openProxyConfigStore(path: string): Promise<ProxyConfigSto
     local_policy_override: false,
     search_broker: { route: "gpt-6-luna" },
     routed_agents: { enabled: false, instructions: "", prefer_native_spawn_models: false },
+    shared_login: { ...DEFAULT_SHARED_LOGIN },
   };
   try {
     config = parseProxyConfig(JSON.parse(await readFile(path, "utf8")));
@@ -101,12 +135,14 @@ export async function openProxyConfigStore(path: string): Promise<ProxyConfigSto
       ...config,
       search_broker: { ...config.search_broker },
       routed_agents: { ...config.routed_agents },
+      shared_login: { ...config.shared_login },
     }),
     async replace(value) {
       const next = parseProxyConfig({
         ...value,
         search_broker: value.search_broker ?? config.search_broker,
         routed_agents: value.routed_agents ?? config.routed_agents,
+        shared_login: value.shared_login ?? config.shared_login,
       });
       await mkdir(dirname(path), { recursive: true });
       const temporary = `${path}.${randomUUID()}.tmp`;
