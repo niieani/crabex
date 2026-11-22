@@ -1,6 +1,6 @@
-# macOS background service
+# Background service
 
-The CLI can install a per-user LaunchAgent. It starts at login after reboot and launchd restarts it if it exits. It uses the existing user account; no root access or new ChatGPT login is required.
+The CLI can install a per-user background service: a LaunchAgent on macOS, a systemd user service on Linux. The supervisor starts it after reboot and restarts it if it exits. It uses the existing user account; no new ChatGPT login is required. Installation, updates, readiness checks and rollback work the same on both; [Linux](#linux-systemd) lists what differs there. Local HTTPS with Keychain trust is macOS-only.
 
 Build the CLI and UI, then install:
 
@@ -29,11 +29,11 @@ Add that `bin` directory to your shell's PATH if desired. Supported commands:
 | ------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `service install`   | Install or stage an updated build; retain existing service arguments on updates unless `--` options are supplied. |
 | `service restart`   | Start an independent worker to restart the installed release and check readiness.                                 |
-| `service status`    | Show launchd process state and HTTP readiness without printing environment credentials.                           |
-| `service logs`      | Print the last 80 lines of proxy stdout/stderr and the location of restart result logs.                           |
-| `service uninstall` | Unload the LaunchAgent and remove registration; preserve data, releases, and logs.                                |
+| `service status`    | Show the supervisor's process state and HTTP readiness without printing environment credentials.                  |
+| `service logs`      | Print the last 80 lines of proxy output and the location of restart result logs.                                  |
+| `service uninstall` | Stop the service and remove its registration; preserve data, releases, and logs.                                  |
 
-Install and restart return once the worker acknowledges startup, **before readiness is known**. The worker survives loss of the calling Codex connection. It owns stop/start, checks that the launchd PID owns the port and the local API responds, and restores the previous release if an update fails. Because launchd can finish unloading asynchronously, bootstrap error 5 is retried for up to five seconds before rollback. Restart errors retain the underlying diagnostic in the result log. Inspect its result log and `service status` afterward. First-install failure removes the registration. A restart uses the same release for recovery; it cannot fix an invalid configuration or unavailable runtime. Interrupted operations leave a lock under the installation directory; inspect worker logs/processes before removing a stale lock.
+Install and restart return once the worker acknowledges startup, **before readiness is known**. The worker survives loss of the calling Codex connection. It owns stop/start, checks that the supervisor's PID owns the port and the local API responds, and restores the previous release if an update fails. Because launchd can finish unloading asynchronously, bootstrap error 5 is retried for up to five seconds before rollback. Restart errors retain the underlying diagnostic in the result log. Inspect its result log and `service status` afterward. First-install failure removes the registration. A restart uses the same release for recovery; it cannot fix an invalid configuration or unavailable runtime. Interrupted operations leave a lock under the installation directory; inspect worker logs/processes before removing a stale lock.
 
 The installation contains a copied Bun runtime and bundled CLI under `~/Library/Application Support/crabex/releases/`. Default proxy data lives under `data/`, the LaunchAgent plist under `~/Library/LaunchAgents/`, and logs under `~/Library/Logs/crabex/`. Existing releases and logs are retained for manual inspection; automatic pruning/rotation is not yet implemented.
 
@@ -96,9 +96,34 @@ Inspect the worker result log printed by the command, then run `crabex service
 status` to confirm the new release is active. Install returns before that worker
 finishes, so its initial acknowledgement alone does not confirm success.
 
+## Linux (systemd)
+
+On Linux the service is a systemd user service, `crabex.service`. A user manager stops
+its services at logout and starts them only at login unless lingering is on, so
+installation requires it and stops with the command to enable it:
+
+```sh
+sudo loginctl enable-linger "$USER"
+```
+
+That is the only step that needs root. Paths follow the XDG base directories:
+
+| What                                | Where                                         |
+| ----------------------------------- | --------------------------------------------- |
+| Releases, data, launcher, state     | `${XDG_DATA_HOME:-~/.local/share}/crabex/`    |
+| Restart result logs                 | `${XDG_STATE_HOME:-~/.local/state}/crabex/`   |
+| Unit file                           | `${XDG_CONFIG_HOME:-~/.config}/systemd/user/` |
+| Proxy output (`service logs` reads) | the user journal                              |
+
+The installed command is `~/.local/share/crabex/bin/crabex`. Install, restart and update
+run their worker as a transient unit (`systemd-run --user`), so it survives the SSH or
+terminal session that started it. Readiness reads the listening socket of the unit's main
+PID from `/proc`. Like a LaunchAgent, the unit gets only HOME, PATH and the variables
+selected with `--env`. `--https` and `service tls renew|remove` are unavailable.
+
 ## Upgrading from agent-context-trimmer
 
-A service installed under the former name (`com.agent-context-trimmer.proxy`) is
+A macOS service installed under the former name (`com.agent-context-trimmer.proxy`) is
 migrated by the next `service install`. See [upgrading.md](upgrading.md) for
 what moves, how rollback works, and the verification checklist.
 

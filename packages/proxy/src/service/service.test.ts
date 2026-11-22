@@ -3,17 +3,15 @@ import { describe, expect, it } from "vite-plus/test";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { bootstrapWithRetry, launchAgentPlist } from "./launchd.ts";
+import { changedSinceCopy, relocateServiceState } from "./legacy.ts";
+import { SupervisorError } from "./manager.ts";
 import {
   activateWithRollback,
   installArguments,
-  launchAgentPlist,
   serviceOrigin,
   updateServiceCodexConfig,
-  bootstrapWithRetry,
-  LaunchctlError,
-  relocateServiceState,
-  changedSinceCopy,
-} from "./launch-agent.ts";
+} from "./state.ts";
 
 const previous = {
   release: "/old",
@@ -23,7 +21,7 @@ const previous = {
 };
 const next = { ...previous, release: "/new" };
 
-describe("LaunchAgent service", () => {
+describe("service installation", () => {
   it("moves default state outside the checkout and preserves explicit paths", () => {
     const args = installArguments(
       ["--config", "custom/config.json", "--listen", "127.0.0.1:9000"],
@@ -38,6 +36,21 @@ describe("LaunchAgent service", () => {
     expect(args).toContain("/stable/data/captures");
     expect(args).toContain("/stable/data/snapshot-cache.json");
     expect(args).toContain("127.0.0.1:9000");
+  });
+
+  it("pins the Codex binary found on the installer's PATH, which the service lacks", () => {
+    const which = (name: string) => (name === "codex" ? "/home/u/.local/bin/codex" : null);
+    const pinned = installArguments([], "/checkout", "/data", which);
+    expect(pinned.slice(pinned.indexOf("--codex-bin"))).toEqual([
+      "--codex-bin",
+      "/home/u/.local/bin/codex",
+    ]);
+    const explicit = installArguments(["--codex-bin", "bin/codex"], "/checkout", "/data", which);
+    expect(explicit.slice(explicit.lastIndexOf("--codex-bin"))).toEqual([
+      "--codex-bin",
+      "/checkout/bin/codex",
+    ]);
+    expect(installArguments([], "/checkout", "/data", () => null)).not.toContain("--codex-bin");
   });
 
   it("rejects a non-loopback service listener", () => {
@@ -170,7 +183,12 @@ describe("launchd asynchronous teardown", () => {
     const waits: number[] = [];
     await bootstrapWithRetry(
       () => {
-        if (++calls < 3) throw new LaunchctlError("bootstrap", 5, "Input/output error");
+        if (++calls < 3)
+          throw new SupervisorError(
+            "/bin/launchctl bootstrap gui/501 plist",
+            5,
+            "Input/output error",
+          );
       },
       async (ms) => {
         waits.push(ms);
@@ -185,7 +203,11 @@ describe("launchd asynchronous teardown", () => {
       bootstrapWithRetry(
         () => {
           calls++;
-          throw new LaunchctlError("bootstrap", 5, "Input/output error");
+          throw new SupervisorError(
+            "/bin/launchctl bootstrap gui/501 plist",
+            5,
+            "Input/output error",
+          );
         },
         async () => {},
       ),
@@ -198,12 +220,32 @@ describe("launchd asynchronous teardown", () => {
       bootstrapWithRetry(
         () => {
           calls++;
-          throw new LaunchctlError("bootstrap", 122, "permission denied");
+          throw new SupervisorError(
+            "/bin/launchctl bootstrap gui/501 plist",
+            122,
+            "permission denied",
+          );
         },
         async () => {},
       ),
     ).rejects.toThrow("permission denied");
     expect(calls).toBe(1);
+  });
+  it("keeps the activation error when removing a failed first installation also fails", async () => {
+    await expect(
+      activateWithRollback(
+        { next },
+        {
+          activate: async () => {
+            throw new Error("unit has a fatal error");
+          },
+          persist: async () => {},
+          remove: async () => {
+            throw new Error("unit not loaded");
+          },
+        },
+      ),
+    ).rejects.toThrow(/unit has a fatal error.*unit not loaded/);
   });
   it("includes the activation error in the rollback log message", async () => {
     await expect(

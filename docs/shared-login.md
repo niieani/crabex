@@ -107,13 +107,13 @@ on the host.
 
 ## Command line
 
-| Option                                | Effect                                                 |
-| ------------------------------------- | ------------------------------------------------------ |
-| `--shared-login`, `--no-shared-login` | Turn it on or off for this run; locks the UI switch    |
-| `--shared-login-listen <host:port>`   | Listener address; locks the UI field                   |
-| `--shared-login-codex-home <dir>`     | Codex home holding the login to share                  |
-| `--client-keys <file>`                | Client Key hashes (default `.crabex/client-keys.json`) |
-| `--codex-bin <path>`                  | Codex that renews the login (default `codex` on PATH)  |
+| Option                                | Effect                                                                                         |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `--shared-login`, `--no-shared-login` | Turn it on or off for this run; locks the UI switch                                            |
+| `--shared-login-listen <host:port>`   | Listener address; locks the UI field                                                           |
+| `--shared-login-codex-home <dir>`     | Codex home holding the login to share                                                          |
+| `--client-keys <file>`                | Client Key hashes (default `.crabex/client-keys.json`)                                         |
+| `--codex-bin <path>`                  | Codex that renews the login (default `codex` on PATH; `service install` pins the one it finds) |
 
 Settings saved from the UI live in the proxy config as
 `"shared_login": { "enabled": false, "listen": "127.0.0.1:8766", "refresh": true }`.
