@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.0](https://github.com/niieani/crabex/compare/v1.0.0...v1.1.0) (2026-11-22)
+
+### Features
+
+- **service:** run the background service under systemd on Linux ([#8](https://github.com/niieani/crabex/issues/8)) ([25d9600](https://github.com/niieani/crabex/commit/25d96009563945522e3f79ae146ef0f9526a9fbf))
+- Shared Login mode for other Codex instances ([#3](https://github.com/niieani/crabex/issues/3)) ([8fe80bc](https://github.com/niieani/crabex/commit/8fe80bce0202f1d3981450d9d93bdcdb6563043e))
+
+### Bug Fixes
+
+- **service:** guard the suggested CODEX_CA_CERTIFICATE export ([#7](https://github.com/niieani/crabex/issues/7)) ([a198337](https://github.com/niieani/crabex/commit/a1983379febbe75841726477706d0dec3c9b9765))
+
 ## 1.0.0 (2026-11-18)
 
 ### Features
